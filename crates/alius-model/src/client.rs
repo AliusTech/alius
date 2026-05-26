@@ -195,7 +195,7 @@ impl LlmClient {
                 let description = t["function"]["description"].as_str()?;
                 let parameters = t["function"]["parameters"].clone();
 
-                Some(ChatCompletionToolArgs::default()
+                ChatCompletionToolArgs::default()
                     .r#type(ChatCompletionToolType::Function)
                     .function(FunctionObjectArgs::default()
                         .name(name)
@@ -205,8 +205,7 @@ impl LlmClient {
                         .ok()?
                     )
                     .build()
-                    .ok()?
-                )
+                    .ok()
             })
             .collect();
 
@@ -274,7 +273,7 @@ impl LlmClient {
                 let description = t["function"]["description"].as_str()?;
                 let parameters = t["function"]["parameters"].clone();
 
-                Some(ChatCompletionToolArgs::default()
+                ChatCompletionToolArgs::default()
                     .r#type(ChatCompletionToolType::Function)
                     .function(FunctionObjectArgs::default()
                         .name(name)
@@ -284,8 +283,7 @@ impl LlmClient {
                         .ok()?
                     )
                     .build()
-                    .ok()?
-                )
+                    .ok()
             })
             .collect();
 

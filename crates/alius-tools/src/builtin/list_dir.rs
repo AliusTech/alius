@@ -49,10 +49,10 @@ impl AliusTool for ListDirTool {
 
         // Validate path is within workspace (security check)
         let canonical_path = full_path.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if !canonical_path.starts_with(&canonical_workspace) {
             return Err(AliusError::Agent(
@@ -64,11 +64,11 @@ impl AliusTool for ListDirTool {
         let mut entries = Vec::new();
         let mut dir = tokio::fs::read_dir(&full_path)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
-        while let Some(entry) = dir.next_entry().await.map_err(|e| AliusError::Io(e))? {
+        while let Some(entry) = dir.next_entry().await.map_err(AliusError::Io)? {
             let name = entry.file_name().to_string_lossy().to_string();
-            let is_dir = entry.file_type().await.map_err(|e| AliusError::Io(e))?.is_dir();
+            let is_dir = entry.file_type().await.map_err(AliusError::Io)?.is_dir();
             entries.push(serde_json::json!({
                 "name": name,
                 "type": if is_dir { "directory" } else { "file" }

@@ -14,22 +14,22 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux
             artifact: alius-linux-x64
-            binary: alius-cli
+            binary: alius
             rust_target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: x86_64-darwin
             artifact: alius-macos-x64
-            binary: alius-cli
+            binary: alius
             rust_target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-darwin
             artifact: alius-macos-arm64
-            binary: alius-cli
+            binary: alius
             rust_target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-windows
             artifact: alius-windows-x64
-            binary: alius-cli.exe
+            binary: alius.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -49,6 +49,15 @@ jobs:
       - name: Install musl tools (Linux)
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Lint (clippy)
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build (default)
         if: ${{ matrix.rust_target == '' }}

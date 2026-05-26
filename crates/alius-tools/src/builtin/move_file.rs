@@ -83,7 +83,7 @@ impl AliusTool for MoveFileTool {
             .map_err(|e| AliusError::Agent(format!("Source file not found: {}", e)))?;
 
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if !canonical_source.starts_with(&canonical_workspace) {
             return Err(AliusError::Agent(
@@ -96,14 +96,14 @@ impl AliusTool for MoveFileTool {
             if !parent.exists() {
                 tokio::fs::create_dir_all(parent)
                     .await
-                    .map_err(|e| AliusError::Io(e))?;
+                    .map_err(AliusError::Io)?;
             }
         }
 
         // Move file
         tokio::fs::rename(&source_path, &dest_path)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         Ok(ToolResult::success(format!("Moved: {} -> {}", source, destination)))
     }

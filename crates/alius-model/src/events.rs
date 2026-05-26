@@ -37,7 +37,7 @@ pub fn process_stream(
                             // Check if finished
                             let finish_reason = response.choices
                                 .first()
-                                .and_then(|c| c.finish_reason.clone());
+                                .and_then(|c| c.finish_reason);
 
                             if finish_reason.is_some() {
                                 let response_clone = full_response.clone();

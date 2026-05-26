@@ -32,19 +32,14 @@ impl std::fmt::Display for SessionId {
 }
 
 /// Provider type for LLM
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
+    #[default]
     Openai,
     Anthropic,
     Google,
     Custom,
-}
-
-impl Default for ProviderType {
-    fn default() -> Self {
-        Self::Openai
-    }
 }
 
 /// Soul role

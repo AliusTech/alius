@@ -1,5 +1,5 @@
 [package]
-name = "alius-cli"
+name = "alius"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

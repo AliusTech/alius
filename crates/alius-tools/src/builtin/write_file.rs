@@ -75,7 +75,7 @@ impl AliusTool for WriteFileTool {
 
         // Validate path is within workspace
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         // For new files, check parent directory
         let parent = full_path.parent().ok_or_else(|| {
@@ -84,7 +84,7 @@ impl AliusTool for WriteFileTool {
 
         if parent.exists() {
             let canonical_parent = parent.canonicalize()
-                .map_err(|e| AliusError::Io(e))?;
+                .map_err(AliusError::Io)?;
 
             if !canonical_parent.starts_with(&canonical_workspace) {
                 return Err(AliusError::Agent(
@@ -105,7 +105,7 @@ impl AliusTool for WriteFileTool {
         // Write file content
         tokio::fs::write(&full_path, content)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         Ok(ToolResult::success(format!("File written: {} ({})", path, content.len())))
     }

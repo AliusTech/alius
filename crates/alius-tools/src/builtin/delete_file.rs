@@ -68,7 +68,7 @@ impl AliusTool for DeleteFileTool {
             .map_err(|e| AliusError::Agent(format!("Path not found: {}", e)))?;
 
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if !canonical_path.starts_with(&canonical_workspace) {
             return Err(AliusError::Agent(
@@ -83,9 +83,9 @@ impl AliusTool for DeleteFileTool {
             // Check if directory is empty
             let mut entries = tokio::fs::read_dir(&full_path)
                 .await
-                .map_err(|e| AliusError::Io(e))?;
+                .map_err(AliusError::Io)?;
 
-            if entries.next_entry().await.map_err(|e| AliusError::Io(e))?.is_some() {
+            if entries.next_entry().await.map_err(AliusError::Io)?.is_some() {
                 return Err(AliusError::Agent(
                     "Directory is not empty - cannot delete".to_string()
                 ));
@@ -93,13 +93,13 @@ impl AliusTool for DeleteFileTool {
 
             tokio::fs::remove_dir(&full_path)
                 .await
-                .map_err(|e| AliusError::Io(e))?;
+                .map_err(AliusError::Io)?;
 
             Ok(ToolResult::success(format!("Deleted empty directory: {}", path)))
         } else {
             tokio::fs::remove_file(&full_path)
                 .await
-                .map_err(|e| AliusError::Io(e))?;
+                .map_err(AliusError::Io)?;
 
             Ok(ToolResult::success(format!("Deleted file: {}", path)))
         }

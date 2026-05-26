@@ -18,6 +18,7 @@ pub struct ReplSession {
     conversation: Conversation,
     registry: Arc<ToolRegistry>,
     session_metadata: SessionMetadata,
+    #[allow(dead_code)]
     session_store: SessionStore,
     conversation_store: ConversationStore,
     workspace: std::path::PathBuf,

@@ -59,10 +59,10 @@ impl AliusTool for FindFilesTool {
 
         // Validate path is within workspace
         let canonical_path = full_path.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if !canonical_path.starts_with(&canonical_workspace) {
             return Err(AliusError::Agent(

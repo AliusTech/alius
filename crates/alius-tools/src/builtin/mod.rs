@@ -13,6 +13,8 @@ mod create_dir;
 mod git_status;
 mod git_diff;
 mod http_request;
+mod code_stats;
+mod todo;
 
 pub use read_file::ReadFileTool;
 pub use list_dir::ListDirTool;
@@ -27,6 +29,8 @@ pub use create_dir::CreateDirTool;
 pub use git_status::GitStatusTool;
 pub use git_diff::GitDiffTool;
 pub use http_request::HttpRequestTool;
+pub use code_stats::CodeStatsTool;
+pub use todo::TodoTool;
 
 use crate::ToolRegistry;
 
@@ -45,4 +49,6 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(GitStatusTool);
     registry.register(GitDiffTool);
     registry.register(HttpRequestTool);
+    registry.register(CodeStatsTool);
+    registry.register(TodoTool);
 }

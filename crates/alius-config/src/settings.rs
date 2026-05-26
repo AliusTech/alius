@@ -6,21 +6,11 @@ use std::path::PathBuf;
 use alius_protocol::{ProviderType, SoulRole};
 
 /// Main settings structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub llm: LlmSettings,
     pub agent: AgentSettings,
     pub soul: SoulSettings,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            llm: LlmSettings::default(),
-            agent: AgentSettings::default(),
-            soul: SoulSettings::default(),
-        }
-    }
 }
 
 /// LLM configuration
@@ -88,17 +78,9 @@ impl Default for AgentSettings {
 }
 
 /// Soul configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SoulSettings {
     pub role: SoulRole,
-}
-
-impl Default for SoulSettings {
-    fn default() -> Self {
-        Self {
-            role: SoulRole::default(),
-        }
-    }
 }
 
 /// Configuration file paths

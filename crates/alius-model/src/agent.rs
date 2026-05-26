@@ -20,6 +20,7 @@ pub struct ModelResponse {
 pub struct AliusAgent {
     client: Arc<LlmClient>,
     registry: Arc<ToolRegistry>,
+    #[allow(dead_code)]
     settings: Settings,
     max_tool_calls: usize,
     auto_confirm: bool,

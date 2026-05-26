@@ -90,10 +90,10 @@ impl AliusTool for EditFileTool {
 
         // Validate path is within workspace
         let canonical_path = full_path.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if !canonical_path.starts_with(&canonical_workspace) {
             return Err(AliusError::Agent(
@@ -104,7 +104,7 @@ impl AliusTool for EditFileTool {
         // Read file content
         let content = tokio::fs::read_to_string(&full_path)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         // Check if old_string exists
         if !content.contains(old_string) {
@@ -159,7 +159,7 @@ impl AliusTool for EditFileTool {
         // Write modified content
         tokio::fs::write(&full_path, new_content)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         Ok(ToolResult::success(format!("File edited: {}", path)))
     }

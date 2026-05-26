@@ -1,12 +1,12 @@
 //! CLI entrypoint
 
 use anyhow::Result;
-use clap::Parser;
 
-use alius_cli::{Cli, Command, ConfigCommand};
+use alius::{Cli, Command, ConfigCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
+use clap::Parser;
 
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();

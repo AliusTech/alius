@@ -65,12 +65,12 @@ impl AliusTool for CreateDirTool {
 
         // Validate path is within workspace (for parent if exists)
         let canonical_workspace = ctx.workspace.canonicalize()
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         if let Some(parent) = full_path.parent() {
             if parent.exists() {
                 let canonical_parent = parent.canonicalize()
-                    .map_err(|e| AliusError::Io(e))?;
+                    .map_err(AliusError::Io)?;
 
                 if !canonical_parent.starts_with(&canonical_workspace) {
                     return Err(AliusError::Agent(
@@ -83,7 +83,7 @@ impl AliusTool for CreateDirTool {
         // Create directory
         tokio::fs::create_dir_all(&full_path)
             .await
-            .map_err(|e| AliusError::Io(e))?;
+            .map_err(AliusError::Io)?;
 
         Ok(ToolResult::success(format!("Created directory: {}", path)))
     }
