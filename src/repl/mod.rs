@@ -1,7 +1,7 @@
-use crate::config::{Settings, SOUL_ROLES};
+use crate::config::{Settings, SOUL_ROLES, PROVIDERS};
 use crate::error::{AliusError, Result};
 use crate::llm::client::LlmClient;
-use inquire::Select as InquireSelect;
+use inquire::{Select as InquireSelect, Text, Password};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
@@ -19,7 +19,7 @@ const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_RESET: &str = "\x1b[0m";
 
-const AVAILABLE_MODELS: &[&str] = &[
+const DEFAULT_MODELS: &[&str] = &[
     "gpt-4o",
     "gpt-4o-mini",
     "gpt-4-turbo",
@@ -33,7 +33,9 @@ const AVAILABLE_MODELS: &[&str] = &[
 
 const COMMANDS: &[&str] = &["/model", "/soul", "/config", "/help", "/quit", "/exit"];
 
-struct ReplCompleter;
+struct ReplCompleter {
+    models: Vec<String>,
+}
 
 impl Completer for ReplCompleter {
     type Candidate = Pair;
@@ -54,12 +56,12 @@ impl Completer for ReplCompleter {
                 .collect()
         } else if is_after_command(line_to_pos, "/model") {
             // Model completion after /model
-            AVAILABLE_MODELS
+            self.models
                 .iter()
                 .filter(|m| m.starts_with(word))
                 .map(|m| Pair {
-                    display: m.to_string(),
-                    replacement: m.to_string(),
+                    display: m.clone(),
+                    replacement: m.clone(),
                 })
                 .collect()
         } else if is_after_command(line_to_pos, "/soul") {
@@ -147,6 +149,7 @@ impl Validator for ReplHelper {
 pub struct ReplSession {
     settings: Arc<RwLock<Settings>>,
     client: Option<LlmClient>,
+    models: Vec<String>,
 }
 
 impl ReplSession {
@@ -154,10 +157,23 @@ impl ReplSession {
         Self {
             settings: Arc::new(RwLock::new(settings)),
             client: None,
+            models: DEFAULT_MODELS.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        // Check if soul is configured, if not prompt for selection
+        {
+            let settings = self.settings.read().await;
+            if settings.soul.is_none() {
+                drop(settings); // Release lock before prompting
+                self.select_soul().await?;
+            }
+        }
+
+        // Try to fetch models from server
+        self.fetch_models().await;
+
         let config = Config::builder()
             .completion_type(rustyline::CompletionType::List)
             .build();
@@ -166,7 +182,7 @@ impl ReplSession {
             .map_err(|e| AliusError::Repl(e.to_string()))?;
 
         let helper = ReplHelper {
-            completer: ReplCompleter,
+            completer: ReplCompleter { models: self.models.clone() },
             hinter: HistoryHinter::new(),
             highlighter: MatchingBracketHighlighter::new(),
             validator: MatchingBracketValidator::new(),
@@ -174,8 +190,13 @@ impl ReplSession {
         rl.set_helper(Some(helper));
 
         loop {
-            let model_name = self.settings.read().await.llm.model.clone();
-            let prompt = format!("{}{}{}> ", ANSI_BOLD, model_name, ANSI_RESET);
+            let (role, model) = {
+                let settings = self.settings.read().await;
+                let role = settings.soul.as_ref().map(|s| s.role.clone()).unwrap_or_else(|| "User".to_string());
+                let model = settings.llm.model.clone();
+                (role, model)
+            };
+            let prompt = format!("{}{} ({})> {}", ANSI_BOLD, role, model, ANSI_RESET);
 
             let input = rl.readline(&prompt);
 
@@ -205,6 +226,41 @@ impl ReplSession {
         Ok(())
     }
 
+    async fn fetch_models(&mut self) {
+        let settings = self.settings.read().await.clone();
+
+        match LlmClient::for_model_list(&settings) {
+            Ok(client) => {
+                match client.list_models().await {
+                    Ok(models) => {
+                        if !models.is_empty() {
+                            // Filter out non-chat models and sort
+                            let chat_models: Vec<String> = models
+                                .into_iter()
+                                .filter(|m| {
+                                    m.contains("gpt") ||
+                                    m.contains("claude") ||
+                                    m.contains("gemini") ||
+                                    m.contains("chat")
+                                })
+                                .collect();
+                            if !chat_models.is_empty() {
+                                self.models = chat_models;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}Warning: Could not fetch models from server: {}{}", ANSI_YELLOW, e, ANSI_RESET);
+                        eprintln!("{}Using default model list.{}", ANSI_YELLOW, ANSI_RESET);
+                    }
+                }
+            }
+            Err(_) => {
+                // API key not configured, use defaults
+            }
+        }
+    }
+
     async fn handle_command(&mut self, input: &str) -> Result<bool> {
         let trimmed = input.trim();
 
@@ -216,14 +272,14 @@ impl ReplSession {
         // Handle inline model command: /model <model_name>
         if let Some(model_arg) = trimmed.strip_prefix("/model ") {
             let model = model_arg.trim();
-            if AVAILABLE_MODELS.contains(&model) {
+            if self.models.contains(&model.to_string()) {
                 self.set_model(model).await;
             } else {
                 println!(
                     "{}Unknown model: {}{}",
                     ANSI_YELLOW, model, ANSI_RESET
                 );
-                println!("Available models: {}", AVAILABLE_MODELS.join(", "));
+                println!("Available models: {}", self.models.join(", "));
             }
             return Ok(false);
         }
@@ -247,7 +303,7 @@ impl ReplSession {
         match trimmed {
             "/model" => self.select_model().await?,
             "/soul" => self.select_soul().await?,
-            "/config" => self.show_config().await?,
+            "/config" => self.config_panel().await?,
             "/help" => self.show_help(),
             cmd if cmd.starts_with('/') => {
                 println!(
@@ -280,18 +336,18 @@ impl ReplSession {
     async fn select_model(&mut self) -> Result<()> {
         let current_model = self.settings.read().await.llm.model.clone();
 
-        let default_index = AVAILABLE_MODELS
+        let default_index = self.models
             .iter()
             .position(|m| m == &current_model)
             .unwrap_or(0);
 
-        let selection = InquireSelect::new("Select a model:", AVAILABLE_MODELS.to_vec())
+        let selection = InquireSelect::new("Select a model:", self.models.clone())
             .with_starting_cursor(default_index)
             .prompt();
 
         match selection {
             Ok(model) => {
-                self.set_model(model).await;
+                self.set_model(&model).await;
             }
             Err(_) => {
                 println!("{}Model selection cancelled{}", ANSI_YELLOW, ANSI_RESET);
@@ -332,15 +388,100 @@ impl ReplSession {
         Ok(())
     }
 
+    async fn config_panel(&mut self) -> Result<()> {
+        println!();
+        println!("{}Configuration Panel{}", ANSI_BOLD, ANSI_RESET);
+        println!();
+
+        loop {
+            let settings = self.settings.read().await;
+            println!("{}Current Settings:{}", ANSI_CYAN, ANSI_RESET);
+            println!("  1. Provider:  {}", settings.llm.provider);
+            println!("  2. Base URL:  {}", settings.effective_base_url());
+            println!("  3. API Key:   {}", if settings.llm.api_key.is_some() { "***configured***" } else { "not set" });
+            println!("  4. Model:     {}", settings.llm.model);
+            println!("  5. Role:      {}", settings.soul.as_ref().map(|s| s.role.as_str()).unwrap_or("not set"));
+            println!("  6. Save & Exit");
+            println!("  7. Cancel");
+            println!();
+
+            drop(settings);
+
+            let choice: Result<String> = Text::new("Select option (1-7):")
+                .prompt()
+                .map_err(|e| AliusError::Repl(e.to_string()));
+
+            let choice = choice?;
+
+            match choice.as_str() {
+                "1" => {
+                    let provider = InquireSelect::new("Select provider:", PROVIDERS.to_vec())
+                        .prompt()
+                        .map_err(|e| AliusError::Repl(e.to_string()))?;
+                    let mut settings = self.settings.write().await;
+                    settings.llm.provider = provider.to_string();
+                    // Reset base_url to use default for new provider
+                    settings.llm.base_url = None;
+                }
+                "2" => {
+                    let current = self.settings.read().await.effective_base_url();
+                    let base_url: String = Text::new("Enter base URL:")
+                        .with_default(&current)
+                        .prompt()
+                        .map_err(|e| AliusError::Repl(e.to_string()))?;
+                    let mut settings = self.settings.write().await;
+                    settings.llm.base_url = Some(base_url);
+                }
+                "3" => {
+                    let api_key = Password::new("Enter API key:")
+                        .without_confirmation()
+                        .prompt()
+                        .map_err(|e| AliusError::Repl(e.to_string()))?;
+                    let mut settings = self.settings.write().await;
+                    settings.llm.api_key = Some(api_key);
+                    self.client = None;
+                }
+                "4" => {
+                    drop(self.select_model().await);
+                }
+                "5" => {
+                    drop(self.select_soul().await);
+                }
+                "6" => {
+                    let settings = self.settings.read().await.clone();
+                    settings.save_to_user_config()?;
+                    println!("{}Configuration saved!{}", ANSI_GREEN, ANSI_RESET);
+                    // Refresh models with new config
+                    self.fetch_models().await;
+                    break;
+                }
+                "7" => {
+                    println!("{}Configuration cancelled{}", ANSI_YELLOW, ANSI_RESET);
+                    break;
+                }
+                _ => {
+                    println!("{}Invalid option{}", ANSI_YELLOW, ANSI_RESET);
+                }
+            }
+            println!();
+        }
+
+        Ok(())
+    }
+
     async fn show_config(&self) -> Result<()> {
         let settings = self.settings.read().await;
         println!();
         println!("{}Current Configuration:{}", ANSI_BOLD, ANSI_RESET);
-        println!("  Model:    {}", settings.llm.model);
         println!("  Provider: {}", settings.llm.provider);
-        println!("  API Key:  {}", settings.llm.api_key_env);
-        if let Some(base_url) = &settings.llm.base_url {
-            println!("  Base URL: {}", base_url);
+        println!("  Base URL: {}", settings.effective_base_url());
+        println!("  Model:    {}", settings.llm.model);
+        if settings.llm.api_key.is_some() {
+            println!("  API Key:  ***configured***");
+        } else {
+            println!("  API Key:  {} (env: {})",
+                if std::env::var(&settings.llm.api_key_env).is_ok() { "***from env***" } else { "not set" },
+                settings.llm.api_key_env);
         }
         if let Some(soul) = &settings.soul {
             println!("  Role:     {}", soul.role);
@@ -360,7 +501,7 @@ impl ReplSession {
             "  {}/soul{}     - Select role (or use: /soul \"<role>\")",
             ANSI_GREEN, ANSI_RESET
         );
-        println!("  {}/config{}   - Display current configuration", ANSI_GREEN, ANSI_RESET);
+        println!("  {}/config{}   - Open configuration panel", ANSI_GREEN, ANSI_RESET);
         println!("  {}/help{}     - Show this help message", ANSI_GREEN, ANSI_RESET);
         println!("  {}/quit{}     - Exit the REPL", ANSI_GREEN, ANSI_RESET);
         println!();

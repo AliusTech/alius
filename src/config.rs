@@ -28,10 +28,20 @@ pub const SOUL_ROLES: &[&str] = &[
 pub struct LlmSettings {
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub api_key_env: String,
     #[serde(default)]
     pub base_url: Option<String>,
 }
+
+pub const PROVIDERS: &[&str] = &["openai", "anthropic", "google"];
+
+pub const DEFAULT_BASE_URLS: &[(&str, &str)] = &[
+    ("openai", "https://api.openai.com/v1"),
+    ("anthropic", "https://api.anthropic.com/v1"),
+    ("google", "https://generativelanguage.googleapis.com/v1"),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSettings {
@@ -115,11 +125,36 @@ impl Settings {
     }
 
     pub fn api_key(&self) -> Result<String> {
+        // First try direct api_key, then fall back to env var
+        if let Some(key) = &self.llm.api_key {
+            if !key.is_empty() {
+                return Ok(key.clone());
+            }
+        }
         std::env::var(&self.llm.api_key_env).map_err(|_| {
             AliusError::MissingConfig(format!(
-                "Environment variable {} not set",
+                "API key not set. Set {} env var or configure in /config",
                 self.llm.api_key_env
             ))
         })
+    }
+
+    pub fn base_url(&self) -> String {
+        if let Some(url) = &self.llm.base_url {
+            if !url.is_empty() {
+                return url.clone();
+            }
+        }
+        // Get default base URL for provider
+        for (provider, url) in DEFAULT_BASE_URLS {
+            if self.llm.provider == *provider {
+                return url.to_string();
+            }
+        }
+        DEFAULT_BASE_URLS[0].1.to_string() // Default to OpenAI
+    }
+
+    pub fn effective_base_url(&self) -> String {
+        self.base_url()
     }
 }
