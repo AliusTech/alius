@@ -15,6 +15,7 @@ mod git_diff;
 mod http_request;
 mod code_stats;
 mod todo;
+mod json;
 
 pub use read_file::ReadFileTool;
 pub use list_dir::ListDirTool;
@@ -31,6 +32,7 @@ pub use git_diff::GitDiffTool;
 pub use http_request::HttpRequestTool;
 pub use code_stats::CodeStatsTool;
 pub use todo::TodoTool;
+pub use json::JsonTool;
 
 use crate::ToolRegistry;
 
@@ -51,4 +53,5 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(HttpRequestTool);
     registry.register(CodeStatsTool);
     registry.register(TodoTool);
+    registry.register(JsonTool);
 }
