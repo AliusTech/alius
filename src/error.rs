@@ -19,6 +19,9 @@ pub enum AliusError {
 
     #[error("Agent execution error: {0}")]
     Agent(String),
+
+    #[error("REPL error: {0}")]
+    Repl(String),
 }
 
 pub type Result<T> = std::result::Result<T, AliusError>;
