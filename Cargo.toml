@@ -1,0 +1,40 @@
+[package]
+name = "alius"
+version = "0.1.0"
+edition = "2021"
+description = "LLM Agent CLI Tool"
+authors = ["WeiXuG"]
+license = "MIT"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# LLM
+async-openai = "0.20"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Config
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error
+anyhow = "1"
+thiserror = "1"
+
+# Terminal
+terminal_size = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

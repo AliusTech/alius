@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            artifact: alius-linux-x64
+            binary: alius
+          - os: macos-latest
+            target: x86_64-darwin
+            artifact: alius-macos-x64
+            binary: alius
+            rust_target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-darwin
+            artifact: alius-macos-arm64
+            binary: alius
+            rust_target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-windows
+            artifact: alius-windows-x64
+            binary: alius.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (default)
+        if: ${{ matrix.rust_target == '' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust (cross compile)
+        if: ${{ matrix.rust_target != '' }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build (default)
+        if: ${{ matrix.rust_target == '' }}
+        run: cargo build --release
+
+      - name: Build (cross compile)
+        if: ${{ matrix.rust_target != '' }}
+        run: cargo build --release --target ${{ matrix.rust_target }}
+
+      - name: Prepare artifact (Unix)
+        if: ${{ matrix.os != 'windows-latest' && matrix.rust_target == '' }}
+        run: |
+          cd target/release
+          tar -czvf ../../../${{ matrix.artifact }}.tar.gz ${{ matrix.binary }}
+          cd ../../../
+
+      - name: Prepare artifact (Unix cross)
+        if: ${{ matrix.os != 'windows-latest' && matrix.rust_target != '' }}
+        run: |
+          cd target/${{ matrix.rust_target }}/release
+          tar -czvf ../../../${{ matrix.artifact }}.tar.gz ${{ matrix.binary }}
+          cd ../../../
+
+      - name: Prepare artifact (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          cd target/release
+          7z a ../../../${{ matrix.artifact }}.zip ${{ matrix.binary }}
+          cd ../../../
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Alius v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/alius-linux-x64/alius-linux-x64.tar.gz
+            artifacts/alius-macos-x64/alius-macos-x64.tar.gz
+            artifacts/alius-macos-arm64/alius-macos-arm64.tar.gz
+            artifacts/alius-windows-x64/alius-windows-x64.zip
