@@ -9,15 +9,20 @@ use async_openai::{
         ChatCompletionRequestUserMessageArgs,
         ChatCompletionRequestAssistantMessageArgs,
         ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestToolMessageArgs,
+        ChatCompletionToolArgs,
+        ChatCompletionToolType,
+        FunctionObjectArgs,
     },
 };
 use futures::Stream;
 use anyhow::Result;
+use serde_json::Value as JsonValue;
 
 use alius_config::LlmSettings;
 use alius_protocol::MessageRole;
 
-use crate::{ChatEvent, Conversation};
+use crate::{ChatEvent, Conversation, ToolCall};
 
 /// LLM client with streaming support
 pub struct LlmClient {
@@ -172,5 +177,148 @@ impl LlmClient {
             .map(|m| m.id)
             .collect();
         Ok(model_ids)
+    }
+
+    /// Stream a chat completion with tools
+    pub async fn chat_stream_with_tools(
+        &self,
+        conversation: &Conversation,
+        tools: Vec<JsonValue>,
+    ) -> Result<(impl Stream<Item = Result<ChatEvent>>, Option<Vec<ToolCall>>)> {
+        let messages = self.build_messages(conversation);
+
+        // Build tool definitions
+        let openai_tools: Vec<_> = tools
+            .into_iter()
+            .filter_map(|t| {
+                let name = t["function"]["name"].as_str()?.to_string();
+                let description = t["function"]["description"].as_str()?;
+                let parameters = t["function"]["parameters"].clone();
+
+                Some(ChatCompletionToolArgs::default()
+                    .r#type(ChatCompletionToolType::Function)
+                    .function(FunctionObjectArgs::default()
+                        .name(name)
+                        .description(description)
+                        .parameters(parameters)
+                        .build()
+                        .ok()?
+                    )
+                    .build()
+                    .ok()?
+                )
+            })
+            .collect();
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.config.model)
+            .messages(messages)
+            .tools(openai_tools)
+            .stream(false) // Tools need non-streaming for now
+            .build()?;
+
+        // Use non-streaming for tool support
+        let response = self.inner.chat().create(request).await?;
+
+        let choice = response.choices.first().ok_or_else(|| {
+            anyhow::anyhow!("No response choices")
+        })?;
+
+        // Check for tool calls
+        let tool_calls = choice.message.tool_calls.as_ref().map(|calls| {
+            calls.iter().map(|tc| {
+                ToolCall::new(
+                    tc.id.clone(),
+                    tc.function.name.clone(),
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(JsonValue::Null),
+                )
+            }).collect()
+        });
+
+        // Create a synthetic stream for the text response
+        let text = choice.message.content.clone().unwrap_or_default();
+        let events: Vec<Result<ChatEvent>> = if text.is_empty() && tool_calls.is_none() {
+            vec![Ok(ChatEvent::Done { full_response: String::new() })]
+        } else {
+            vec![Ok(ChatEvent::Delta { text: text.clone() }), Ok(ChatEvent::Done { full_response: text })]
+        };
+
+        Ok((futures::stream::iter(events), tool_calls))
+    }
+
+    /// Send tool results back to the model
+    pub async fn continue_with_tool_results(
+        &self,
+        conversation: &Conversation,
+        tool_results: Vec<(String, String, String)>, // (tool_call_id, tool_name, result)
+        tools: Vec<JsonValue>,
+    ) -> Result<(impl Stream<Item = Result<ChatEvent>>, Option<Vec<ToolCall>>)> {
+        let mut messages = self.build_messages(conversation);
+
+        // Add tool result messages
+        for (call_id, _tool_name, result) in tool_results {
+            messages.push(
+                ChatCompletionRequestToolMessageArgs::default()
+                    .tool_call_id(call_id)
+                    .content(result)
+                    .build()?
+                    .into()
+            );
+        }
+
+        // Build tool definitions
+        let openai_tools: Vec<_> = tools
+            .into_iter()
+            .filter_map(|t| {
+                let name = t["function"]["name"].as_str()?.to_string();
+                let description = t["function"]["description"].as_str()?;
+                let parameters = t["function"]["parameters"].clone();
+
+                Some(ChatCompletionToolArgs::default()
+                    .r#type(ChatCompletionToolType::Function)
+                    .function(FunctionObjectArgs::default()
+                        .name(name)
+                        .description(description)
+                        .parameters(parameters)
+                        .build()
+                        .ok()?
+                    )
+                    .build()
+                    .ok()?
+                )
+            })
+            .collect();
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.config.model)
+            .messages(messages)
+            .tools(openai_tools)
+            .stream(false)
+            .build()?;
+
+        let response = self.inner.chat().create(request).await?;
+
+        let choice = response.choices.first().ok_or_else(|| {
+            anyhow::anyhow!("No response choices")
+        })?;
+
+        let tool_calls = choice.message.tool_calls.as_ref().map(|calls| {
+            calls.iter().map(|tc| {
+                ToolCall::new(
+                    tc.id.clone(),
+                    tc.function.name.clone(),
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(JsonValue::Null),
+                )
+            }).collect()
+        });
+
+        let text = choice.message.content.clone().unwrap_or_default();
+        let events: Vec<Result<ChatEvent>> = if text.is_empty() && tool_calls.is_none() {
+            vec![Ok(ChatEvent::Done { full_response: String::new() })]
+        } else {
+            vec![Ok(ChatEvent::Delta { text: text.clone() }), Ok(ChatEvent::Done { full_response: text })]
+        };
+
+        Ok((futures::stream::iter(events), tool_calls))
     }
 }
