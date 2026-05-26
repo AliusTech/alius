@@ -1,43 +1,61 @@
 //! Interactive REPL
 
 use anyhow::Result;
-use futures::StreamExt;
-use std::io::Write;
 use std::sync::Arc;
+use std::io::Write;
 
 use alius_config::{Settings, system_prompt_for_role};
-use alius_model::{LlmClient, Conversation, ChatEvent};
+use alius_model::{LlmClient, Conversation, AliusAgent, AgentEvent};
+use alius_tools::{ToolRegistry, register_builtin_tools};
 use alius_store::{SessionStore, ConversationStore};
 use alius_protocol::SessionMetadata;
 
 /// REPL session
 pub struct ReplSession {
     settings: Arc<std::sync::RwLock<Settings>>,
-    client: Option<LlmClient>,
+    client: Option<Arc<LlmClient>>,
+    agent: Option<AliusAgent>,
     conversation: Conversation,
+    registry: Arc<ToolRegistry>,
     session_metadata: SessionMetadata,
     session_store: SessionStore,
     conversation_store: ConversationStore,
+    workspace: std::path::PathBuf,
 }
 
 impl ReplSession {
     /// Create a new REPL session
     pub fn new(settings: Settings) -> Result<Self> {
-        let client = LlmClient::new(settings.llm.clone()).ok();
+        let client = LlmClient::new(settings.llm.clone()).ok().map(Arc::new);
+
+        // Create tool registry with built-in tools
+        let mut registry = ToolRegistry::new();
+        register_builtin_tools(&mut registry);
+        let registry = Arc::new(registry);
+
+        // Create agent if client is available
+        let agent = client.as_ref().map(|c| {
+            AliusAgent::new(c.clone(), registry.clone(), settings.clone())
+        });
+
         let system_prompt = system_prompt_for_role(&settings.soul.role);
         let conversation = Conversation::new(Some(system_prompt));
 
         let session_metadata = SessionMetadata::new(settings.llm.model.clone());
         let session_store = SessionStore::new()?;
         let conversation_store = ConversationStore::new()?;
+        let workspace = std::env::current_dir()?;
 
         Ok(Self {
             settings: Arc::new(std::sync::RwLock::new(settings)),
             client,
+            agent,
             conversation,
+            registry,
             session_metadata,
             session_store,
             conversation_store,
+            workspace,
         })
     }
 
@@ -58,33 +76,59 @@ impl ReplSession {
             return self.handle_command(input);
         }
 
-        // Regular chat
-        if let Some(client) = &self.client {
-            self.conversation.add_user_message(input.to_string());
+        // Regular chat with agent
+        if let Some(agent) = &self.agent {
+            let events = agent.handle_message(
+                &mut self.conversation,
+                input.to_string(),
+                self.workspace.clone(),
+                self.session_metadata.id.to_string()
+            ).await;
 
-            let stream = client.chat_stream(&self.conversation).await?;
-            let mut stream = Box::pin(stream);
-
+            // Process and display events
             let mut stdout = std::io::stdout();
             let mut full_response = String::new();
 
-            while let Some(event) = stream.next().await {
-                match event? {
-                    ChatEvent::Delta { text } => {
+            for event in events {
+                match event {
+                    AgentEvent::TurnStarted => {
+                        // Silent
+                    }
+                    AgentEvent::ModelStarted => {
+                        // Silent
+                    }
+                    AgentEvent::ModelDelta { text } => {
                         stdout.write_all(text.as_bytes())?;
                         stdout.flush()?;
                         full_response.push_str(&text);
                     }
-                    ChatEvent::Done { .. } => break,
-                    ChatEvent::Error { message } => {
+                    AgentEvent::ModelFinished { .. } => {
+                        println!();
+                    }
+                    AgentEvent::ToolCallStarted { id, name, args } => {
+                        println!("\n🔧 Tool: {} ({})", name, id);
+                        if !args.is_null() {
+                            println!("   Args: {}", serde_json::to_string_pretty(&args).unwrap_or_default());
+                        }
+                    }
+                    AgentEvent::ToolCallFinished { name, success, result, .. } => {
+                        let status = if success { "✅" } else { "❌" };
+                        println!("{} {} done", status, name);
+                        if result.len() > 200 {
+                            println!("   Result: {}...", &result[..200]);
+                        } else {
+                            println!("   Result: {}", result);
+                        }
+                    }
+                    AgentEvent::TurnFinished => {
+                        // Silent
+                    }
+                    AgentEvent::Error { message } => {
+                        println!("\n❌ Error: {}", message);
                         return Err(anyhow::anyhow!("Error: {}", message));
                     }
                 }
             }
-
-            println!();
-
-            self.conversation.add_assistant_message(full_response.clone());
 
             // Save conversation
             self.conversation_store.save_messages(
@@ -95,7 +139,7 @@ impl ReplSession {
             return Ok(full_response);
         }
 
-        Err(anyhow::anyhow!("No LLM client available"))
+        Err(anyhow::anyhow!("No agent available"))
     }
 
     /// Handle slash command
@@ -108,7 +152,10 @@ impl ReplSession {
                 if parts.len() > 1 {
                     let model = parts[1];
                     self.settings.write().unwrap().llm.model = model.to_string();
-                    self.client = LlmClient::new(self.settings.read().unwrap().llm.clone()).ok();
+                    self.client = LlmClient::new(self.settings.read().unwrap().llm.clone()).ok().map(Arc::new);
+                    self.agent = self.client.as_ref().map(|c| {
+                        AliusAgent::new(c.clone(), self.registry.clone(), self.settings.read().unwrap().clone())
+                    });
                     Ok(format!("Model switched to: {}", model))
                 } else {
                     Ok("Use: /model <name>".to_string())
@@ -124,6 +171,10 @@ impl ReplSession {
                 } else {
                     Ok("Use: /soul <role>".to_string())
                 }
+            }
+            "/tools" => {
+                let tools = self.registry.list_names();
+                Ok(format!("Available tools: {}", tools.join(", ")))
             }
             "/clear" => {
                 self.conversation.clear();
@@ -150,10 +201,10 @@ pub async fn run_repl(settings: Settings) -> Result<()> {
     crate::ui::show_welcome(&session.model(), "openai");
 
     let mut rl = rustyline::Editor::<(), rustyline::history::DefaultHistory>::new()?;
-
-    let prompt = format!("{} ({})> ", session.soul(), session.model());
+    rl.set_helper(Some(()));
 
     loop {
+        let prompt = format!("{} ({})> ", session.soul(), session.model());
         let readline = rl.readline(&prompt);
 
         match readline {

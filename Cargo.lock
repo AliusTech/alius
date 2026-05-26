@@ -49,6 +49,7 @@ dependencies = [
  "alius-model",
  "alius-protocol",
  "alius-store",
+ "alius-tools",
  "anyhow",
  "chrono",
  "dialoguer",

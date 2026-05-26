@@ -15,7 +15,7 @@ pub struct ModelResponse {
 
 /// Agent for handling user messages with tool calling
 pub struct AliusAgent {
-    client: LlmClient,
+    client: Arc<LlmClient>,
     registry: Arc<ToolRegistry>,
     settings: Settings,
     max_tool_calls: usize,
@@ -23,7 +23,7 @@ pub struct AliusAgent {
 
 impl AliusAgent {
     /// Create a new agent
-    pub fn new(client: LlmClient, registry: Arc<ToolRegistry>, settings: Settings) -> Self {
+    pub fn new(client: Arc<LlmClient>, registry: Arc<ToolRegistry>, settings: Settings) -> Self {
         Self {
             client,
             registry,
