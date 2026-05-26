@@ -5,7 +5,10 @@ use futures::StreamExt;
 
 use crate::{LlmClient, Conversation, AgentEvent, ChatEvent, ToolCall};
 use alius_config::Settings;
-use alius_tools::{ToolRegistry, ToolContext, ToolResult};
+use alius_tools::{ToolRegistry, ToolContext, ToolResult, ConfirmationRequest};
+
+/// Confirmation callback type
+pub type ConfirmationCallback = Box<dyn Fn(ConfirmationRequest) -> bool + Send + Sync>;
 
 /// Model response with optional tool calls
 pub struct ModelResponse {
@@ -19,6 +22,7 @@ pub struct AliusAgent {
     registry: Arc<ToolRegistry>,
     settings: Settings,
     max_tool_calls: usize,
+    auto_confirm: bool,
 }
 
 impl AliusAgent {
@@ -29,7 +33,14 @@ impl AliusAgent {
             registry,
             settings,
             max_tool_calls: 10, // Limit tool calls per turn
+            auto_confirm: false,
         }
+    }
+
+    /// Enable auto-confirm for all tool operations
+    pub fn with_auto_confirm(mut self, value: bool) -> Self {
+        self.auto_confirm = value;
+        self
     }
 
     /// Handle a user message with tool calling support
@@ -96,6 +107,38 @@ impl AliusAgent {
                                 name: call.name.clone(),
                                 args: call.args.clone(),
                             });
+
+                            // Check if tool requires confirmation
+                            if let Some(tool) = self.registry.get(&call.name) {
+                                if tool.requires_confirmation(&call.args) {
+                                    if let Some(req) = tool.confirmation_request(&call.args) {
+                                        events.push(AgentEvent::ToolConfirmationRequested {
+                                            id: call.id.clone(),
+                                            name: call.name.clone(),
+                                            operation: req.operation,
+                                            details: req.details,
+                                        });
+
+                                        // Auto-confirm if enabled
+                                        if self.auto_confirm {
+                                            events.push(AgentEvent::ToolConfirmed { id: call.id.clone() });
+                                        } else {
+                                            // In auto mode, we deny - REPL should handle this
+                                            events.push(AgentEvent::ToolDenied {
+                                                id: call.id.clone(),
+                                                reason: "User confirmation required".to_string(),
+                                            });
+                                            pending_tool_results.push((
+                                                call.id.clone(),
+                                                call.name.clone(),
+                                                "Tool execution denied - user confirmation required".to_string()
+                                            ));
+                                            tool_call_count += 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
 
                             // Execute tool
                             let result = self.execute_tool(&call, workspace.clone(), session_id.clone());
