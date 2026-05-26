@@ -19,3 +19,4 @@ uuid = { workspace = true }
 tracing = "0.1"
 alius-protocol = { workspace = true }
 alius-config = { workspace = true }
+alius-tools = { workspace = true }

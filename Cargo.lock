@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "alius-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alius-config",
  "alius-interactive",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "alius-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "alius-interactive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alius-config",
  "alius-model",
@@ -64,10 +64,11 @@ dependencies = [
 
 [[package]]
 name = "alius-model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alius-config",
  "alius-protocol",
+ "alius-tools",
  "anyhow",
  "async-openai",
  "chrono",
@@ -82,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "alius-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -93,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "alius-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -103,6 +104,19 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "alius-tools"
+version = "0.3.0"
+dependencies = [
+ "alius-protocol",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

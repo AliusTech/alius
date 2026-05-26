@@ -7,10 +7,11 @@ members = [
     "crates/alius-config",
     "crates/alius-protocol",
     "crates/alius-store",
+    "crates/alius-tools",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["WeiXuG"]
 license = "MIT"
@@ -42,4 +43,5 @@ alius-protocol = { path = "crates/alius-protocol" }
 alius-config = { path = "crates/alius-config" }
 alius-model = { path = "crates/alius-model" }
 alius-store = { path = "crates/alius-store" }
+alius-tools = { path = "crates/alius-tools" }
 alius-interactive = { path = "crates/alius-interactive" }
