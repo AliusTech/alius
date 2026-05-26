@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
-use std::sync::Arc;
 
 use alius_protocol::AliusError;
+use crate::PermissionLevel;
 
 /// Context for tool execution
 pub struct ToolContext {
@@ -66,6 +66,11 @@ pub trait AliusTool: Send + Sync {
 
     /// JSON schema for input parameters
     fn input_schema(&self) -> JsonValue;
+
+    /// Required permission level (default: Read)
+    fn required_permission(&self) -> PermissionLevel {
+        PermissionLevel::Read
+    }
 
     /// Execute the tool
     async fn execute(

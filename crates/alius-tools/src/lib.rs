@@ -3,7 +3,9 @@
 pub mod registry;
 pub mod traits;
 pub mod builtin;
+pub mod permission;
 
 pub use registry::*;
 pub use traits::*;
 pub use builtin::*;
+pub use permission::*;
