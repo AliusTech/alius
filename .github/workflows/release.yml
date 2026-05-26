@@ -2,11 +2,9 @@ name: Release
 
 on:
   push:
-    branches: [release]
+    tags:
+      - 'v*'
   workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -98,14 +96,17 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # Use tag name as version (remove 'v' prefix)
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Alius v${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: Alius ${{ steps.version.outputs.tag_name }}
           generate_release_notes: true
           files: |
             artifacts/alius-linux-x64/alius-linux-x64.tar.gz
