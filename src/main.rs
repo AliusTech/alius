@@ -68,6 +68,33 @@ async fn main() -> error::Result<()> {
             ConfigCommands::Validate => {
                 println!("Configuration is valid");
             }
+            ConfigCommands::Soul { role } => {
+                if let Some(r) = role {
+                    if config::SOUL_ROLES.contains(&r.as_str()) {
+                        let mut settings = settings;
+                        settings.soul = Some(config::SoulSettings { role: r.clone() });
+                        settings.save_to_user_config()?;
+                        println!("Soul role set to: {}", r);
+                    } else {
+                        println!("Invalid role. Available roles:");
+                        for r in config::SOUL_ROLES {
+                            println!("  - {}", r);
+                        }
+                    }
+                } else {
+                    let current_role = settings.soul.as_ref()
+                        .map(|s| s.role.clone())
+                        .unwrap_or_else(|| "Not set".to_string());
+                    println!("Current soul role: {}", current_role);
+                    println!();
+                    println!("Available roles:");
+                    for r in config::SOUL_ROLES {
+                        println!("  - {}", r);
+                    }
+                    println!();
+                    println!("Usage: alius config soul --role \"<role>\"");
+                }
+            }
         },
         Some(Commands::Version) => {
             println!("alius {}", env!("CARGO_PKG_VERSION"));

@@ -29,29 +29,11 @@ pub fn render_welcome(settings: &Settings) {
 
     // ASCII block logo - white color
     let logo_lines = [
-        format!("{}                  ■■■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}              ■■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}            ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}          ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}        ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}        ■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■  ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■■■■  ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■    ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}    ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}  ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}  ■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}    ■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}    ■■              ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■          ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}    ■■      ■■■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■{}", ANSI_WHITE, ANSI_RESET),
-        format!("{}      ■■■■■■■{}", ANSI_WHITE, ANSI_RESET),
+        format!("{}⢀⣀⠀⡀⠀⠀⣀⣀⡀⡀⠀⡀⢀⣀⡀{}", ANSI_WHITE, ANSI_RESET),
+        format!("{}⡎⠉⡆⡇⠀⠀⠉⡏⠁⡇⠀⡇⡎⠉⠁{}", ANSI_WHITE, ANSI_RESET),
+        format!("{}⡷⠶⡇⡇⠀⠀⠀⡇⠀⡇⠀⡇⠱⠶⡀{}", ANSI_WHITE, ANSI_RESET),
+        format!("{}⡇⠀⡇⣇⣀⡀⣀⣇⡀⢇⣀⠇⣀⣀⠇{}", ANSI_WHITE, ANSI_RESET),
+        format!("{}⠁⠀⠁⠉⠉⠁⠉⠉⠁⠈⠉⠀⠉⠉{}", ANSI_WHITE, ANSI_RESET),
     ];
 
     // Tips section - right side
@@ -62,9 +44,6 @@ pub fn render_welcome(settings: &Settings) {
         format!("  {}alius --help{}", ANSI_GREEN, ANSI_RESET),
         "".to_string(),
         format!("{}Current Config{}", ANSI_BOLD, ANSI_RESET),
-        format!("  Model: {}", settings.llm.model),
-        format!("  Provider: {}", settings.llm.provider),
-        "".to_string(),
     ];
 
     let api_key_status = if std::env::var(&settings.llm.api_key_env).is_ok() {
@@ -98,6 +77,23 @@ pub fn render_welcome(settings: &Settings) {
             ANSI_CYAN,
             pad_right(logo, left_width),
             pad_right(&tip, right_width),
+            ANSI_RESET,
+            ANSI_RESET
+        );
+    }
+
+    // Config section rows - display Model, Provider, Role
+    let config_rows = [
+        format!("  Model: {}", settings.llm.model),
+        format!("  Provider: {}", settings.llm.provider),
+        format!("  Role: {}", settings.soul.as_ref().map(|s| s.role.as_str()).unwrap_or("Not set")),
+    ];
+    for row in config_rows.iter() {
+        println!(
+            "{}│{} {}{}│{}",
+            ANSI_CYAN,
+            pad_right("", left_width),
+            pad_right(&truncate(row, right_width), right_width),
             ANSI_RESET,
             ANSI_RESET
         );

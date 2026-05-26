@@ -1,4 +1,4 @@
-use crate::config::Settings;
+use crate::config::{Settings, SOUL_ROLES};
 use crate::error::Result;
 use crate::llm::client::LlmClient;
 use dialoguer::{theme::ColorfulTheme, Input};
@@ -75,6 +75,7 @@ impl ReplSession {
         println!("{}Commands:{}",
             ANSI_YELLOW, ANSI_RESET);
         println!("  {}/model{}    - Select a model", ANSI_GREEN, ANSI_RESET);
+        println!("  {}/soul{}     - Select your role", ANSI_GREEN, ANSI_RESET);
         println!("  {}/config{}   - Show current config", ANSI_GREEN, ANSI_RESET);
         println!("  {}/help{}     - Show this help", ANSI_GREEN, ANSI_RESET);
         println!("  {}/quit{}     - Exit REPL", ANSI_GREEN, ANSI_RESET);
@@ -87,6 +88,7 @@ impl ReplSession {
         match trimmed {
             "/quit" | "/exit" => return Ok(true),
             "/model" => self.select_model().await?,
+            "/soul" => self.select_soul().await?,
             "/config" => self.show_config().await?,
             "/help" => self.show_help(),
             cmd if cmd.starts_with('/') => {
@@ -127,6 +129,34 @@ impl ReplSession {
         Ok(())
     }
 
+    async fn select_soul(&mut self) -> Result<()> {
+        let current_role = self.settings.read().await.soul.as_ref()
+            .map(|s| s.role.clone())
+            .unwrap_or_else(|| SOUL_ROLES[0].to_string());
+
+        let default_index = SOUL_ROLES
+            .iter()
+            .position(|r| r == &current_role)
+            .unwrap_or(0);
+
+        let selection = InquireSelect::new("Select your role:", SOUL_ROLES.to_vec())
+            .with_starting_cursor(default_index)
+            .prompt();
+
+        match selection {
+            Ok(role) => {
+                let mut settings = self.settings.write().await;
+                settings.soul = Some(crate::config::SoulSettings { role: role.to_string() });
+                println!("{}Role changed to: {}{}", ANSI_GREEN, role, ANSI_RESET);
+            }
+            Err(_) => {
+                println!("{}Role selection cancelled{}", ANSI_YELLOW, ANSI_RESET);
+            }
+        }
+
+        Ok(())
+    }
+
     async fn show_config(&self) -> Result<()> {
         let settings = self.settings.read().await;
         println!();
@@ -137,6 +167,9 @@ impl ReplSession {
         if let Some(base_url) = &settings.llm.base_url {
             println!("  Base URL: {}", base_url);
         }
+        if let Some(soul) = &settings.soul {
+            println!("  Role:     {}", soul.role);
+        }
         println!();
         Ok(())
     }
@@ -145,6 +178,7 @@ impl ReplSession {
         println!();
         println!("{}Available Commands:{}", ANSI_BOLD, ANSI_RESET);
         println!("  {}/model{}    - Select from available models", ANSI_GREEN, ANSI_RESET);
+        println!("  {}/soul{}     - Select your role (Frontend Engineer, Operations Personnel, Backend Developer)", ANSI_GREEN, ANSI_RESET);
         println!("  {}/config{}   - Display current configuration", ANSI_GREEN, ANSI_RESET);
         println!("  {}/help{}     - Show this help message", ANSI_GREEN, ANSI_RESET);
         println!("  {}/quit{}     - Exit the REPL", ANSI_GREEN, ANSI_RESET);

@@ -6,3 +6,6 @@ api_key_env = "OPENAI_API_KEY"
 [agent]
 max_retries = 3
 timeout_seconds = 60
+
+[soul]
+role = "Frontend Engineer"

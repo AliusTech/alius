@@ -9,7 +9,20 @@ const DEFAULT_CONFIG: &str = include_str!("../config/default.toml");
 pub struct Settings {
     pub llm: LlmSettings,
     pub agent: AgentSettings,
+    #[serde(default)]
+    pub soul: Option<SoulSettings>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoulSettings {
+    pub role: String,
+}
+
+pub const SOUL_ROLES: &[&str] = &[
+    "Frontend Engineer",
+    "Operations Personnel",
+    "Backend Developer",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmSettings {

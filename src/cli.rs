@@ -46,6 +46,12 @@ pub enum ConfigCommands {
 
     #[command(about = "Validate configuration file")]
     Validate,
+
+    #[command(about = "Display or set soul role")]
+    Soul {
+        #[arg(short, long)]
+        role: Option<String>,
+    },
 }
 
 pub fn parse() -> Cli {
