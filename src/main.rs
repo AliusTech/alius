@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod error;
 mod llm;
+mod repl;
 mod ui;
 
 use cli::{Cli, Commands, ConfigCommands};
@@ -42,7 +43,13 @@ async fn main() -> error::Result<()> {
 
     match args.command {
         None => {
-            ui::welcome::render_welcome(&settings);
+            // Default: enter REPL mode
+            let mut session = repl::ReplSession::new(settings);
+            session.run().await?;
+        }
+        Some(Commands::Repl) => {
+            let mut session = repl::ReplSession::new(settings);
+            session.run().await?;
         }
         Some(Commands::Run { prompt, model }) => {
             let mut settings = settings;

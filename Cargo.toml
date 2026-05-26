@@ -35,6 +35,8 @@ thiserror = "1"
 
 # Terminal
 terminal_size = "0.4"
+dialoguer = "0.11"
+inquire = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

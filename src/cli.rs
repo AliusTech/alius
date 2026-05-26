@@ -17,6 +17,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    #[command(about = "Start interactive REPL mode")]
+    Repl,
+
     #[command(about = "Run an agent task")]
     Run {
         #[arg(short, long)]
