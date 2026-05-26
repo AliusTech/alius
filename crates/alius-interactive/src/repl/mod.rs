@@ -21,6 +21,7 @@ pub struct ReplSession {
     session_store: SessionStore,
     conversation_store: ConversationStore,
     workspace: std::path::PathBuf,
+    auto_confirm: bool,
 }
 
 impl ReplSession {
@@ -36,6 +37,7 @@ impl ReplSession {
         // Create agent if client is available
         let agent = client.as_ref().map(|c| {
             AliusAgent::new(c.clone(), registry.clone(), settings.clone())
+                .with_auto_confirm(true) // Default to auto-confirm
         });
 
         let system_prompt = system_prompt_for_role(&settings.soul.role);
@@ -56,6 +58,7 @@ impl ReplSession {
             session_store,
             conversation_store,
             workspace,
+            auto_confirm: true,
         })
     }
 
@@ -115,7 +118,22 @@ impl ReplSession {
                         println!("\n⚠️  Confirmation required for {} ({})", name, id);
                         println!("   Operation: {}", operation);
                         println!("   {}", details);
-                        println!("   [Auto-approved in current mode]");
+
+                        if self.auto_confirm {
+                            println!("   [Auto-approved]");
+                        } else {
+                            // Interactive confirmation
+                            let confirm = dialoguer::Confirm::new()
+                                .with_prompt("Proceed?")
+                                .default(false)
+                                .interact()?;
+
+                            if !confirm {
+                                println!("   ❌ Denied by user");
+                                return Err(anyhow::anyhow!("Tool denied by user"));
+                            }
+                            println!("   ✅ Approved by user");
+                        }
                     }
                     AgentEvent::ToolConfirmed { id } => {
                         println!("✅ Confirmed: {}", id);
@@ -167,10 +185,38 @@ impl ReplSession {
                     self.client = LlmClient::new(self.settings.read().unwrap().llm.clone()).ok().map(Arc::new);
                     self.agent = self.client.as_ref().map(|c| {
                         AliusAgent::new(c.clone(), self.registry.clone(), self.settings.read().unwrap().clone())
+                            .with_auto_confirm(self.auto_confirm)
                     });
                     Ok(format!("Model switched to: {}", model))
                 } else {
                     Ok("Use: /model <name>".to_string())
+                }
+            }
+            "/confirm" => {
+                if parts.len() > 1 {
+                    let mode = parts[1];
+                    match mode {
+                        "on" | "yes" | "true" => {
+                            self.auto_confirm = true;
+                            self.agent = self.client.as_ref().map(|c| {
+                                AliusAgent::new(c.clone(), self.registry.clone(), self.settings.read().unwrap().clone())
+                                    .with_auto_confirm(true)
+                            });
+                            Ok("Auto-confirm enabled".to_string())
+                        }
+                        "off" | "no" | "false" => {
+                            self.auto_confirm = false;
+                            self.agent = self.client.as_ref().map(|c| {
+                                AliusAgent::new(c.clone(), self.registry.clone(), self.settings.read().unwrap().clone())
+                                    .with_auto_confirm(false)
+                            });
+                            Ok("Interactive confirmation enabled".to_string())
+                        }
+                        _ => Ok("Use: /confirm on|off".to_string())
+                    }
+                } else {
+                    let status = if self.auto_confirm { "on" } else { "off" };
+                    Ok(format!("Confirm mode: {} (use /confirm on|off)", status))
                 }
             }
             "/soul" => {
