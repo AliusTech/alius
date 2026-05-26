@@ -12,6 +12,7 @@ mod delete_file;
 mod create_dir;
 mod git_status;
 mod git_diff;
+mod http_request;
 
 pub use read_file::ReadFileTool;
 pub use list_dir::ListDirTool;
@@ -25,6 +26,7 @@ pub use delete_file::DeleteFileTool;
 pub use create_dir::CreateDirTool;
 pub use git_status::GitStatusTool;
 pub use git_diff::GitDiffTool;
+pub use http_request::HttpRequestTool;
 
 use crate::ToolRegistry;
 
@@ -42,4 +44,5 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(CreateDirTool);
     registry.register(GitStatusTool);
     registry.register(GitDiffTool);
+    registry.register(HttpRequestTool);
 }
