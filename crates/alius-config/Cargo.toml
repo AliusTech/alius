@@ -1,0 +1,16 @@
+[package]
+name = "alius-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Configuration management for Alius"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+config = "0.14"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+alius-protocol = { workspace = true }

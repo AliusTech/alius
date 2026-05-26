@@ -1,0 +1,19 @@
+[package]
+name = "alius-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI entrypoint for Alius"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+
+# Internal crates
+alius-protocol = { workspace = true }
+alius-config = { workspace = true }
+alius-model = { workspace = true }
+alius-store = { workspace = true }
+alius-interactive = { workspace = true }

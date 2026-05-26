@@ -15,6 +15,7 @@ jobs:
             target: x86_64-linux
             artifact: alius-linux-x64
             binary: alius
+            rust_target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: x86_64-darwin
             artifact: alius-macos-x64
@@ -44,6 +45,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - name: Install musl tools (Linux)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: sudo apt-get install -y musl-tools
 
       - name: Build (default)
         if: ${{ matrix.rust_target == '' }}

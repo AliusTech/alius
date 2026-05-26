@@ -1,0 +1,28 @@
+[package]
+name = "alius-interactive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Interactive REPL for Alius"
+
+[dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# Terminal
+rustyline = { version = "14", features = ["derive"] }
+dialoguer = "0.11"
+inquire = "0.7"
+terminal_size = "0.4"
+
+# Internal crates
+alius-protocol = { workspace = true }
+alius-config = { workspace = true }
+alius-model = { workspace = true }
+alius-store = { workspace = true }
