@@ -55,6 +55,13 @@ impl ToolResult {
     }
 }
 
+/// Confirmation request for destructive operations
+pub struct ConfirmationRequest {
+    pub tool_name: String,
+    pub operation: String,
+    pub details: String,
+}
+
 /// Alius tool trait
 #[async_trait]
 pub trait AliusTool: Send + Sync {
@@ -70,6 +77,24 @@ pub trait AliusTool: Send + Sync {
     /// Required permission level (default: Read)
     fn required_permission(&self) -> PermissionLevel {
         PermissionLevel::Read
+    }
+
+    /// Whether this operation requires user confirmation
+    fn requires_confirmation(&self, _args: &JsonValue) -> bool {
+        false
+    }
+
+    /// Get confirmation request details
+    fn confirmation_request(&self, args: &JsonValue) -> Option<ConfirmationRequest> {
+        if self.requires_confirmation(args) {
+            Some(ConfirmationRequest {
+                tool_name: self.name().to_string(),
+                operation: self.name().to_string(),
+                details: serde_json::to_string_pretty(args).unwrap_or_default(),
+            })
+        } else {
+            None
+        }
     }
 
     /// Execute the tool

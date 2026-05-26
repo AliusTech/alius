@@ -24,6 +24,20 @@ pub enum AgentEvent {
         args: JsonValue,
     },
 
+    /// Tool requires user confirmation
+    ToolConfirmationRequested {
+        id: String,
+        name: String,
+        operation: String,
+        details: String,
+    },
+
+    /// User confirmed tool execution
+    ToolConfirmed { id: String },
+
+    /// User denied tool execution
+    ToolDenied { id: String, reason: String },
+
     /// Tool call finished
     ToolCallFinished {
         id: String,

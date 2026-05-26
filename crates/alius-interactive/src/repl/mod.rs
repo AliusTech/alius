@@ -111,6 +111,18 @@ impl ReplSession {
                             println!("   Args: {}", serde_json::to_string_pretty(&args).unwrap_or_default());
                         }
                     }
+                    AgentEvent::ToolConfirmationRequested { id, name, operation, details } => {
+                        println!("\n⚠️  Confirmation required for {} ({})", name, id);
+                        println!("   Operation: {}", operation);
+                        println!("   {}", details);
+                        println!("   [Auto-approved in current mode]");
+                    }
+                    AgentEvent::ToolConfirmed { id } => {
+                        println!("✅ Confirmed: {}", id);
+                    }
+                    AgentEvent::ToolDenied { id, reason } => {
+                        println!("❌ Denied: {} - {}", id, reason);
+                    }
                     AgentEvent::ToolCallFinished { name, success, result, .. } => {
                         let status = if success { "✅" } else { "❌" };
                         println!("{} {} done", status, name);

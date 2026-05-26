@@ -40,6 +40,21 @@ impl AliusTool for WriteFileTool {
         PermissionLevel::Write
     }
 
+    fn requires_confirmation(&self, _args: &JsonValue) -> bool {
+        true // Writing files always requires confirmation
+    }
+
+    fn confirmation_request(&self, args: &JsonValue) -> Option<crate::ConfirmationRequest> {
+        let path = args["path"].as_str().unwrap_or("unknown");
+        Some(crate::ConfirmationRequest {
+            tool_name: self.name().to_string(),
+            operation: "write file".to_string(),
+            details: format!("Path: {}\nContent length: {} bytes",
+                path,
+                args["content"].as_str().map(|s| s.len()).unwrap_or(0)),
+        })
+    }
+
     async fn execute(
         &self,
         args: JsonValue,

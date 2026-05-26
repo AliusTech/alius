@@ -49,6 +49,22 @@ impl AliusTool for EditFileTool {
         PermissionLevel::Write
     }
 
+    fn requires_confirmation(&self, _args: &JsonValue) -> bool {
+        true // Editing files always requires confirmation
+    }
+
+    fn confirmation_request(&self, args: &JsonValue) -> Option<crate::ConfirmationRequest> {
+        let path = args["path"].as_str().unwrap_or("unknown");
+        let old_len = args["old_string"].as_str().map(|s| s.len()).unwrap_or(0);
+        Some(crate::ConfirmationRequest {
+            tool_name: self.name().to_string(),
+            operation: "edit file".to_string(),
+            details: format!("Path: {}\nReplace {} chars with {} chars",
+                path, old_len,
+                args["new_string"].as_str().map(|s| s.len()).unwrap_or(0)),
+        })
+    }
+
     async fn execute(
         &self,
         args: JsonValue,
