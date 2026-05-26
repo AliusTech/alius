@@ -9,6 +9,7 @@ mod search;
 mod find_files;
 mod move_file;
 mod delete_file;
+mod create_dir;
 mod git_status;
 mod git_diff;
 
@@ -21,6 +22,7 @@ pub use search::SearchTool;
 pub use find_files::FindFilesTool;
 pub use move_file::MoveFileTool;
 pub use delete_file::DeleteFileTool;
+pub use create_dir::CreateDirTool;
 pub use git_status::GitStatusTool;
 pub use git_diff::GitDiffTool;
 
@@ -37,6 +39,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(FindFilesTool);
     registry.register(MoveFileTool);
     registry.register(DeleteFileTool);
+    registry.register(CreateDirTool);
     registry.register(GitStatusTool);
     registry.register(GitDiffTool);
 }

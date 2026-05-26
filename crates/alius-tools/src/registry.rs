@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::AliusTool;
-use alius_protocol::AliusError;
 
 /// Tool registry for managing available tools
 pub struct ToolRegistry {
