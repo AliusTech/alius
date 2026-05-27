@@ -1,6 +1,6 @@
 {
   "name": "@alius-tech/alius-darwin-arm64",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "Alius CLI binary for macOS Apple Silicon (ARM64)",
   "author": {
     "name": "Alius Tech",
@@ -21,7 +21,7 @@
   },
   "binary": {
     "artifact": "alius-macos-arm64.tar.gz",
-    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.4/alius-macos-arm64.tar.gz"
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.5/alius-macos-arm64.tar.gz"
   },
   "files": [
     "bin",
