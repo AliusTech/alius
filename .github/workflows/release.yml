@@ -176,6 +176,19 @@ jobs:
           VERSION="${TAG_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Verify npm auth
+        run: |
+          echo "=== .npmrc ==="
+          cat ~/.npmrc
+          echo ""
+          echo "=== npm whoami ==="
+          npm whoami || echo "NOT AUTHENTICATED"
+          echo ""
+          echo "=== NODE_AUTH_TOKEN set ==="
+          if [ -n "$NODE_AUTH_TOKEN" ]; then echo "YES (length: ${#NODE_AUTH_TOKEN})"; else echo "NO - TOKEN IS EMPTY"; fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish platform packages
         run: |
           VERSION="${{ steps.version.outputs.version }}"
