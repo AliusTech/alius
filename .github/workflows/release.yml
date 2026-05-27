@@ -159,7 +159,6 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -184,8 +183,8 @@ jobs:
           for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
             echo "Publishing @alius/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
-            npm version "$VERSION" --no-git-tag-version --allow-same-version 2>/dev/null || true
-            npm publish --access public --provenance
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            npm publish --access public
             cd ../..
           done
         env:
@@ -196,7 +195,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           cd npm-packages/alius
-          npm version "$VERSION" --no-git-tag-version --allow-same-version 2>/dev/null || true
-          npm publish --access public --provenance
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
