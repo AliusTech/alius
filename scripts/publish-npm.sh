@@ -15,7 +15,6 @@ echo "Publishing platform packages..."
 PLATFORMS=(
   alius-darwin-arm64
   alius-darwin-x64
-  alius-linux-arm64
   alius-linux-x64
   alius-win32-x64
 )

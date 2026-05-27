@@ -45,7 +45,6 @@
   ],
   "optionalDependencies": {
     "@alius/alius-linux-x64": "1.3.4",
-    "@alius/alius-linux-arm64": "1.3.4",
     "@alius/alius-darwin-x64": "1.3.4",
     "@alius/alius-darwin-arm64": "1.3.4",
     "@alius/alius-win32-x64": "1.3.4"

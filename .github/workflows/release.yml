@@ -16,11 +16,6 @@ jobs:
             artifact: alius-linux-x64
             binary: alius
             rust_target: x86_64-unknown-linux-musl
-          - os: ubuntu-latest
-            target: aarch64-linux
-            artifact: alius-linux-arm64
-            binary: alius
-            rust_target: aarch64-unknown-linux-musl
           - os: macos-latest
             target: x86_64-darwin
             artifact: alius-macos-x64
@@ -86,13 +81,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: ${{ matrix.target == 'aarch64-linux' }}
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -170,7 +158,6 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/alius-linux-x64/alius-linux-x64.tar.gz
-            artifacts/alius-linux-arm64/alius-linux-arm64.tar.gz
             artifacts/alius-macos-x64/alius-macos-x64.tar.gz
             artifacts/alius-macos-arm64/alius-macos-arm64.tar.gz
             artifacts/alius-windows-x64/alius-windows-x64.zip
@@ -201,7 +188,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
-          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64; do
+          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
             echo "Publishing @alius/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
             npm version "$VERSION" --no-git-tag-version --allow-same-version 2>/dev/null || true
