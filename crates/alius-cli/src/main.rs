@@ -32,7 +32,7 @@ pub async fn run() -> Result<()> {
             handle_config(command)?;
         }
         Some(Command::Version) => {
-            println!("alius {}", env!("CARGO_PKG_VERSION"));
+            println!("alius {}", env!("ALIUS_VERSION"));
         }
     }
 

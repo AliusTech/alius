@@ -1,0 +1,47 @@
+{
+  "name": "@aliustech/alius",
+  "version": "1.3.0",
+  "description": "Alius - AI-powered CLI assistant with tool calling capabilities",
+  "keywords": [
+    "ai",
+    "cli",
+    "assistant",
+    "llm",
+    "openai",
+    "tools"
+  ],
+  "author": "WeiXuG",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AliusTech/alius.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AliusTech/alius/issues"
+  },
+  "homepage": "https://github.com/AliusTech/alius#readme",
+  "bin": {
+    "alius": "./bin/alius"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

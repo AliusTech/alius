@@ -1,0 +1,11 @@
+src/
+target/
+crates/
+config/
+.github/
+.git/
+Cargo.lock
+Cargo.toml
+*.md
+!README.md
+!LICENSE

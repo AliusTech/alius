@@ -6,7 +6,8 @@ use std::path::PathBuf;
 /// Alius CLI - Interactive AI assistant
 #[derive(Parser)]
 #[command(name = "alius")]
-#[command(author, version, about, long_about = None)]
+#[command(author, about, long_about = None)]
+#[command(version = env!("ALIUS_VERSION"))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

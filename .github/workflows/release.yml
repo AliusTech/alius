@@ -36,6 +36,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate version consistency
+        run: |
+          # Get version from tag
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          TAG_VERSION="${TAG_NAME#v}"
+
+          # Get version from .version file
+          FILE_VERSION=$(cat .version | tr -d '\n')
+
+          # Get version from Cargo.toml
+          CARGO_VERSION=$(grep "^version = " Cargo.toml | head -1 | sed 's/version = "//' | sed 's/"//' | tr -d '\n')
+
+          echo "Tag version:    $TAG_VERSION"
+          echo "File version:   $FILE_VERSION"
+          echo "Cargo version:  $CARGO_VERSION"
+
+          # Validate consistency
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "ERROR: Git tag version ($TAG_VERSION) does not match .version file ($FILE_VERSION)"
+            exit 1
+          fi
+
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: Git tag version ($TAG_VERSION) does not match Cargo.toml ($CARGO_VERSION)"
+            exit 1
+          fi
+
+          echo "✓ Version consistency validated"
+
       - name: Install Rust (default)
         if: ${{ matrix.rust_target == '' }}
         uses: dtolnay/rust-toolchain@stable
