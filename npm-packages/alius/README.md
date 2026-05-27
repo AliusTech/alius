@@ -1,10 +1,19 @@
 # @aliustech/alius
 
-**Alius CLI** - An AI-powered assistant with intelligent tool calling capabilities.
+**Hermes Agent 工程实践** - 探索 LLM Agent 的工业化落地与软件自进化范式。
 
 [![npm version](https://img.shields.io/npm/v/@aliustech/alius.svg)](https://www.npmjs.com/package/@aliustech/alius)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub](https://img.shields.io/badge/GitHub-AliusTech/alius-black.svg)](https://github.com/AliusTech/alius)
+
+## 关于 Alius
+
+Alius 是一个交互式的 LLM 命令行工具，作为 **Hermes Agent 工程实践**和**软件自进化**的探索平台：
+
+- **工具调用架构** - 模块化、可扩展的工具系统设计
+- **交互范式** - REPL 模式下的自然语言交互
+- **工程化落地** - 从原型到生产级的演进路径
+- **软件自进化** - AI 辅助下的代码改进、测试生成、文档维护
 
 ## Installation
 
