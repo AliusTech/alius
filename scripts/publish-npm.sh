@@ -17,7 +17,6 @@ PLATFORMS=(
   alius-darwin-x64
   alius-linux-arm64
   alius-linux-x64
-  alius-win32-arm64
   alius-win32-x64
 )
 

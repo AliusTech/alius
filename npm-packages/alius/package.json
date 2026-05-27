@@ -48,8 +48,7 @@
     "@alius/alius-linux-arm64": "1.3.4",
     "@alius/alius-darwin-x64": "1.3.4",
     "@alius/alius-darwin-arm64": "1.3.4",
-    "@alius/alius-win32-x64": "1.3.4",
-    "@alius/alius-win32-arm64": "1.3.4"
+    "@alius/alius-win32-x64": "1.3.4"
   },
   "engines": {
     "node": ">=16"

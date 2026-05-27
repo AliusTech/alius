@@ -35,10 +35,6 @@ jobs:
             target: x86_64-windows
             artifact: alius-windows-x64
             binary: alius.exe
-          - os: windows-latest
-            target: aarch64-windows
-            artifact: alius-windows-arm64
-            binary: alius.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -178,7 +174,6 @@ jobs:
             artifacts/alius-macos-x64/alius-macos-x64.tar.gz
             artifacts/alius-macos-arm64/alius-macos-arm64.tar.gz
             artifacts/alius-windows-x64/alius-windows-x64.zip
-            artifacts/alius-windows-arm64/alius-windows-arm64.zip
 
   publish-npm:
     needs: release
@@ -206,7 +201,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
-          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64 alius-win32-arm64; do
+          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64; do
             echo "Publishing @alius/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
             npm version "$VERSION" --no-git-tag-version --allow-same-version 2>/dev/null || true
