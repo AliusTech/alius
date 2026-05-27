@@ -1,6 +1,6 @@
 {
-  "name": "@aliustech/alius-linux-arm64",
-  "version": "1.3.3",
+  "name": "@alius/alius-linux-arm64",
+  "version": "1.3.4",
   "description": "Alius CLI binary for Linux ARM64",
   "author": {
     "name": "Alius Tech",
@@ -21,7 +21,7 @@
   },
   "binary": {
     "artifact": "alius-linux-arm64.tar.gz",
-    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.3/alius-linux-arm64.tar.gz"
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.4/alius-linux-arm64.tar.gz"
   },
   "files": [
     "bin",

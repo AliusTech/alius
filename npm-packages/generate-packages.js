@@ -26,12 +26,12 @@ const ARTIFACT_MAP = {
 
 function generatePackageJson(platform) {
   return {
-    name: `@aliustech/alius-${platform.name}`,
+    name: `@alius/alius-${platform.name}`,
     version: VERSION,
     description: `Alius CLI binary for ${platform.desc}`,
     author: {
       name: 'Alius Tech',
-      email: 'alius@aliustech.com',
+      email: 'alius@alius.com',
       url: 'https://aliustech.com',
     },
     license: 'MIT',
@@ -69,7 +69,7 @@ function generateDownloadScript(platform) {
 
   return `#!/usr/bin/env node
 /**
- * Download script for @aliustech/alius-${platform.name}
+ * Download script for @alius/alius-${platform.name}
  * Downloads the native binary from GitHub Releases
  *
  * @author Alius Tech
@@ -231,7 +231,7 @@ function generateIndexJs(platform) {
   const binaryName = isWindows ? 'alius.exe' : 'alius';
 
   return `/**
- * @aliustech/alius-${platform.name}
+ * @alius/alius-${platform.name}
  * Platform-specific binary package for Alius CLI
  *
  * @author Alius Tech
@@ -296,7 +296,7 @@ PLATFORMS.forEach((platform) => {
     generateIndexJs(platform)
   );
 
-  console.log(`✓ Generated @aliustech/alius-${platform.name}`);
+  console.log(`✓ Generated @alius/alius-${platform.name}`);
 });
 
 // Update main package optionalDependencies

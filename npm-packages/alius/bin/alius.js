@@ -17,12 +17,12 @@ const ARCH = os.arch();
 
 // Platform to npm package mapping
 const PLATFORM_PACKAGES = {
-  'darwin-x64': '@aliustech/alius-darwin-x64',
-  'darwin-arm64': '@aliustech/alius-darwin-arm64',
-  'linux-x64': '@aliustech/alius-linux-x64',
-  'linux-arm64': '@aliustech/alius-linux-arm64',
-  'win32-x64': '@aliustech/alius-win32-x64',
-  'win32-arm64': '@aliustech/alius-win32-arm64',
+  'darwin-x64': '@alius/alius-darwin-x64',
+  'darwin-arm64': '@alius/alius-darwin-arm64',
+  'linux-x64': '@alius/alius-linux-x64',
+  'linux-arm64': '@alius/alius-linux-arm64',
+  'win32-x64': '@alius/alius-win32-x64',
+  'win32-arm64': '@alius/alius-win32-arm64',
 };
 
 // Binary names per platform
@@ -80,7 +80,7 @@ function findBinary() {
     // In platform package's bin directory (standard location)
     path.join(__dirname, '..', packageName, 'bin', binaryName),
 
-    // In platform package with nested structure
+    // In platform package with nested structure (scoped package)
     path.join(__dirname, '..', 'node_modules', packageName, 'bin', binaryName),
 
     // Vendor directory (for bundled distribution)
@@ -105,7 +105,7 @@ function findBinary() {
   console.error('  3. An incompatible version was installed');
   console.error('\nTroubleshooting:');
   console.error('  1. Clear npm cache: npm cache clean --force');
-  console.error('  2. Reinstall: npm uninstall -g @aliustech/alius && npm install -g @aliustech/alius');
+  console.error('  2. Reinstall: npm uninstall -g @alius/alius && npm install -g @alius/alius');
   console.error('  3. Check platform: node -e "console.log(process.platform + "-" + process.arch)"');
   console.error('\nOr download manually from:');
   console.error('  https://github.com/AliusTech/alius/releases');

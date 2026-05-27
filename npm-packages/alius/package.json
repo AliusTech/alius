@@ -1,6 +1,6 @@
 {
-  "name": "@aliustech/alius",
-  "version": "1.3.3",
+  "name": "@alius/alius",
+  "version": "1.3.4",
   "description": "Alius CLI - An AI-powered assistant with intelligent tool calling capabilities",
   "keywords": [
     "ai",
@@ -44,12 +44,12 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@aliustech/alius-linux-x64": "1.3.3",
-    "@aliustech/alius-linux-arm64": "1.3.3",
-    "@aliustech/alius-darwin-x64": "1.3.3",
-    "@aliustech/alius-darwin-arm64": "1.3.3",
-    "@aliustech/alius-win32-x64": "1.3.3",
-    "@aliustech/alius-win32-arm64": "1.3.3"
+    "@alius/alius-linux-x64": "1.3.4",
+    "@alius/alius-linux-arm64": "1.3.4",
+    "@alius/alius-darwin-x64": "1.3.4",
+    "@alius/alius-darwin-arm64": "1.3.4",
+    "@alius/alius-win32-x64": "1.3.4",
+    "@alius/alius-win32-arm64": "1.3.4"
   },
   "engines": {
     "node": ">=16"
