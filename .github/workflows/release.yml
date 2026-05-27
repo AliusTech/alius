@@ -131,6 +131,8 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -146,7 +148,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.tag_name }}
@@ -157,3 +159,61 @@ jobs:
             artifacts/alius-macos-x64/alius-macos-x64.tar.gz
             artifacts/alius-macos-arm64/alius-macos-arm64.tar.gz
             artifacts/alius-windows-x64/alius-windows-x64.zip
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Get version
+        id: version
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update npm package versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Update main package
+          cd npm-packages/alius
+          npm version $VERSION --no-git-tag-version
+          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | map_values($v))' package.json > package.json.tmp && mv package.json.tmp package.json
+          cd ../..
+
+          # Update platform packages
+          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64 alius-win32-arm64; do
+            cd "npm-packages/$pkg"
+            npm version $VERSION --no-git-tag-version
+            cd ../..
+          done
+
+      - name: Publish platform packages
+        run: |
+          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64 alius-win32-arm64; do
+            cd "npm-packages/$pkg"
+            npm publish --access public --provenance
+            cd ../..
+          done
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          cd npm-packages/alius
+          npm publish --access public --provenance
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

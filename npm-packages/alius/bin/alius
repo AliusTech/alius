@@ -1,5 +1,0 @@
-#!/usr/bin/env node
-// Placeholder script - will be replaced by actual binary during postinstall
-console.log('Alius binary is being installed...');
-console.log('Please wait for the postinstall script to complete.');
-process.exit(1);
