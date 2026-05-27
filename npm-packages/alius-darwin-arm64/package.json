@@ -1,5 +1,5 @@
 {
-  "name": "@alius/alius-darwin-arm64",
+  "name": "@alius-tech/alius-darwin-arm64",
   "version": "1.3.4",
   "description": "Alius CLI binary for macOS Apple Silicon (ARM64)",
   "author": {

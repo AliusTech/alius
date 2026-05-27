@@ -1,8 +1,8 @@
 #!/bin/bash
-# Publish all @alius/alius packages to npm
-# Prerequisites: npm login (run: npm login)
+# Publish all @alius-tech/alius packages to npm
+# Prerequisites for manual/bootstrap publishes: npm login (run: npm login)
 
-set -e
+set -euo pipefail
 
 NPM_DIR="$(cd "$(dirname "$0")/../npm-packages" && pwd)"
 
@@ -20,15 +20,15 @@ PLATFORMS=(
 )
 
 for pkg in "${PLATFORMS[@]}"; do
-  echo "  Publishing @alius/$pkg..."
+  echo "  Publishing @alius-tech/$pkg..."
   cd "$NPM_DIR/$pkg"
   npm publish --access public
 done
 
 echo ""
-echo "  Publishing @alius/alius (main wrapper)..."
+echo "  Publishing @alius-tech/alius (main wrapper)..."
 cd "$NPM_DIR/alius"
 npm publish --access public
 
 echo ""
-echo "All 7 packages published successfully!"
+echo "All 5 packages published successfully!"

@@ -158,15 +158,17 @@ jobs:
   publish-npm:
     needs: release
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Get version
@@ -176,39 +178,48 @@ jobs:
           VERSION="${TAG_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Verify npm auth
+      - name: Verify Trusted Publishing prerequisites
         run: |
-          echo "=== .npmrc ==="
-          cat ~/.npmrc
-          echo ""
-          echo "=== npm whoami ==="
-          npm whoami || echo "NOT AUTHENTICATED"
-          echo ""
-          echo "=== NODE_AUTH_TOKEN set ==="
-          if [ -n "$NODE_AUTH_TOKEN" ]; then echo "YES (length: ${#NODE_AUTH_TOKEN})"; else echo "NO - TOKEN IS EMPTY"; fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          node --version
+          npm --version
+          node - <<'NODE'
+          const { execSync } = require('child_process');
+
+          function assertAtLeast(name, actual, minimum) {
+            const got = actual.replace(/^v/, '').split('.').map(Number);
+            const min = minimum.split('.').map(Number);
+            for (let i = 0; i < min.length; i += 1) {
+              if ((got[i] || 0) > min[i]) return;
+              if ((got[i] || 0) < min[i]) {
+                throw new Error(`${name} ${actual} is below required ${minimum}`);
+              }
+            }
+          }
+
+          assertAtLeast('Node.js', process.version, '22.14.0');
+          assertAtLeast('npm', execSync('npm --version', { encoding: 'utf8' }).trim(), '11.5.1');
+          NODE
+
+      - name: Prepare npm packages
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node npm-packages/generate-packages.js "$VERSION"
+          node npm-packages/verify-release-version.js "$VERSION"
 
       - name: Publish platform packages
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
           for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
-            echo "Publishing @alius/$pkg@$VERSION..."
+            echo "Publishing @alius-tech/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
-            npm version "$VERSION" --no-git-tag-version --allow-same-version
             npm publish --access public
             cd ../..
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish main package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
           cd npm-packages/alius
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
           npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

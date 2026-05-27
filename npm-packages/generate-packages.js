@@ -4,7 +4,15 @@
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = fs.readFileSync(path.join(__dirname, '..', '.version'), 'utf8').trim();
+const NPM_SCOPE = '@alius-tech';
+const versionInput = process.argv[2] || process.env.ALIUS_VERSION;
+const VERSION = (versionInput || fs.readFileSync(path.join(__dirname, '..', '.version'), 'utf8'))
+  .trim()
+  .replace(/^v/, '');
+
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(VERSION)) {
+  throw new Error(`Invalid release version: ${VERSION}`);
+}
 
 const PLATFORMS = [
   { name: 'darwin-x64', os: 'darwin', cpu: 'x64', desc: 'macOS Intel (x86_64)' },
@@ -14,6 +22,8 @@ const PLATFORMS = [
   { name: 'win32-x64', os: 'win32', cpu: 'x64', desc: 'Windows x86_64' },
   { name: 'win32-arm64', os: 'win32', cpu: 'arm64', desc: 'Windows ARM64' },
 ];
+
+const PUBLISHED_PLATFORMS = ['darwin-x64', 'darwin-arm64', 'linux-x64', 'win32-x64'];
 
 const ARTIFACT_MAP = {
   'darwin-x64': 'alius-macos-x64.tar.gz',
@@ -26,12 +36,12 @@ const ARTIFACT_MAP = {
 
 function generatePackageJson(platform) {
   return {
-    name: `@alius/alius-${platform.name}`,
+    name: `${NPM_SCOPE}/alius-${platform.name}`,
     version: VERSION,
     description: `Alius CLI binary for ${platform.desc}`,
     author: {
       name: 'Alius Tech',
-      email: 'alius@alius.com',
+      email: 'alius@aliustech.com',
       url: 'https://aliustech.com',
     },
     license: 'MIT',
@@ -69,7 +79,7 @@ function generateDownloadScript(platform) {
 
   return `#!/usr/bin/env node
 /**
- * Download script for @alius/alius-${platform.name}
+ * Download script for ${NPM_SCOPE}/alius-${platform.name}
  * Downloads the native binary from GitHub Releases
  *
  * @author Alius Tech
@@ -231,7 +241,7 @@ function generateIndexJs(platform) {
   const binaryName = isWindows ? 'alius.exe' : 'alius';
 
   return `/**
- * @alius/alius-${platform.name}
+ * ${NPM_SCOPE}/alius-${platform.name}
  * Platform-specific binary package for Alius CLI
  *
  * @author Alius Tech
@@ -270,7 +280,7 @@ module.exports = {
 console.log(`Generating npm packages for version ${VERSION}...\n`);
 
 PLATFORMS.forEach((platform) => {
-  const pkgDir = path.join(__dirname, '..', `alius-${platform.name}`);
+  const pkgDir = path.join(__dirname, `alius-${platform.name}`);
   const scriptsDir = path.join(pkgDir, 'scripts');
   const binDir = path.join(pkgDir, 'bin');
 
@@ -296,18 +306,18 @@ PLATFORMS.forEach((platform) => {
     generateIndexJs(platform)
   );
 
-  console.log(`✓ Generated @alius/alius-${platform.name}`);
+  console.log(`✓ Generated ${NPM_SCOPE}/alius-${platform.name}`);
 });
 
 // Update main package optionalDependencies
 const mainPkgPath = path.join(__dirname, 'alius', 'package.json');
 const mainPkg = JSON.parse(fs.readFileSync(mainPkgPath, 'utf8'));
+mainPkg.name = `${NPM_SCOPE}/alius`;
 mainPkg.version = VERSION;
 
-// Update optionalDependencies versions
-Object.keys(mainPkg.optionalDependencies || {}).forEach((dep) => {
-  mainPkg.optionalDependencies[dep] = VERSION;
-});
+mainPkg.optionalDependencies = Object.fromEntries(
+  PUBLISHED_PLATFORMS.map((platform) => [`${NPM_SCOPE}/alius-${platform}`, VERSION])
+);
 
 fs.writeFileSync(mainPkgPath, JSON.stringify(mainPkg, null, 2) + '\n');
 console.log(`\n✓ Updated main package version to ${VERSION}`);
