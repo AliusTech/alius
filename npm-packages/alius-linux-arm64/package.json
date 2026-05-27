@@ -1,19 +1,44 @@
 {
   "name": "@aliustech/alius-linux-arm64",
   "version": "1.3.2",
-  "description": "Alius CLI binary for linux-arm64",
-  "author": "WeiXuG",
+  "description": "Alius CLI binary for Linux ARM64",
+  "author": {
+    "name": "Alius Tech",
+    "email": "alius@aliustech.com",
+    "url": "https://aliustech.com"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AliusTech/alius.git"
+    "url": "git+https://github.com/AliusTech/alius.git",
+    "directory": "npm-packages/alius-linux-arm64"
   },
   "homepage": "https://github.com/AliusTech/alius#readme",
   "main": "index.js",
-  "files": ["bin", "scripts", "index.js", "package.json"],
+  "exports": {
+    ".": "./index.js",
+    "./binary": "./index.js"
+  },
+  "binary": {
+    "artifact": "alius-linux-arm64.tar.gz",
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.2/alius-linux-arm64.tar.gz"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "index.js",
+    "package.json"
+  ],
   "scripts": {
     "postinstall": "node scripts/download.js"
   },
-  "os": ["linux"],
-  "cpu": ["arm64"]
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
 }

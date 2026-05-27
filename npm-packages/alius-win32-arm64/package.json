@@ -1,19 +1,44 @@
 {
   "name": "@aliustech/alius-win32-arm64",
   "version": "1.3.2",
-  "description": "Alius CLI binary for win32-arm64 (Windows ARM)",
-  "author": "WeiXuG",
+  "description": "Alius CLI binary for Windows ARM64",
+  "author": {
+    "name": "Alius Tech",
+    "email": "alius@aliustech.com",
+    "url": "https://aliustech.com"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AliusTech/alius.git"
+    "url": "git+https://github.com/AliusTech/alius.git",
+    "directory": "npm-packages/alius-win32-arm64"
   },
   "homepage": "https://github.com/AliusTech/alius#readme",
   "main": "index.js",
-  "files": ["bin", "scripts", "index.js", "package.json"],
+  "exports": {
+    ".": "./index.js",
+    "./binary": "./index.js"
+  },
+  "binary": {
+    "artifact": "alius-windows-arm64.zip",
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.2/alius-windows-arm64.zip"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "index.js",
+    "package.json"
+  ],
   "scripts": {
     "postinstall": "node scripts/download.js"
   },
-  "os": ["win32"],
-  "cpu": ["arm64"]
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
 }

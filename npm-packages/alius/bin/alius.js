@@ -1,11 +1,19 @@
 #!/usr/bin/env node
-// Platform detection and binary execution wrapper
-// Similar to @openai/codex implementation
+/**
+ * Platform detection and binary execution wrapper for Alius CLI
+ * Automatically selects and runs the correct native binary for the current platform
+ *
+ * @author Alius Tech
+ */
 
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+// Platform detection
+const PLATFORM = os.platform();
+const ARCH = os.arch();
 
 // Platform to npm package mapping
 const PLATFORM_PACKAGES = {
@@ -17,110 +25,139 @@ const PLATFORM_PACKAGES = {
   'win32-arm64': '@aliustech/alius-win32-arm64',
 };
 
-// Rust target triples for each platform
-const TARGET_TRIPLES = {
-  'darwin-x64': 'x86_64-apple-darwin',
-  'darwin-arm64': 'aarch64-apple-darwin',
-  'linux-x64': 'x86_64-unknown-linux-musl',
-  'linux-arm64': 'aarch64-unknown-linux-musl',
-  'win32-x64': 'x86_64-pc-windows-msvc',
-  'win32-arm64': 'aarch64-pc-windows-msvc',
+// Binary names per platform
+const BINARY_NAMES = {
+  darwin: 'alius',
+  linux: 'alius',
+  win32: 'alius.exe',
 };
 
+/**
+ * Get the platform key for current system
+ */
 function getPlatformKey() {
-  const platform = os.platform();
-  const arch = os.arch();
-  return `${platform}-${arch}`;
+  return `${PLATFORM}-${ARCH}`;
 }
 
+/**
+ * Get the binary name for current platform
+ */
 function getBinaryName() {
-  return os.platform() === 'win32' ? 'alius.exe' : 'alius';
+  return BINARY_NAMES[PLATFORM] || 'alius';
 }
 
+/**
+ * Find the native binary path
+ * Tries multiple locations to handle different installation scenarios
+ */
 function findBinary() {
   const platformKey = getPlatformKey();
   const packageName = PLATFORM_PACKAGES[platformKey];
+  const binaryName = getBinaryName();
 
   if (!packageName) {
-    console.error(`Unsupported platform: ${platformKey}`);
-    console.error('Supported platforms: darwin-x64, darwin-arm64, linux-x64, linux-arm64, win32-x64, win32-arm64');
+    console.error(`\n✗ Unsupported platform: ${platformKey}`);
+    console.error('\nSupported platforms:');
+    console.error('  - darwin-x64   (macOS Intel)');
+    console.error('  - darwin-arm64 (macOS Apple Silicon)');
+    console.error('  - linux-x64    (Linux x86_64)');
+    console.error('  - linux-arm64  (Linux ARM64)');
+    console.error('  - win32-x64     (Windows x86_64)');
+    console.error('  - win32-arm64   (Windows ARM64)');
     process.exit(1);
   }
 
-  const binaryName = getBinaryName();
-
-  // Try to find the binary from the platform-specific package
-  try {
-    // The platform package exports the binary path
-    const platformPackage = require(packageName);
-    if (platformPackage && platformPackage.binaryPath) {
-      return platformPackage.binaryPath;
-    }
-  } catch (e) {
-    // Package might not be installed (npm skips failed optional deps)
-  }
-
-  // Try common locations for the binary
+  // Possible binary locations
   const possiblePaths = [
-    // In the platform package's directory
-    path.join(__dirname, '..', 'node_modules', packageName, 'bin', binaryName),
-    // In platform package with target triple structure
-    path.join(__dirname, '..', 'node_modules', packageName, TARGET_TRIPLES[platformKey], 'bin', binaryName),
-    // Vendor directory (for bundled distribution)
-    path.join(__dirname, '..', 'vendor', TARGET_TRIPLES[platformKey], 'bin', binaryName),
-  ];
+    // Try platform package's index.js export
+    (() => {
+      try {
+        const platformPkg = require(packageName);
+        return platformPkg.binaryPath || platformPkg.getBinaryPath?.();
+      } catch { return null; }
+    })(),
 
+    // In platform package's bin directory (standard location)
+    path.join(__dirname, '..', packageName, 'bin', binaryName),
+
+    // In platform package with nested structure
+    path.join(__dirname, '..', 'node_modules', packageName, 'bin', binaryName),
+
+    // Vendor directory (for bundled distribution)
+    path.join(__dirname, '..', 'vendor', platformKey, 'bin', binaryName),
+
+    // Adjacent to this script (development)
+    path.join(__dirname, binaryName),
+  ].filter(Boolean);
+
+  // Find existing binary
   for (const binaryPath of possiblePaths) {
-    if (fs.existsSync(binaryPath)) {
+    if (binaryPath && fs.existsSync(binaryPath)) {
       return binaryPath;
     }
   }
 
-  // Binary not found
-  console.error(`Binary not found for platform: ${platformKey}`);
-  console.error('');
-  console.error('This could mean:');
-  console.error('1. The platform-specific package was not installed');
-  console.error('2. The binary download failed');
-  console.error('');
-  console.error('Try reinstalling:');
-  console.error('  npm install -g @aliustech/alius');
-  console.error('');
-  console.error('Or download directly from:');
+  // Binary not found - show helpful error message
+  console.error(`\n✗ Alius binary not found for platform: ${platformKey}`);
+  console.error(`\nThis could mean:`);
+  console.error('  1. The platform package was not installed correctly');
+  console.error('  2. The binary download failed');
+  console.error('  3. An incompatible version was installed');
+  console.error('\nTroubleshooting:');
+  console.error('  1. Clear npm cache: npm cache clean --force');
+  console.error('  2. Reinstall: npm uninstall -g @aliustech/alius && npm install -g @aliustech/alius');
+  console.error('  3. Check platform: node -e "console.log(process.platform + "-" + process.arch)"');
+  console.error('\nOr download manually from:');
   console.error('  https://github.com/AliusTech/alius/releases');
   process.exit(1);
 }
 
+/**
+ * Run the native binary with forwarded arguments and signals
+ */
 function run() {
   const binaryPath = findBinary();
-
-  // Get all args (skip node and script path)
   const args = process.argv.slice(2);
 
-  // Spawn the binary with inherited stdio
+  // Spawn the native binary
   const child = spawn(binaryPath, args, {
     stdio: 'inherit',
-    env: process.env,
+    env: {
+      ...process.env,
+      // Pass platform info to the binary
+      ALIUS_PLATFORM: getPlatformKey(),
+      ALIUS_WRAPPER: 'true',
+    },
   });
 
-  // Forward signals to child
-  process.on('SIGINT', () => child.kill('SIGINT'));
-  process.on('SIGTERM', () => child.kill('SIGTERM'));
-  process.on('SIGHUP', () => child.kill('SIGHUP'));
+  // Forward termination signals to child process
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  signals.forEach((signal) => {
+    process.on(signal, () => {
+      // Only forward if child is alive
+      if (!child.killed) {
+        child.kill(signal);
+      }
+    });
+  });
 
-  // Handle child exit
+  // Handle child process exit
   child.on('exit', (code, signal) => {
     if (signal) {
+      // Re-emit signal so parent exits the same way
       process.kill(process.pid, signal);
     } else {
-      process.exit(code || 0);
+      process.exit(code ?? 0);
     }
   });
 
+  // Handle child process error
   child.on('error', (err) => {
-    console.error(`Failed to spawn binary: ${err.message}`);
+    console.error(`\n✗ Failed to run Alius: ${err.message}`);
+    console.error(`\nBinary path: ${binaryPath}`);
     process.exit(1);
   });
 }
 
+// Run CLI
 run();
