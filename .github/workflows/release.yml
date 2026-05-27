@@ -48,11 +48,11 @@ jobs:
           TAG_NAME="${GITHUB_REF#refs/tags/}"
           TAG_VERSION="${TAG_NAME#v}"
 
-          # Get version from .version file
-          FILE_VERSION=$(cat .version | tr -d '\n')
+          # Get version from .version file (strip all whitespace including \r\n)
+          FILE_VERSION=$(cat .version | tr -d '[:space:]')
 
-          # Get version from Cargo.toml
-          CARGO_VERSION=$(grep "^version = " Cargo.toml | head -1 | sed 's/version = "//' | sed 's/"//' | tr -d '\n')
+          # Get version from Cargo.toml (strip all whitespace including \r\n)
+          CARGO_VERSION=$(grep "^version" Cargo.toml | head -1 | tr -dc '0-9.')
 
           echo "Tag version:    $TAG_VERSION"
           echo "File version:   $FILE_VERSION"
@@ -69,7 +69,7 @@ jobs:
             exit 1
           fi
 
-          echo "✓ Version consistency validated"
+          echo "Version consistency validated"
 
       - name: Install Rust (default)
         if: ${{ matrix.rust_target == '' }}
