@@ -188,17 +188,27 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
+          # Function to update version safely
+          update_version() {
+            local pkg_dir="$1"
+            local current_version=$(cat "$pkg_dir/package.json" | jq -r '.version')
+
+            if [ "$current_version" != "$VERSION" ]; then
+              cd "$pkg_dir"
+              npm version $VERSION --no-git-tag-version
+              cd - > /dev/null
+            else
+              echo "Version already $VERSION in $pkg_dir, skipping"
+            fi
+          }
+
           # Update main package
-          cd npm-packages/alius
-          npm version $VERSION --no-git-tag-version
-          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | map_values($v))' package.json > package.json.tmp && mv package.json.tmp package.json
-          cd ../..
+          update_version "npm-packages/alius"
+          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | map_values($v))' npm-packages/alius/package.json > npm-packages/alius/package.json.tmp && mv npm-packages/alius/package.json.tmp npm-packages/alius/package.json
 
           # Update platform packages
           for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-linux-arm64 alius-win32-x64 alius-win32-arm64; do
-            cd "npm-packages/$pkg"
-            npm version $VERSION --no-git-tag-version
-            cd ../..
+            update_version "npm-packages/$pkg"
           done
 
       - name: Publish platform packages
