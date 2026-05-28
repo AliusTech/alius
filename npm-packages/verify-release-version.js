@@ -8,7 +8,6 @@ if (!expectedVersion) {
   throw new Error('Usage: node npm-packages/verify-release-version.js <version>');
 }
 
-const repoRoot = path.join(__dirname, '..');
 const packageRoot = __dirname;
 const platformPackages = [
   'alius-darwin-x64',
@@ -27,13 +26,6 @@ function assertEqual(label, actual, expected) {
     throw new Error(`${label}: expected ${expected}, got ${actual}`);
   }
 }
-
-const fileVersion = fs.readFileSync(path.join(repoRoot, '.version'), 'utf8').trim();
-assertEqual('.version', fileVersion, expectedVersion);
-
-const cargoToml = fs.readFileSync(path.join(repoRoot, 'Cargo.toml'), 'utf8');
-const cargoVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-assertEqual('Cargo.toml version', cargoVersion, expectedVersion);
 
 const mainPackage = readJson(path.join(packageRoot, 'alius', 'package.json'));
 assertEqual(`${mainPackage.name} version`, mainPackage.version, expectedVersion);

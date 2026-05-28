@@ -3,12 +3,46 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const NPM_SCOPE = '@alius-tech';
-const versionInput = process.argv[2] || process.env.ALIUS_VERSION;
-const VERSION = (versionInput || fs.readFileSync(path.join(__dirname, '..', '.version'), 'utf8'))
-  .trim()
-  .replace(/^v/, '');
+const repoRoot = path.join(__dirname, '..');
+
+function normalizeVersion(input) {
+  if (!input) return undefined;
+  const trimmed = String(input).trim();
+  const withoutRef = trimmed.replace(/^refs\/tags\//, '');
+  return withoutRef.replace(/^v/, '');
+}
+
+function versionFromGitTag() {
+  try {
+    return execSync('git describe --tags --exact-match --match "v[0-9]*"', {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function versionFromMainPackage() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, 'alius', 'package.json'), 'utf8')).version;
+  } catch {
+    return undefined;
+  }
+}
+
+const versionInput = process.argv[2]
+  || process.env.ALIUS_VERSION
+  || process.env.GITHUB_REF_NAME
+  || process.env.GITHUB_REF
+  || versionFromGitTag()
+  || versionFromMainPackage();
+
+const VERSION = normalizeVersion(versionInput);
 
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(VERSION)) {
   throw new Error(`Invalid release version: ${VERSION}`);
