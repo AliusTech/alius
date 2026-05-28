@@ -1,7 +1,7 @@
 # Alius
 
 [![npm version](https://img.shields.io/npm/v/@alius-tech/alius)](https://www.npmjs.com/package/@alius-tech/alius)
-[![homebrew version](https://img.shields.io/homebrew/v/alius)](https://formulae.brew.sh/formula/alius)
+[![homebrew version](https://img.shields.io/homebrew/v/alius?label=homebrew&url=https://raw.githubusercontent.com/AliusTech/homebrew-tap/main/Formula/alius.rb)](https://github.com/AliusTech/homebrew-tap/blob/main/Formula/alius.rb)
 
 > LLM Agent CLI -- ソフトウェア自己進化のエンジニアリング実践
 
@@ -43,13 +43,6 @@ Homebrew でインストール：
 ```bash
 brew tap AliusTech/tap
 brew install alius
-```
-
-または [Releases](https://github.com/AliusTech/alius/releases) からダウンロード：
-
-```bash
-chmod +x alius
-mv alius ~/.local/bin/
 ```
 
 更新：
@@ -112,17 +105,11 @@ timeout_seconds = 60
 
 ## 対応モデル
 
+OpenAI および Anthropic 形式の API エンドポイントをサポート。
+
 - OpenAI: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-3.5-turbo`
 - Anthropic: `claude-3-5-sonnet`, `claude-3-opus`, `claude-3-haiku`
 - Google: `gemini-1.5-pro`, `gemini-1.5-flash`
-
-## 開発
-
-```bash
-git clone https://github.com/AliusTech/alius.git
-cd alius
-cargo build --release
-```
 
 ## ライセンス
 
