@@ -119,7 +119,7 @@ alius_cli/
 │       └ welcome.rs    # 欢迎界面
 └── .github/
     └── workflows/
-        └ release.yml   # 自动发布
+        └ ci.yml        # 自动发布
 ```
 
 ## 支持的模型
