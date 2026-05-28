@@ -1,6 +1,6 @@
 {
   "name": "@alius-tech/alius-win32-arm64",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Alius CLI binary for Windows ARM64",
   "author": {
     "name": "Alius Tech",
@@ -21,7 +21,7 @@
   },
   "binary": {
     "artifact": "alius-windows-arm64.zip",
-    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v0.0.1/alius-windows-arm64.zip"
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v0.0.2/alius-windows-arm64.zip"
   },
   "files": [
     "bin",
