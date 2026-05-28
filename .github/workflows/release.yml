@@ -208,13 +208,6 @@ jobs:
           node npm-packages/generate-packages.js "$VERSION"
           node npm-packages/verify-release-version.js "$VERSION"
 
-      - name: Debug npm auth
-        run: |
-          echo "--- .npmrc ---"
-          cat ~/.npmrc 2>/dev/null || echo "(no .npmrc)"
-          echo "--- npm whoami ---"
-          npm whoami 2>&1 || echo "(not authenticated)"
-
       - name: Publish platform packages
         run: |
           VERSION="${{ steps.version.outputs.version }}"
