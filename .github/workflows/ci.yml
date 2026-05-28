@@ -7,7 +7,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  check:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Lint (clippy)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all
+
   build:
+    needs: check
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       matrix:
@@ -73,9 +97,6 @@ jobs:
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Lint (clippy)
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build (default)
         if: ${{ matrix.rust_target == '' }}
