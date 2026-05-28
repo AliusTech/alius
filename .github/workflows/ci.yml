@@ -167,9 +167,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
-      - name: Configure npm for trusted publishing
-        run: echo "registry=https://registry.npmjs.org" > ~/.npmrc
-
       - name: Get version
         id: version
         run: |
