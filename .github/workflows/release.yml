@@ -169,7 +169,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+
+      - name: Configure npm for OIDC provenance
+        run: |
+          echo "registry=https://registry.npmjs.org/" > .npmrc
+          echo "provenance=true" >> .npmrc
 
       - name: Get version
         id: version
@@ -213,7 +217,7 @@ jobs:
           for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
             echo "Publishing @alius-tech/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
-            npm publish --access public
+            npm publish --access public --provenance
             cd ../..
           done
 
@@ -222,4 +226,4 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           cd npm-packages/alius
-          npm publish --access public
+          npm publish --access public --provenance
