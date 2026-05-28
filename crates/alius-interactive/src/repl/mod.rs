@@ -80,6 +80,11 @@ impl ReplSession {
             return self.handle_command(input);
         }
 
+        // Also recognize bare exit/quit
+        if input == "exit" || input == "quit" {
+            return Ok("bye!".to_string());
+        }
+
         // Regular chat with agent
         if let Some(agent) = &self.agent {
             let events = agent.handle_message(
@@ -274,7 +279,13 @@ pub async fn run_repl(settings: Settings) -> Result<()> {
 
                 rl.add_history_entry(&line)?;
 
-                let result = session.handle_input(&line).await?;
+                let result = match session.handle_input(&line).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        continue;
+                    }
+                };
 
                 if result == "bye!" {
                     break;
