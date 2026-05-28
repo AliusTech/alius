@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "alius"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-config",
  "alius-interactive",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "alius-config"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "alius-interactive"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-config",
  "alius-model",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "alius-model"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-config",
  "alius-protocol",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "alius-protocol"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "alius-store"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "alius-tools"
-version = "1.3.6"
+version = "1.4.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
