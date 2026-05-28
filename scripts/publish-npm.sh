@@ -22,13 +22,13 @@ PLATFORMS=(
 for pkg in "${PLATFORMS[@]}"; do
   echo "  Publishing @alius-tech/$pkg..."
   cd "$NPM_DIR/$pkg"
-  npm publish --access public
+  npm publish --access public --tag latest
 done
 
 echo ""
 echo "  Publishing @alius-tech/alius (main wrapper)..."
 cd "$NPM_DIR/alius"
-npm publish --access public
+npm publish --access public --tag latest
 
 echo ""
 echo "All 5 packages published successfully!"

@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -216,7 +219,7 @@ jobs:
             fi
             echo "Publishing @alius-tech/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
-            npm publish --access public --provenance
+            npm publish --access public --provenance --tag latest
             cd ../..
           done
 
@@ -230,4 +233,4 @@ jobs:
           fi
 
           cd npm-packages/alius
-          npm publish --access public --provenance
+          npm publish --access public --provenance --tag latest
