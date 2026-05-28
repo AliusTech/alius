@@ -72,16 +72,6 @@ npm uninstall -g @alius-tech/alius
 brew uninstall alius && brew untap AliusTech/tap
 ```
 
-## 設定
-
-API キーの環境変数を設定：
-
-```bash
-export OPENAI_API_KEY=your-api-key
-export ANTHROPIC_API_KEY=your-api-key
-export GEMINI_API_KEY=your-api-key
-```
-
 ## 使い方
 
 ```bash

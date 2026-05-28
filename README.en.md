@@ -72,16 +72,6 @@ npm uninstall -g @alius-tech/alius
 brew uninstall alius && brew untap AliusTech/tap
 ```
 
-## Configuration
-
-Set API key environment variables:
-
-```bash
-export OPENAI_API_KEY=your-api-key
-export ANTHROPIC_API_KEY=your-api-key
-export GEMINI_API_KEY=your-api-key
-```
-
 ## Usage
 
 ```bash
