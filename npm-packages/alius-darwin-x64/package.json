@@ -1,6 +1,6 @@
 {
   "name": "@alius-tech/alius-darwin-x64",
-  "version": "1.3.5",
+  "version": "0.0.1",
   "description": "Alius CLI binary for macOS Intel (x86_64)",
   "author": {
     "name": "Alius Tech",
@@ -21,7 +21,7 @@
   },
   "binary": {
     "artifact": "alius-macos-x64.tar.gz",
-    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v1.3.5/alius-macos-x64.tar.gz"
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/v0.0.1/alius-macos-x64.tar.gz"
   },
   "files": [
     "bin",
