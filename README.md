@@ -57,21 +57,24 @@ chmod +x alius
 mv alius ~/.local/bin/
 ```
 
-Update / Uninstall:
+Update:
 
 ```bash
+# npm
 npm update -g @alius-tech/alius
-npm uninstall -g @alius-tech/alius
+
+# Homebrew
+brew update && brew upgrade alius
 ```
 
-### Configuration
-
-Set API key environment variables:
+Uninstall:
 
 ```bash
-export OPENAI_API_KEY=your-api-key
-export ANTHROPIC_API_KEY=your-api-key
-export GEMINI_API_KEY=your-api-key
+# npm
+npm uninstall -g @alius-tech/alius
+
+# Homebrew
+brew uninstall alius && brew untap AliusTech/tap
 ```
 
 ### Usage
@@ -179,11 +182,24 @@ chmod +x alius
 mv alius ~/.local/bin/
 ```
 
-更新 / 卸载：
+更新：
 
 ```bash
+# npm
 npm update -g @alius-tech/alius
+
+# Homebrew
+brew update && brew upgrade alius
+```
+
+卸载：
+
+```bash
+# npm
 npm uninstall -g @alius-tech/alius
+
+# Homebrew
+brew uninstall alius && brew untap AliusTech/tap
 ```
 
 ### 配置
@@ -301,11 +317,24 @@ chmod +x alius
 mv alius ~/.local/bin/
 ```
 
-更新 / アンインストール：
+更新：
 
 ```bash
+# npm
 npm update -g @alius-tech/alius
+
+# Homebrew
+brew update && brew upgrade alius
+```
+
+アンインストール：
+
+```bash
+# npm
 npm uninstall -g @alius-tech/alius
+
+# Homebrew
+brew uninstall alius && brew untap AliusTech/tap
 ```
 
 ### 設定
