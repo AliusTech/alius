@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "alius")]
 #[command(about = "LLM Agent CLI Tool", long_about = None)]
-#[command(version)]
+#[command(version = env!("ALIUS_VERSION"))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

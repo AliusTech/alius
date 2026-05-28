@@ -97,7 +97,7 @@ async fn main() -> error::Result<()> {
             }
         },
         Some(Commands::Version) => {
-            println!("alius {}", env!("CARGO_PKG_VERSION"));
+            println!("alius {}", env!("ALIUS_VERSION"));
         }
     }
 

@@ -9,7 +9,7 @@ const ANSI_RESET: &str = "\x1b[0m";
 
 pub fn render_welcome(settings: &Settings) {
     let width = get_terminal_width();
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("ALIUS_VERSION");
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "~".to_string());
