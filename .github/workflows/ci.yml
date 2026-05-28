@@ -158,7 +158,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v6
 
