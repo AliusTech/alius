@@ -287,7 +287,20 @@ jobs:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: tap
 
+      - name: Check if version already published
+        id: check
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          FORMULA="tap/Formula/alius.rb"
+          if [ -f "$FORMULA" ] && grep -q "version \"${VERSION}\"" "$FORMULA"; then
+            echo "Homebrew formula already at version ${VERSION}, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Update formula
+        if: steps.check.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           SHA256_ARM64: ${{ steps.sha256.outputs.arm64 }}
@@ -334,6 +347,7 @@ jobs:
           sed -i "s/%%SHA256_LINUX_X64%%/${SHA256_LINUX_X64}/g" tap/Formula/alius.rb
 
       - name: Push formula update
+        if: steps.check.outputs.skip != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd tap
