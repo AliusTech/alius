@@ -1,6 +1,6 @@
 {
   "name": "@alius-tech/alius",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Alius CLI - An AI-powered assistant with intelligent tool calling capabilities",
   "keywords": [
     "ai",
