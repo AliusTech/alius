@@ -1,4 +1,7 @@
-//! LLM client
+//! LLM client implementation for OpenAI-compatible API endpoints.
+//!
+//! Provides streaming and non-streaming chat completions, tool calling support,
+//! and conversation management. Uses the `async-openai` crate for API communication.
 
 use async_openai::{
     Client,
@@ -24,14 +27,22 @@ use alius_protocol::MessageRole;
 
 use crate::{ChatEvent, Conversation, ToolCall};
 
-/// LLM client with streaming support
+/// LLM client with streaming and tool calling support.
+///
+/// Wraps the `async-openai` client with configuration from `LlmSettings`.
+/// Supports any provider that implements the OpenAI chat completion API.
 pub struct LlmClient {
+    /// The underlying OpenAI-compatible HTTP client.
     inner: Client<OpenAIConfig>,
+    /// LLM configuration (provider, model, API key, base URL).
     config: LlmSettings,
 }
 
 impl LlmClient {
-    /// Create a new LLM client
+    /// Create a new LLM client from LLM settings.
+    ///
+    /// Reads the API key and base URL from the configuration.
+    /// Returns an error if the API key is not configured.
     pub fn new(config: LlmSettings) -> Result<Self> {
         let api_key = config.get_api_key().ok_or_else(|| {
             anyhow::anyhow!("API key not found. Set it in config or environment variable.")
@@ -46,12 +57,15 @@ impl LlmClient {
         Ok(Self { inner: client, config })
     }
 
-    /// Get the configured model
+    /// Get the configured model identifier.
     pub fn model(&self) -> &str {
         &self.config.model
     }
 
-    /// Stream a chat completion
+    /// Stream a chat completion from the conversation history.
+    ///
+    /// Returns a stream of `ChatEvent` items (delta text, done signal, errors).
+    /// The stream ends when the model finishes generating or an error occurs.
     pub async fn chat_stream(
         &self,
         conversation: &Conversation,
@@ -69,7 +83,10 @@ impl LlmClient {
         Ok(crate::events::process_stream(stream))
     }
 
-    /// Single-shot chat (for run command)
+    /// Single-shot chat completion (for the `run` command).
+    ///
+    /// Sends a single prompt with an optional system message and returns
+    /// the complete response text. Does not support streaming or tool calling.
     pub async fn chat_once(
         &self,
         prompt: &str,
@@ -77,6 +94,7 @@ impl LlmClient {
     ) -> Result<String> {
         let mut messages = Vec::new();
 
+        // Add system message if provided
         if let Some(sys) = system {
             messages.push(
                 ChatCompletionRequestSystemMessageArgs::default()
@@ -86,6 +104,7 @@ impl LlmClient {
             );
         }
 
+        // Add user message
         messages.push(
             ChatCompletionRequestUserMessageArgs::default()
                 .content(prompt)
@@ -108,7 +127,10 @@ impl LlmClient {
         Ok(content)
     }
 
-    /// Build OpenAI messages from conversation
+    /// Build OpenAI-compatible messages from the conversation history.
+    ///
+    /// Converts each message in the conversation to the appropriate
+    /// OpenAI message type (system, user, assistant, or tool).
     fn build_messages(&self, conversation: &Conversation) -> Vec<ChatCompletionRequestMessage> {
         let mut messages = Vec::new();
 
@@ -154,7 +176,7 @@ impl LlmClient {
                     );
                 }
                 MessageRole::Summary => {
-                    // Treat summary as system message
+                    // Treat summary as system message for context window management
                     messages.push(
                         ChatCompletionRequestSystemMessageArgs::default()
                             .content(&msg.content)
@@ -169,7 +191,9 @@ impl LlmClient {
         messages
     }
 
-    /// List available models
+    /// List available models from the LLM provider.
+    ///
+    /// Queries the `/models` endpoint and returns a list of model identifiers.
     pub async fn list_models(&self) -> Result<Vec<String>> {
         let models = self.inner.models().list().await?;
         let model_ids: Vec<String> = models.data
@@ -179,7 +203,13 @@ impl LlmClient {
         Ok(model_ids)
     }
 
-    /// Stream a chat completion with tools
+    /// Stream a chat completion with tool calling support.
+    ///
+    /// Sends the conversation with tool definitions and returns:
+    /// - A stream of chat events (text deltas, done signal)
+    /// - Optional tool calls requested by the model
+    ///
+    /// Note: Currently uses non-streaming mode for tool support.
     pub async fn chat_stream_with_tools(
         &self,
         conversation: &Conversation,
@@ -187,7 +217,7 @@ impl LlmClient {
     ) -> Result<(impl Stream<Item = Result<ChatEvent>>, Option<Vec<ToolCall>>)> {
         let messages = self.build_messages(conversation);
 
-        // Build tool definitions
+        // Build tool definitions from JSON schema
         let openai_tools: Vec<_> = tools
             .into_iter()
             .filter_map(|t| {
@@ -223,7 +253,7 @@ impl LlmClient {
             anyhow::anyhow!("No response choices")
         })?;
 
-        // Check for tool calls
+        // Check for tool calls in the response
         let tool_calls = choice.message.tool_calls.as_ref().map(|calls| {
             calls.iter().map(|tc| {
                 ToolCall::new(
@@ -245,7 +275,15 @@ impl LlmClient {
         Ok((futures::stream::iter(events), tool_calls))
     }
 
-    /// Send tool results back to the model
+    /// Continue the conversation with tool execution results.
+    ///
+    /// After the model requests tool calls and they are executed, this method
+    /// sends the results back to the model for further processing.
+    ///
+    /// # Arguments
+    /// * `conversation` - The current conversation history
+    /// * `tool_results` - List of (tool_call_id, tool_name, result) tuples
+    /// * `tools` - Tool definitions for the next round
     pub async fn continue_with_tool_results(
         &self,
         conversation: &Conversation,
@@ -254,7 +292,7 @@ impl LlmClient {
     ) -> Result<(impl Stream<Item = Result<ChatEvent>>, Option<Vec<ToolCall>>)> {
         let mut messages = self.build_messages(conversation);
 
-        // Add tool result messages
+        // Add tool result messages to the conversation
         for (call_id, _tool_name, result) in tool_results {
             messages.push(
                 ChatCompletionRequestToolMessageArgs::default()
@@ -265,7 +303,7 @@ impl LlmClient {
             );
         }
 
-        // Build tool definitions
+        // Build tool definitions from JSON schema
         let openai_tools: Vec<_> = tools
             .into_iter()
             .filter_map(|t| {
@@ -300,6 +338,7 @@ impl LlmClient {
             anyhow::anyhow!("No response choices")
         })?;
 
+        // Check for tool calls in the response
         let tool_calls = choice.message.tool_calls.as_ref().map(|calls| {
             calls.iter().map(|tc| {
                 ToolCall::new(
@@ -310,6 +349,7 @@ impl LlmClient {
             }).collect()
         });
 
+        // Create a synthetic stream for the text response
         let text = choice.message.content.clone().unwrap_or_default();
         let events: Vec<Result<ChatEvent>> = if text.is_empty() && tool_calls.is_none() {
             vec![Ok(ChatEvent::Done { full_response: String::new() })]
