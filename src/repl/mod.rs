@@ -13,12 +13,15 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// ANSI color codes for terminal output formatting
 const ANSI_CYAN: &str = "\x1b[36m";
 const ANSI_GREEN: &str = "\x1b[32m";
 const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_RESET: &str = "\x1b[0m";
 
+/// Default list of models shown when the provider doesn't support model listing.
+/// Covers the most common models across OpenAI, Anthropic, and Google.
 const DEFAULT_MODELS: &[&str] = &[
     "gpt-4o",
     "gpt-4o-mini",
@@ -31,9 +34,17 @@ const DEFAULT_MODELS: &[&str] = &[
     "gemini-1.5-flash",
 ];
 
+/// Available slash commands in the REPL.
 const COMMANDS: &[&str] = &["/model", "/soul", "/config", "/help", "/quit", "/exit"];
 
+/// Tab-completion provider for the REPL.
+///
+/// Handles completion for:
+/// - Slash commands (starting with `/`)
+/// - Model names after the `/model` command
+/// - Soul roles after the `/soul` command
 struct ReplCompleter {
+    /// List of available model names for completion.
     models: Vec<String>,
 }
 
@@ -45,7 +56,7 @@ impl Completer for ReplCompleter {
         let (start, word) = extract_word(line_to_pos);
 
         let completions: Vec<Pair> = if word.starts_with('/') {
-            // Command completion
+            // Command completion: match slash commands
             COMMANDS
                 .iter()
                 .filter(|cmd| cmd.starts_with(word))
@@ -55,7 +66,7 @@ impl Completer for ReplCompleter {
                 })
                 .collect()
         } else if is_after_command(line_to_pos, "/model") {
-            // Model completion after /model
+            // Model completion: match available model names
             self.models
                 .iter()
                 .filter(|m| m.starts_with(word))
@@ -65,7 +76,7 @@ impl Completer for ReplCompleter {
                 })
                 .collect()
         } else if is_after_command(line_to_pos, "/soul") {
-            // Role completion after /soul
+            // Role completion: match available soul roles
             SOUL_ROLES
                 .iter()
                 .filter(|r| r.to_lowercase().starts_with(&word.to_lowercase()))
@@ -82,6 +93,10 @@ impl Completer for ReplCompleter {
     }
 }
 
+/// Extract the current word being typed from the input line.
+///
+/// Returns the start position and the word text. Used for tab completion
+/// to determine what the user is trying to complete.
 fn extract_word(line: &str) -> (usize, &str) {
     let trimmed = line.trim_end();
     if trimmed.is_empty() {
@@ -97,6 +112,9 @@ fn extract_word(line: &str) -> (usize, &str) {
     (start, &trimmed[start..])
 }
 
+/// Check if the cursor is positioned after a specific command in the input line.
+///
+/// Used to determine context-sensitive completions (e.g., model names after `/model`).
 fn is_after_command(line: &str, command: &str) -> bool {
     let trimmed = line.trim();
     if let Some(rest) = trimmed.strip_prefix(command) {
@@ -106,6 +124,10 @@ fn is_after_command(line: &str, command: &str) -> bool {
     }
 }
 
+/// Helper struct that combines all rustyline components (completion, hints, highlighting, validation).
+///
+/// This is registered with the rustyline editor to provide interactive features
+/// like tab completion, history hints, bracket highlighting, and input validation.
 #[derive(Helper)]
 struct ReplHelper {
     completer: ReplCompleter,
@@ -146,13 +168,28 @@ impl Validator for ReplHelper {
     }
 }
 
+/// Interactive REPL (Read-Eval-Print Loop) session for the Alius CLI.
+///
+/// Manages the interactive chat interface, including:
+/// - LLM client initialization and model selection
+/// - Soul role (persona) selection
+/// - Slash command handling (/model, /soul, /config, /help, /quit)
+/// - Tab completion for commands, models, and roles
+/// - Chat message sending and response display
 pub struct ReplSession {
+    /// Application settings, shared via Arc<RwLock> for async access.
     settings: Arc<RwLock<Settings>>,
+    /// LLM client, lazily initialized on first chat message.
     client: Option<LlmClient>,
+    /// List of available model names (fetched from provider or defaults).
     models: Vec<String>,
 }
 
 impl ReplSession {
+    /// Create a new REPL session with the given settings.
+    ///
+    /// The LLM client is not initialized until the first chat message.
+    /// The model list starts with defaults and may be updated from the provider.
     pub fn new(settings: Settings) -> Self {
         Self {
             settings: Arc::new(RwLock::new(settings)),
@@ -161,8 +198,15 @@ impl ReplSession {
         }
     }
 
+    /// Run the interactive REPL loop.
+    ///
+    /// Flow:
+    ///   1. Prompt for soul role if not configured
+    ///   2. Fetch available models from the provider
+    ///   3. Enter the main read-eval-print loop
+    ///   4. Handle commands and chat messages until exit
     pub async fn run(&mut self) -> Result<()> {
-        // Check if soul is configured, if not prompt for selection
+        // Prompt for soul role selection if not already configured
         {
             let settings = self.settings.read().await;
             if settings.soul.is_none() {
@@ -171,9 +215,10 @@ impl ReplSession {
             }
         }
 
-        // Try to fetch models from server
+        // Try to fetch available models from the LLM provider
         self.fetch_models().await;
 
+        // Configure rustyline with list completion mode
         let config = Config::builder()
             .completion_type(rustyline::CompletionType::List)
             .build();
@@ -181,6 +226,7 @@ impl ReplSession {
         let mut rl: Editor<ReplHelper, DefaultHistory> = Editor::with_config(config)
             .map_err(|e| AliusError::Repl(e.to_string()))?;
 
+        // Register the helper for completion, hints, and highlighting
         let helper = ReplHelper {
             completer: ReplCompleter { models: self.models.clone() },
             hinter: HistoryHinter::new(),
@@ -189,7 +235,9 @@ impl ReplSession {
         };
         rl.set_helper(Some(helper));
 
+        // Main REPL loop
         loop {
+            // Build the prompt showing current role and model
             let (role, model) = {
                 let settings = self.settings.read().await;
                 let role = settings.soul.as_ref().map(|s| s.role.clone()).unwrap_or_else(|| "User".to_string());
@@ -203,16 +251,19 @@ impl ReplSession {
             match input {
                 Ok(line) if !line.trim().is_empty() => {
                     let _ = rl.add_history_entry(&line);
+                    // Handle command returns true if the REPL should exit
                     if self.handle_command(&line).await? {
                         break;
                     }
                 }
                 Ok(_) => continue,
                 Err(ReadlineError::Interrupted) => {
+                    // Ctrl+C: cancel current input, continue loop
                     println!("^C");
                     continue;
                 }
                 Err(ReadlineError::Eof) => {
+                    // Ctrl+D: exit the REPL
                     println!("^D");
                     break;
                 }
@@ -226,6 +277,10 @@ impl ReplSession {
         Ok(())
     }
 
+    /// Fetch available models from the LLM provider.
+    ///
+    /// Queries the provider's `/models` endpoint and filters for chat-capable models.
+    /// Falls back to the default model list if the request fails (e.g., no API key).
     async fn fetch_models(&mut self) {
         let settings = self.settings.read().await.clone();
 
@@ -234,7 +289,7 @@ impl ReplSession {
                 match client.list_models().await {
                     Ok(models) => {
                         if !models.is_empty() {
-                            // Filter out non-chat models and sort
+                            // Filter for chat-capable models only
                             let chat_models: Vec<String> = models
                                 .into_iter()
                                 .filter(|m| {
@@ -256,15 +311,18 @@ impl ReplSession {
                 }
             }
             Err(_) => {
-                // API key not configured, use defaults
+                // API key not configured, use defaults silently
             }
         }
     }
 
+    /// Handle a user input line, dispatching to commands or chat.
+    ///
+    /// Returns `Ok(true)` if the REPL should exit, `Ok(false)` to continue.
     async fn handle_command(&mut self, input: &str) -> Result<bool> {
         let trimmed = input.trim();
 
-        // Handle quit/exit
+        // Handle quit/exit commands
         if trimmed == "/quit" || trimmed == "/exit" {
             return Ok(true);
         }
@@ -312,19 +370,23 @@ impl ReplSession {
                 );
                 println!("Type {}/help{} for available commands", ANSI_GREEN, ANSI_RESET);
             }
+            // Any other input is treated as a chat message
             _ => self.chat(trimmed).await?,
         }
 
         Ok(false)
     }
 
+    /// Set the active LLM model and reset the client for re-initialization.
     async fn set_model(&mut self, model: &str) {
         let mut settings = self.settings.write().await;
         settings.llm.model = model.to_string();
+        // Reset client so it's recreated with the new model
         self.client = None;
         println!("{}Model changed to: {}{}", ANSI_GREEN, model, ANSI_RESET);
     }
 
+    /// Set the soul role (agent persona) and update settings.
     async fn set_soul(&mut self, role: &str) {
         let mut settings = self.settings.write().await;
         settings.soul = Some(crate::config::SoulSettings {
@@ -333,6 +395,10 @@ impl ReplSession {
         println!("{}Role changed to: {}{}", ANSI_GREEN, role, ANSI_RESET);
     }
 
+    /// Display an interactive model selection menu.
+    ///
+    /// Shows a list of available models with the current model pre-selected.
+    /// Updates the settings and resets the LLM client on selection.
     async fn select_model(&mut self) -> Result<()> {
         let current_model = self.settings.read().await.llm.model.clone();
 
@@ -357,6 +423,10 @@ impl ReplSession {
         Ok(())
     }
 
+    /// Display an interactive soul role selection menu.
+    ///
+    /// Shows available roles with the current role pre-selected.
+    /// Updates the settings on selection.
     async fn select_soul(&mut self) -> Result<()> {
         let current_role = self
             .settings
@@ -388,6 +458,10 @@ impl ReplSession {
         Ok(())
     }
 
+    /// Display the interactive configuration panel.
+    ///
+    /// Allows the user to modify provider, base URL, API key, model, and role.
+    /// Changes are saved to the user config file on "Save & Exit".
     async fn config_panel(&mut self) -> Result<()> {
         println!();
         println!("{}Configuration Panel{}", ANSI_BOLD, ANSI_RESET);
@@ -415,6 +489,7 @@ impl ReplSession {
 
             match choice.as_str() {
                 "1" => {
+                    // Change LLM provider
                     let provider = InquireSelect::new("Select provider:", PROVIDERS.to_vec())
                         .prompt()
                         .map_err(|e| AliusError::Repl(e.to_string()))?;
@@ -424,6 +499,7 @@ impl ReplSession {
                     settings.llm.base_url = None;
                 }
                 "2" => {
+                    // Change base URL
                     let current = self.settings.read().await.effective_base_url();
                     let base_url: String = Text::new("Enter base URL:")
                         .with_default(&current)
@@ -433,21 +509,26 @@ impl ReplSession {
                     settings.llm.base_url = Some(base_url);
                 }
                 "3" => {
+                    // Change API key (masked input)
                     let api_key = Password::new("Enter API key:")
                         .without_confirmation()
                         .prompt()
                         .map_err(|e| AliusError::Repl(e.to_string()))?;
                     let mut settings = self.settings.write().await;
                     settings.llm.api_key = Some(api_key);
+                    // Reset client so it's recreated with the new key
                     self.client = None;
                 }
                 "4" => {
+                    // Change model
                     drop(self.select_model().await);
                 }
                 "5" => {
+                    // Change soul role
                     drop(self.select_soul().await);
                 }
                 "6" => {
+                    // Save configuration and exit panel
                     let settings = self.settings.read().await.clone();
                     settings.save_to_user_config()?;
                     println!("{}Configuration saved!{}", ANSI_GREEN, ANSI_RESET);
@@ -456,6 +537,7 @@ impl ReplSession {
                     break;
                 }
                 "7" => {
+                    // Cancel without saving
                     println!("{}Configuration cancelled{}", ANSI_YELLOW, ANSI_RESET);
                     break;
                 }
@@ -469,6 +551,7 @@ impl ReplSession {
         Ok(())
     }
 
+    /// Display the current configuration in a readable format.
     async fn show_config(&self) -> Result<()> {
         let settings = self.settings.read().await;
         println!();
@@ -490,6 +573,7 @@ impl ReplSession {
         Ok(())
     }
 
+    /// Display the help message with available commands.
     fn show_help(&self) {
         println!();
         println!("{}Available Commands:{}", ANSI_BOLD, ANSI_RESET);
@@ -511,9 +595,14 @@ impl ReplSession {
         println!();
     }
 
+    /// Send a chat message to the LLM and display the response.
+    ///
+    /// Initializes the LLM client if it hasn't been created yet.
+    /// The client is reset when the model or API key changes.
     async fn chat(&mut self, prompt: &str) -> Result<()> {
         let settings = self.settings.read().await;
 
+        // Lazy initialization of the LLM client
         if self.client.is_none() {
             self.client = Some(LlmClient::new(&settings)?);
         }

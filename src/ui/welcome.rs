@@ -1,5 +1,6 @@
 use crate::config::Settings;
 
+// ANSI color codes for terminal output formatting
 const ANSI_CYAN: &str = "\x1b[36m";
 const ANSI_GREEN: &str = "\x1b[32m";
 const ANSI_YELLOW: &str = "\x1b[33m";
@@ -7,6 +8,17 @@ const ANSI_WHITE: &str = "\x1b[37m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_RESET: &str = "\x1b[0m";
 
+/// Render the welcome screen with ASCII art logo, configuration info, and quick start tips.
+///
+/// The welcome screen is displayed when the REPL starts and includes:
+/// - ASCII block art logo for "Alius"
+/// - Current version number
+/// - Quick start commands
+/// - Current configuration (model, provider, role)
+/// - API key status
+/// - Current working directory
+///
+/// The layout adapts to terminal width (minimum 60 columns).
 pub fn render_welcome(settings: &Settings) {
     let width = get_terminal_width();
     let version = env!("ALIUS_VERSION");
@@ -17,7 +29,7 @@ pub fn render_welcome(settings: &Settings) {
     let title = format!("Alius v{}", version);
     let header_width = width.saturating_sub(title.len() + 5);
 
-    // Top border
+    // Top border with title
     println!(
         "{}╭─── {} {}{}╮{}",
         ANSI_CYAN,
@@ -27,7 +39,7 @@ pub fn render_welcome(settings: &Settings) {
         ANSI_RESET
     );
 
-    // ASCII block logo - white color
+    // ASCII block logo rendered in white
     let logo_lines = [
         format!("{}⢀⣀⠀⡀⠀⠀⣀⣀⡀⡀⠀⡀⢀⣀⡀{}", ANSI_WHITE, ANSI_RESET),
         format!("{}⡎⠉⡆⡇⠀⠀⠉⡏⠁⡇⠀⡇⡎⠉⠁{}", ANSI_WHITE, ANSI_RESET),
@@ -36,7 +48,7 @@ pub fn render_welcome(settings: &Settings) {
         format!("{}⠁⠀⠁⠉⠉⠁⠉⠉⠁⠈⠉⠀⠉⠉{}", ANSI_WHITE, ANSI_RESET),
     ];
 
-    // Tips section - right side
+    // Quick start tips displayed on the right side
     let tips_lines = [
         format!("{}Quick Start{}", ANSI_BOLD, ANSI_RESET),
         format!("  {}alius run -p \"prompt\"{}", ANSI_GREEN, ANSI_RESET),
@@ -46,6 +58,7 @@ pub fn render_welcome(settings: &Settings) {
         format!("{}Current Config{}", ANSI_BOLD, ANSI_RESET),
     ];
 
+    // Check if API key is configured via environment variable
     let api_key_status = if std::env::var(&settings.llm.api_key_env).is_ok() {
         format!("{}API key configured ✓{}", ANSI_GREEN, ANSI_RESET)
     } else {
@@ -66,7 +79,7 @@ pub fn render_welcome(settings: &Settings) {
         ANSI_RESET
     );
 
-    // Logo + tips rows
+    // Logo + tips rows (interleaved layout)
     for (i, logo) in logo_lines.iter().enumerate() {
         let tip_idx = i + 1;
         let tip = tips_lines.get(tip_idx)
@@ -82,7 +95,7 @@ pub fn render_welcome(settings: &Settings) {
         );
     }
 
-    // Config section rows - display Model, Provider, Role
+    // Configuration section rows (Model, Provider, Role)
     let config_rows = [
         format!("  Model: {}", settings.llm.model),
         format!("  Provider: {}", settings.llm.provider),
@@ -99,7 +112,7 @@ pub fn render_welcome(settings: &Settings) {
         );
     }
 
-    // Status line
+    // Status line with version and API key status
     let status_left = format!("      {}alius v{} · LLM Agent CLI{}", ANSI_BOLD, version, ANSI_RESET);
     println!(
         "{}│{} {}{}│{}",
@@ -110,7 +123,7 @@ pub fn render_welcome(settings: &Settings) {
         ANSI_RESET
     );
 
-    // Path line
+    // Current working directory line
     let path_display = truncate(&cwd, width.saturating_sub(10));
     println!(
         "{}│{}{}│{}",
@@ -124,6 +137,10 @@ pub fn render_welcome(settings: &Settings) {
     println!("{}╰{}╯{}", ANSI_CYAN, "─".repeat(width.saturating_sub(2)), ANSI_RESET);
 }
 
+/// Get the terminal width in columns.
+///
+/// Falls back to 80 columns if the terminal size cannot be determined.
+/// Enforces a minimum width of 60 columns for proper layout.
 fn get_terminal_width() -> usize {
     terminal_size::terminal_size()
         .map(|(w, _)| w.0 as usize)
@@ -131,6 +148,10 @@ fn get_terminal_width() -> usize {
         .max(60)
 }
 
+/// Pad a string with spaces to reach the specified width.
+///
+/// Handles ANSI escape sequences correctly by calculating visible length
+/// rather than byte length.
 fn pad_right(s: &str, width: usize) -> String {
     let visible_len = visible_len(s);
     if visible_len >= width {
@@ -140,6 +161,10 @@ fn pad_right(s: &str, width: usize) -> String {
     }
 }
 
+/// Truncate a string to fit within the specified width, adding "..." if needed.
+///
+/// Correctly handles ANSI escape sequences by not counting them toward
+/// the visible width. This prevents color codes from affecting truncation.
 fn truncate(s: &str, max_width: usize) -> String {
     let visible = visible_len(s);
     if visible <= max_width {
@@ -163,6 +188,10 @@ fn truncate(s: &str, max_width: usize) -> String {
     }
 }
 
+/// Calculate the visible length of a string, ignoring ANSI escape sequences.
+///
+/// This is used for accurate text alignment in the terminal, since ANSI
+/// color codes take up bytes but no visible space.
 fn visible_len(s: &str) -> usize {
     let mut len = 0;
     let mut in_escape = false;
