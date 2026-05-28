@@ -294,6 +294,7 @@ jobs:
           SHA256_X64: ${{ steps.sha256.outputs.x64 }}
           SHA256_LINUX_X64: ${{ steps.sha256.outputs.linux_x64 }}
         run: |
+          mkdir -p tap/Formula
           cat > tap/Formula/alius.rb <<'TEMPLATE'
           class Alius < Formula
             desc "LLM Agent CLI - Software Self-Evolution"
