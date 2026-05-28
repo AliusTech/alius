@@ -220,6 +220,10 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
+            if npm view "@alius-tech/$pkg@$VERSION" version >/dev/null 2>&1; then
+              echo "Skipping @alius-tech/$pkg@$VERSION (already published)"
+              continue
+            fi
             echo "Publishing @alius-tech/$pkg@$VERSION..."
             cd "npm-packages/$pkg"
             npm publish --access public
@@ -229,6 +233,11 @@ jobs:
       - name: Publish main package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+
+          if npm view "@alius-tech/alius@$VERSION" version >/dev/null 2>&1; then
+            echo "Skipping @alius-tech/alius@$VERSION (already published)"
+            exit 0
+          fi
 
           cd npm-packages/alius
           npm publish --access public
