@@ -27,3 +27,4 @@ alius-config = { workspace = true }
 alius-model = { workspace = true }
 alius-store = { workspace = true }
 alius-tools = { workspace = true }
+alius-formula = { workspace = true }

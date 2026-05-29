@@ -131,15 +131,66 @@ pub fn soul_dir() -> PathBuf {
 
 /// Install a soul formula from the repo to the global directory.
 ///
-/// Copies the Formula TOML to ~/.alius/soul/<id>/versions/<version>/formula.toml
-pub fn install_soul(formula: &FormulaDef) -> Result<PathBuf> {
+/// Copies the Formula TOML and prompts/ to ~/.alius/soul/<id>/versions/<version>/
+pub fn install_soul(formula: &FormulaDef, repo_path: &Path) -> Result<PathBuf> {
     let dest = soul_dir().join(&formula.id).join("versions").join(&formula.version);
     std::fs::create_dir_all(&dest)?;
 
     let toml_content = toml::to_string_pretty(formula)?;
     std::fs::write(dest.join("formula.toml"), toml_content)?;
 
+    // Copy prompt files (identity.md, style.md, rules.md) from the repo
+    let src_soul = repo_path.join("Formula").join("souls").join(&formula.id);
+    if src_soul.exists() {
+        let dest_prompts = dest.join("prompts");
+        std::fs::create_dir_all(&dest_prompts)?;
+        for name in &["identity.md", "style.md", "rules.md"] {
+            let src_file = src_soul.join(name);
+            if src_file.exists() {
+                std::fs::copy(&src_file, dest_prompts.join(name))?;
+            }
+        }
+    }
+
     Ok(dest)
+}
+
+/// Load the system prompt from an installed soul's prompts/ directory.
+///
+/// Reads identity.md, style.md, rules.md and concatenates them.
+/// Returns None if the soul is not installed or has no prompts.
+pub fn load_soul_prompts(id: &str) -> Option<String> {
+    let dir = soul_dir().join(id);
+    if !dir.exists() {
+        return None;
+    }
+
+    // Find the latest version
+    let versions_dir = dir.join("versions");
+    let mut versions: Vec<String> = std::fs::read_dir(&versions_dir).ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    versions.sort();
+    let latest = versions.last()?;
+
+    let prompts_dir = versions_dir.join(latest).join("prompts");
+    if !prompts_dir.exists() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for name in &["identity.md", "style.md", "rules.md"] {
+        let path = prompts_dir.join(name);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                parts.push(content.trim().to_string());
+            }
+        }
+    }
+
+    if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
 }
 
 /// List all installed souls.

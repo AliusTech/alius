@@ -152,7 +152,10 @@ impl ReplSession {
                 .with_auto_confirm(true)
         });
 
-        let system_prompt = system_prompt_for_role(&settings.soul.role);
+        // Load system prompt: prefer activated Soul prompts, fallback to hardcoded role
+        let system_prompt = alius_formula::current_project_soul()
+            .and_then(|id| alius_formula::load_soul_prompts(&id))
+            .unwrap_or_else(|| system_prompt_for_role(&settings.soul.role));
         let conversation = Conversation::new(Some(system_prompt));
 
         let session_metadata = SessionMetadata::new(settings.llm.model.clone());
@@ -185,6 +188,13 @@ impl ReplSession {
 
     pub fn soul(&self) -> String {
         self.settings.read().unwrap().soul.role.to_string()
+    }
+
+    /// Build system prompt: prefer activated Soul prompts, fallback to hardcoded role.
+    fn build_system_prompt(&self) -> String {
+        alius_formula::current_project_soul()
+            .and_then(|id| alius_formula::load_soul_prompts(&id))
+            .unwrap_or_else(|| system_prompt_for_role(&self.settings.read().unwrap().soul.role))
     }
 
     /// Fetch available models from the provider.
@@ -389,8 +399,7 @@ impl ReplSession {
         if parts.len() > 1 {
             let role = parts[1..].join(" ");
             self.settings.write().unwrap().soul.role = alius_protocol::SoulRole::new(role.to_string());
-            let prompt = system_prompt_for_role(&self.settings.read().unwrap().soul.role);
-            self.conversation.set_system_prompt(prompt);
+            self.conversation.set_system_prompt(self.build_system_prompt());
             return Ok(format!("Soul switched to: {}", role));
         }
 
@@ -404,8 +413,7 @@ impl ReplSession {
         match selection {
             Ok(role) => {
                 self.settings.write().unwrap().soul.role = alius_protocol::SoulRole::new(role.to_string());
-                let prompt = system_prompt_for_role(&self.settings.read().unwrap().soul.role);
-                self.conversation.set_system_prompt(prompt);
+                self.conversation.set_system_prompt(self.build_system_prompt());
                 Ok(format!("Soul switched to: {}", role))
             }
             Err(_) => Ok("Selection cancelled".to_string()),
@@ -531,7 +539,7 @@ impl ReplSession {
                 let model = self.settings.read().unwrap().llm.model.clone();
                 self.session_metadata = SessionMetadata::new(model);
                 self.conversation = Conversation::new(
-                    Some(system_prompt_for_role(&self.settings.read().unwrap().soul.role))
+                    Some(self.build_system_prompt())
                 );
                 self.session_store.save(&self.session_metadata)?;
                 Ok(format!("New session: {}", &self.session_metadata.id.as_str()[..8]))
