@@ -90,6 +90,7 @@ pub fn show_help() {
     println!("  {}/history{}     - Show conversation history", GREEN, RESET);
     println!("  {}/tools{}       - List available tools", GREEN, RESET);
     println!("  {}/review{}      - Review last answer (review_model)", GREEN, RESET);
+    println!("  {}/memory{}     - Memory (show|save|list|clear)", GREEN, RESET);
     println!("  {}/clear{}       - Clear conversation history", GREEN, RESET);
     println!("  {}/help{}        - Show this help", GREEN, RESET);
     println!("  {}/quit{}        - Exit Alius", GREEN, RESET);

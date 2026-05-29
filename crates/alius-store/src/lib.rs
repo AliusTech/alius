@@ -12,6 +12,9 @@ pub mod session;
 /// Conversation history storage (messages, system prompts).
 pub mod conversation;
 
+/// Memory store for persistent notes and context.
+pub mod memory;
+
 // Re-export all public types for convenient access
 pub use session::*;
 pub use conversation::*;

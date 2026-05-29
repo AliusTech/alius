@@ -34,7 +34,7 @@ const DEFAULT_MODELS: &[&str] = &[
 /// Available slash commands for tab completion.
 const COMMANDS: &[&str] = &[
     "/model", "/soul", "/config", "/session", "/history",
-    "/review", "/confirm", "/tools", "/clear", "/help", "/quit", "/exit",
+    "/review", "/memory", "/confirm", "/tools", "/clear", "/help", "/quit", "/exit",
 ];
 
 /// Tab-completion helper for rustyline.
@@ -190,11 +190,27 @@ impl ReplSession {
         self.settings.read().unwrap().soul.role.to_string()
     }
 
-    /// Build system prompt: prefer activated Soul prompts, fallback to hardcoded role.
+    /// Build system prompt: Soul prompts + memories.
     fn build_system_prompt(&self) -> String {
-        alius_formula::current_project_soul()
+        let base = alius_formula::current_project_soul()
             .and_then(|id| alius_formula::load_soul_prompts(&id))
-            .unwrap_or_else(|| system_prompt_for_role(&self.settings.read().unwrap().soul.role))
+            .unwrap_or_else(|| system_prompt_for_role(&self.settings.read().unwrap().soul.role));
+
+        // Append memories
+        let mut parts = vec![base];
+        if let Ok(global) = alius_store::memory::MemoryStore::global() {
+            let text = global.all_text();
+            if !text.is_empty() {
+                parts.push(format!("User memories:\n{}", text));
+            }
+        }
+        if let Ok(project) = alius_store::memory::MemoryStore::project() {
+            let text = project.all_text();
+            if !text.is_empty() {
+                parts.push(format!("Project memories:\n{}", text));
+            }
+        }
+        parts.join("\n\n")
     }
 
     /// Fetch available models from the provider.
@@ -341,6 +357,7 @@ impl ReplSession {
             "/history" => self.cmd_history(),
             "/confirm" => self.cmd_confirm(parts),
             "/review" => self.cmd_review(parts).await,
+            "/memory" => self.cmd_memory(parts),
             "/tools" => Ok(format!("Available tools: {}", self.registry.list_names().join(", "))),
             "/clear" => {
                 self.conversation.clear();
@@ -683,6 +700,49 @@ impl ReplSession {
 
         let response = review_client.chat_once(&review_prompt, review_system).await?;
         Ok(response)
+    }
+
+    /// /memory command
+    fn cmd_memory(&self, parts: Vec<&str>) -> Result<String> {
+        let sub = parts.get(1).copied().unwrap_or("show");
+        match sub {
+            "save" => {
+                let text = parts[2..].join(" ");
+                if text.is_empty() {
+                    return Ok("Usage: /memory save <text>".to_string());
+                }
+                let mut store = alius_store::memory::MemoryStore::global()?;
+                store.save(&text)?;
+                Ok(format!("Memory saved: {}", text))
+            }
+            "list" | "show" => {
+                let global = alius_store::memory::MemoryStore::global()?;
+                let project = alius_store::memory::MemoryStore::project()?;
+                let mut out = String::new();
+                if !global.list().is_empty() {
+                    out.push_str("Global memories:\n");
+                    for (i, e) in global.list().iter().enumerate() {
+                        out.push_str(&format!("  {}. {}\n", i + 1, e.text));
+                    }
+                }
+                if !project.list().is_empty() {
+                    out.push_str("Project memories:\n");
+                    for (i, e) in project.list().iter().enumerate() {
+                        out.push_str(&format!("  {}. {}\n", i + 1, e.text));
+                    }
+                }
+                if out.is_empty() {
+                    out = "No memories saved. Use /memory save <text>".to_string();
+                }
+                Ok(out.trim_end().to_string())
+            }
+            "clear" => {
+                let mut store = alius_store::memory::MemoryStore::global()?;
+                store.clear()?;
+                Ok("Global memories cleared".to_string())
+            }
+            _ => Ok("Usage: /memory [show|save <text>|list|clear]".to_string()),
+        }
     }
 }
 

@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "alius"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-config",
  "alius-formula",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "alius-config"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "alius-formula"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "alius-interactive"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-config",
  "alius-formula",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "alius-model"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-config",
  "alius-protocol",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "alius-protocol"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "alius-store"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "alius-tools"
-version = "0.0.9"
+version = "0.1.0"
 dependencies = [
  "alius-protocol",
  "anyhow",
