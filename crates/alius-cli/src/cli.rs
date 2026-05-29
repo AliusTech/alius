@@ -76,6 +76,32 @@ pub enum Command {
     /// Initialize a project-level configuration file (./alius/config.toml).
     #[command(about = "Initialize project configuration")]
     Init,
+
+    /// Manage formula repository (alius-core).
+    #[command(about = "Formula repository management")]
+    Core {
+        #[command(subcommand)]
+        command: CoreCommand,
+    },
+}
+
+/// Subcommands for formula repository management.
+#[derive(Subcommand)]
+pub enum CoreCommand {
+    /// Clone or update the formula repository from remote.
+    #[command(about = "Update formula repository")]
+    Update,
+
+    /// List available formulas (souls, plugins).
+    #[command(about = "List available formulas")]
+    List,
+
+    /// Show details of a specific formula.
+    #[command(about = "Show formula details")]
+    Info {
+        /// Formula ID to look up (e.g. "coder", "researcher").
+        id: String,
+    },
 }
 
 /// Subcommands for configuration management.

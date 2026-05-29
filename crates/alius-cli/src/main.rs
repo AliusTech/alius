@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use alius::{Cli, Command, ConfigCommand};
+use alius::{Cli, Command, ConfigCommand, CoreCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
@@ -46,6 +46,10 @@ pub async fn run() -> Result<()> {
         // Display version information
         Some(Command::Version) => {
             println!("alius {}", env!("ALIUS_VERSION"));
+        }
+        // Formula repository management
+        Some(Command::Core { command }) => {
+            handle_core(command)?;
         }
         // Initialize project configuration
         Some(Command::Init) => {
@@ -97,6 +101,65 @@ fn handle_config(cmd: ConfigCommand) -> Result<()> {
         // Set the soul role
         ConfigCommand::Soul { role } => {
             println!("Soul role set to: {}", role);
+        }
+    }
+    Ok(())
+}
+
+/// Handle formula repository subcommands.
+fn handle_core(cmd: CoreCommand) -> Result<()> {
+    match cmd {
+        CoreCommand::Update => {
+            println!("Updating formula repository...");
+            let path = alius_formula::update_repo()?;
+            println!("Updated: {}", path.display());
+        }
+        CoreCommand::List => {
+            let repo = alius_formula::official_repo_path();
+            if !repo.exists() {
+                println!("Repository not found. Run: alius core update");
+                return Ok(());
+            }
+            let souls = alius_formula::list_formulas(&repo, "souls")?;
+            if souls.is_empty() {
+                println!("No formulas found.");
+            } else {
+                println!("Available Souls:");
+                for f in &souls {
+                    println!("  {:<20} {} v{}", f.id, f.name, f.version);
+                    println!("  {:<20} {}", "", f.description);
+                }
+            }
+        }
+        CoreCommand::Info { id } => {
+            let repo = alius_formula::official_repo_path();
+            if !repo.exists() {
+                println!("Repository not found. Run: alius core update");
+                return Ok(());
+            }
+            match alius_formula::find_formula(&repo, "souls", &id)? {
+                Some(f) => {
+                    println!("{} (v{})", f.name, f.version);
+                    println!("  ID:          {}", f.id);
+                    println!("  Type:        {}", f.formula_type);
+                    println!("  Description: {}", f.description);
+                    if let Some(lic) = &f.license {
+                        println!("  License:     {}", lic);
+                    }
+                    if let Some(model) = &f.model {
+                        if let Some(p) = &model.preferred_provider {
+                            println!("  Provider:    {}", p);
+                        }
+                        if let Some(m) = &model.preferred_main_model {
+                            println!("  Model:       {}", m);
+                        }
+                        if let Some(r) = &model.preferred_review_model {
+                            println!("  Review:      {}", r);
+                        }
+                    }
+                }
+                None => println!("Formula not found: {}", id),
+            }
         }
     }
     Ok(())
