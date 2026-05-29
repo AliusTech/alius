@@ -34,7 +34,7 @@ const DEFAULT_MODELS: &[&str] = &[
 /// Available slash commands for tab completion.
 const COMMANDS: &[&str] = &[
     "/model", "/soul", "/config", "/session", "/history",
-    "/tools", "/clear", "/help", "/quit", "/exit",
+    "/review", "/confirm", "/tools", "/clear", "/help", "/quit", "/exit",
 ];
 
 /// Tab-completion helper for rustyline.
@@ -134,6 +134,7 @@ pub struct ReplSession {
     conversation_store: ConversationStore,
     workspace: std::path::PathBuf,
     auto_confirm: bool,
+    auto_review: bool,
     models: Vec<String>,
 }
 
@@ -173,6 +174,7 @@ impl ReplSession {
             conversation_store,
             workspace,
             auto_confirm: true,
+            auto_review: false,
             models: DEFAULT_MODELS.iter().map(|s| s.to_string()).collect(),
         })
     }
@@ -290,6 +292,20 @@ impl ReplSession {
             )?;
             let _ = self.session_store.update(&mut self.session_metadata);
 
+            // Auto-review if enabled
+            if self.auto_review {
+                let review_result = self.cmd_review(vec!["/review"]).await;
+                match review_result {
+                    Ok(review) if !review.is_empty() => {
+                        println!("\n\x1b[36m--- Review ---\x1b[0m");
+                        println!("{}", review);
+                        println!("\x1b[36m--- End Review ---\x1b[0m\n");
+                    }
+                    Err(e) => eprintln!("\nReview error: {}", e),
+                    _ => {}
+                }
+            }
+
             return Ok(full_response);
         }
 
@@ -308,6 +324,7 @@ impl ReplSession {
             "/session" => self.cmd_session(parts).await,
             "/history" => self.cmd_history(),
             "/confirm" => self.cmd_confirm(parts),
+            "/review" => self.cmd_review(parts).await,
             "/tools" => Ok(format!("Available tools: {}", self.registry.list_names().join(", "))),
             "/clear" => {
                 self.conversation.clear();
@@ -449,8 +466,14 @@ impl ReplSession {
                 }
                 "6" => {
                     self.settings.read().unwrap().save_to_user_config()?;
-                    println!("{}Configuration saved!{}", GREEN, RESET);
+                    self.rebuild_client();
                     self.fetch_models().await;
+                    let s = self.settings.read().unwrap();
+                    println!();
+                    println!("{}Configuration saved!{}", GREEN, RESET);
+                    println!("  Provider: {:?}", s.llm.provider);
+                    println!("  Model:    {}", s.llm.model);
+                    println!();
                     return Ok(String::new());
                 }
                 "7" => {
@@ -569,6 +592,57 @@ impl ReplSession {
             let status = if self.auto_confirm { "on" } else { "off" };
             Ok(format!("Confirm mode: {} (use /confirm on|off)", status))
         }
+    }
+
+    /// /review command — use review_model to critique last assistant answer
+    async fn cmd_review(&mut self, parts: Vec<&str>) -> Result<String> {
+        // Handle on/off toggle
+        if let Some(mode) = parts.get(1) {
+            match *mode {
+                "on" | "true" => {
+                    self.auto_review = true;
+                    return Ok("Auto-review enabled".to_string());
+                }
+                "off" | "false" => {
+                    self.auto_review = false;
+                    return Ok("Auto-review disabled".to_string());
+                }
+                _ => {}
+            }
+        }
+
+        // Get last assistant message
+        let last_assistant = self.conversation.messages().iter().rev()
+            .find(|m| m.role == alius_protocol::MessageRole::Assistant);
+
+        let assistant_text = match last_assistant {
+            Some(m) => m.content.clone(),
+            None => return Ok("No assistant response to review".to_string()),
+        };
+
+        // Build review prompt
+        let review_prompt = format!(
+            "Please review the following assistant response for correctness, completeness, and quality. \
+             Point out any issues, errors, or areas for improvement. Be concise.\n\n\
+             Assistant response:\n{}",
+            assistant_text
+        );
+
+        // Create review client (use review_model if set, otherwise main model)
+        let review_settings = {
+            let s = self.settings.read().unwrap();
+            let mut review_s = s.clone();
+            if let Some(ref rm) = s.llm.review_model {
+                review_s.llm.model = rm.clone();
+            }
+            review_s
+        };
+
+        let review_client = LlmClient::new(review_settings.llm)?;
+        let review_system = Some("You are a code review assistant. Review responses for quality and correctness.");
+
+        let response = review_client.chat_once(&review_prompt, review_system).await?;
+        Ok(response)
     }
 }
 

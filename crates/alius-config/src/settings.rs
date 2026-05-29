@@ -165,6 +165,10 @@ pub struct LlmSettings {
     /// If not set, the default URL for the provider is used.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Model used for the /review command (dual-model mechanism).
+    /// If not set, falls back to the main model.
+    #[serde(default)]
+    pub review_model: Option<String>,
 }
 
 impl Default for LlmSettings {
@@ -175,6 +179,7 @@ impl Default for LlmSettings {
             api_key: None,
             api_key_env: Some("OPENAI_API_KEY".to_string()),
             base_url: None,
+            review_model: None,
         }
     }
 }
