@@ -104,6 +104,13 @@ pub enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
+
+    /// Manage and run workflows.
+    #[command(about = "Workflow management")]
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
 }
 
 /// Subcommands for MCP server management.
@@ -125,6 +132,28 @@ pub enum McpCommand {
     Tools {
         /// Server name to query.
         name: String,
+    },
+}
+
+/// Subcommands for workflow management.
+#[derive(Subcommand)]
+pub enum WorkflowCommand {
+    /// List available workflows.
+    #[command(about = "List workflows")]
+    List,
+
+    /// Run a workflow.
+    #[command(about = "Run a workflow")]
+    Run {
+        /// Workflow name or path to JSON file.
+        name: String,
+    },
+
+    /// Validate a workflow file.
+    #[command(about = "Validate workflow file")]
+    Validate {
+        /// Path to workflow JSON file.
+        path: String,
     },
 }
 

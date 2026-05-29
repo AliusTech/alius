@@ -20,3 +20,4 @@ alius-interactive = { workspace = true }
 alius-formula = { workspace = true }
 alius-plugin = { workspace = true }
 alius-mcp = { workspace = true }
+alius-workflow = { workspace = true }

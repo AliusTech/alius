@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand, McpCommand};
+use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand, McpCommand, WorkflowCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
@@ -62,6 +62,10 @@ pub async fn run() -> Result<()> {
         // MCP server management
         Some(Command::Mcp { command }) => {
             handle_mcp(command)?;
+        }
+        // Workflow management
+        Some(Command::Workflow { command }) => {
+            handle_workflow(command).await?;
         }
         // Initialize project configuration
         Some(Command::Init) => {
@@ -311,6 +315,55 @@ fn handle_mcp(cmd: McpCommand) -> Result<()> {
                 println!("  {:<30} {}", t.name, t.description);
             }
             server.stop()?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle workflow management subcommands.
+async fn handle_workflow(cmd: WorkflowCommand) -> Result<()> {
+    match cmd {
+        WorkflowCommand::List => {
+            let dir = alius_workflow::workflows_dir();
+            let workflows = alius_workflow::load_workflows(&dir)?;
+            if workflows.is_empty() {
+                println!("No workflows found in {}", dir.display());
+                println!("Create a .json workflow file in that directory.");
+            } else {
+                println!("Workflows:");
+                for wf in &workflows {
+                    println!("  {:<20} {} ({} steps)", wf.name, wf.description, wf.steps.len());
+                }
+            }
+        }
+        WorkflowCommand::Run { name } => {
+            // Try as path first, then as name in workflows dir
+            let path = std::path::PathBuf::from(&name);
+            let workflow = if path.exists() {
+                alius_workflow::load_workflow(&path)?
+            } else {
+                let dir = alius_workflow::workflows_dir();
+                let workflows = alius_workflow::load_workflows(&dir)?;
+                workflows.into_iter()
+                    .find(|w| w.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("Workflow not found: {}", name))?
+            };
+            alius_workflow::execute_workflow(&workflow).await?;
+        }
+        WorkflowCommand::Validate { path } => {
+            let path = std::path::PathBuf::from(&path);
+            match alius_workflow::load_workflow(&path) {
+                Ok(wf) => {
+                    println!("Valid workflow: {}", wf.name);
+                    println!("  Steps: {}", wf.steps.len());
+                    for step in &wf.steps {
+                        println!("    {} ({:?})", step.id, step.step_type);
+                    }
+                }
+                Err(e) => {
+                    println!("Invalid workflow: {}", e);
+                }
+            }
         }
     }
     Ok(())

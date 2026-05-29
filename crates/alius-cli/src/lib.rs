@@ -7,4 +7,4 @@
 pub mod cli;
 
 // Re-export CLI types for convenient access from main.rs
-pub use cli::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand, McpCommand};
+pub use cli::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand, McpCommand, WorkflowCommand};
