@@ -40,7 +40,8 @@ impl Settings {
     /// Layers (in order of precedence, lowest to highest):
     ///   1. Embedded default config (compiled into the binary)
     ///   2. User config at ~/.alius/config.toml (if it exists)
-    ///   3. Environment variable overrides (ALIUS_ prefix, __ separator)
+    ///   3. Project config at ./alius/config.toml (searched upward from cwd)
+    ///   4. Environment variable overrides (ALIUS_ prefix, __ separator)
     pub fn load() -> anyhow::Result<Self> {
         let mut builder = config::Config::builder()
             .add_source(config::File::from_str(DEFAULT_CONFIG, config::FileFormat::Toml));
@@ -49,6 +50,11 @@ impl Settings {
         if user_config_path.exists() {
             builder = builder
                 .add_source(config::File::from(user_config_path.as_path()).required(false));
+        }
+
+        if let Some(project_config_path) = find_project_config() {
+            builder = builder
+                .add_source(config::File::from(project_config_path).required(false));
         }
 
         builder = builder
@@ -130,6 +136,22 @@ fn get_user_config_path() -> PathBuf {
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| "~".to_string());
     PathBuf::from(home).join(".alius").join("config.toml")
+}
+
+/// Search upward from cwd for a project-level config at ./alius/config.toml.
+///
+/// Walks up the directory tree from the current working directory,
+/// looking for an `alius/config.toml` file. Returns the first match found.
+fn find_project_config() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("alius").join("config.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
+    }
 }
 
 /// Ensure the configuration directory exists, creating it if necessary.

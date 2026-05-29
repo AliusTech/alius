@@ -85,7 +85,7 @@ pub fn show_help() {
     println!("{}Available Commands:{}", BOLD, RESET);
     println!("  {}/model{}       - Select model (interactive)", GREEN, RESET);
     println!("  {}/soul{}        - Select soul role (interactive)", GREEN, RESET);
-    println!("  {}/config{}      - Open configuration panel", GREEN, RESET);
+    println!("  {}/config{}      - Config panel (/config show for details)", GREEN, RESET);
     println!("  {}/session{}     - Session (current|new|list|load|clear)", GREEN, RESET);
     println!("  {}/history{}     - Show conversation history", GREEN, RESET);
     println!("  {}/tools{}       - List available tools", GREEN, RESET);

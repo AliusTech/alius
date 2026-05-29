@@ -72,6 +72,10 @@ pub enum Command {
 
     /// Display version information (resolved from git tag or Cargo.toml).
     Version,
+
+    /// Initialize a project-level configuration file (./alius/config.toml).
+    #[command(about = "Initialize project configuration")]
+    Init,
 }
 
 /// Subcommands for configuration management.

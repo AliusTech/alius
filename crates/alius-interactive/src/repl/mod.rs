@@ -320,7 +320,13 @@ impl ReplSession {
         match cmd {
             "/model" => self.cmd_model(parts).await,
             "/soul" => self.cmd_soul(parts).await,
-            "/config" => self.cmd_config().await,
+            "/config" => {
+                if parts.get(1) == Some(&"show") {
+                    self.cmd_config_show()
+                } else {
+                    self.cmd_config().await
+                }
+            },
             "/session" => self.cmd_session(parts).await,
             "/history" => self.cmd_history(),
             "/confirm" => self.cmd_confirm(parts),
@@ -485,6 +491,32 @@ impl ReplSession {
         }
     }
 
+    /// /config show — display config with sources
+    fn cmd_config_show(&self) -> Result<String> {
+        let s = self.settings.read().unwrap();
+        let mut out = String::new();
+        out.push_str(&format!("{}Configuration:{}\n", BOLD, RESET));
+        out.push_str(&format!("  Provider:  {:?}\n", s.llm.provider));
+        out.push_str(&format!("  Model:     {}\n", s.llm.model));
+        out.push_str(&format!("  Base URL:  {}\n", s.effective_base_url()));
+        out.push_str(&format!("  API Key:   {}\n", if s.llm.api_key.is_some() { "***set***" } else { "not set" }));
+        if let Some(ref rm) = s.llm.review_model {
+            out.push_str(&format!("  Review:    {}\n", rm));
+        }
+        out.push_str(&format!("  Soul:      {}\n", s.soul.role));
+        out.push_str(&format!("\n{}Config files:{}\n", BOLD, RESET));
+        let user_path = dirs_or_home().join(".alius").join("config.toml");
+        out.push_str(&format!("  User:    {} {}\n", user_path.display(),
+            if user_path.exists() { "✓" } else { "(not found)" }));
+        if let Some(proj) = find_project_config_from_cwd() {
+            out.push_str(&format!("  Project: {} ✓\n", proj.display()));
+        } else {
+            out.push_str("  Project: (not found)\n");
+        }
+        out.push_str("  Env:     ALIUS_* variables\n");
+        Ok(out)
+    }
+
     /// /session command
     async fn cmd_session(&mut self, parts: Vec<&str>) -> Result<String> {
         let sub = parts.get(1).copied().unwrap_or("current");
@@ -643,6 +675,25 @@ impl ReplSession {
 
         let response = review_client.chat_once(&review_prompt, review_system).await?;
         Ok(response)
+    }
+}
+
+fn dirs_or_home() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("~"))
+}
+
+fn find_project_config_from_cwd() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("alius").join("config.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
     }
 }
 

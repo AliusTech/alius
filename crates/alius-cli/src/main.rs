@@ -47,6 +47,32 @@ pub async fn run() -> Result<()> {
         Some(Command::Version) => {
             println!("alius {}", env!("ALIUS_VERSION"));
         }
+        // Initialize project configuration
+        Some(Command::Init) => {
+            let config_dir = std::path::PathBuf::from("alius");
+            let config_file = config_dir.join("config.toml");
+            if config_file.exists() {
+                println!("Project config already exists: {}", config_file.display());
+            } else {
+                std::fs::create_dir_all(&config_dir)?;
+                let template = format!(
+                    "# Alius project-level configuration\n\
+                     # This config overrides ~/.alius/config.toml\n\n\
+                     [llm]\n\
+                     # provider = \"openai\"\n\
+                     # model = \"gpt-4o\"\n\
+                     # base_url = \"https://api.openai.com/v1\"\n\n\
+                     [agent]\n\
+                     # max_retries = 3\n\
+                     # timeout_seconds = 60\n\n\
+                     [soul]\n\
+                     # role = \"{}\"\n",
+                    settings.soul.role
+                );
+                std::fs::write(&config_file, template)?;
+                println!("Created project config: {}", config_file.display());
+            }
+        }
     }
 
     Ok(())
