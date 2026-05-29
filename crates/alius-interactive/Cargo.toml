@@ -28,3 +28,6 @@ alius-model = { workspace = true }
 alius-store = { workspace = true }
 alius-tools = { workspace = true }
 alius-formula = { workspace = true }
+alius-mcp = { workspace = true }
+alius-plugin = { workspace = true }
+alius-workflow = { workspace = true }

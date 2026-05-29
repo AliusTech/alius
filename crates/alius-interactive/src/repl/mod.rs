@@ -34,7 +34,7 @@ const DEFAULT_MODELS: &[&str] = &[
 /// Available slash commands for tab completion.
 const COMMANDS: &[&str] = &[
     "/model", "/soul", "/config", "/session", "/history",
-    "/review", "/memory", "/confirm", "/tools", "/clear", "/help", "/quit", "/exit",
+    "/review", "/memory", "/doctor", "/trace", "/confirm", "/tools", "/clear", "/help", "/quit", "/exit",
 ];
 
 /// Tab-completion helper for rustyline.
@@ -358,6 +358,8 @@ impl ReplSession {
             "/confirm" => self.cmd_confirm(parts),
             "/review" => self.cmd_review(parts).await,
             "/memory" => self.cmd_memory(parts),
+            "/doctor" => self.cmd_doctor(),
+            "/trace" => self.cmd_trace(parts),
             "/tools" => Ok(format!("Available tools: {}", self.registry.list_names().join(", "))),
             "/clear" => {
                 self.conversation.clear();
@@ -742,6 +744,94 @@ impl ReplSession {
                 Ok("Global memories cleared".to_string())
             }
             _ => Ok("Usage: /memory [show|save <text>|list|clear]".to_string()),
+        }
+    }
+
+    /// /doctor command — check system health
+    fn cmd_doctor(&self) -> Result<String> {
+        let s = self.settings.read().unwrap();
+        let mut checks = Vec::new();
+
+        // API key
+        let api_ok = s.api_key().is_ok();
+        checks.push(format!("  {} API Key", if api_ok { "OK" } else { "FAIL" }));
+
+        // Provider
+        checks.push(format!("  OK Provider: {:?}", s.llm.provider));
+
+        // Model
+        checks.push(format!("  OK Model: {}", s.llm.model));
+
+        // Review model
+        if s.llm.review_model.is_some() {
+            checks.push("  OK Review model configured".to_string());
+        }
+
+        // Soul
+        match alius_formula::current_project_soul() {
+            Some(id) => checks.push(format!("  OK Active soul: {}", id)),
+            None => checks.push("  -- No soul activated".to_string()),
+        }
+
+        // Formula repo
+        let repo = alius_formula::official_repo_path();
+        if repo.exists() {
+            checks.push(format!("  OK Formula repo: {}", repo.display()));
+        } else {
+            checks.push("  -- Formula repo not found (run: alius core update)".to_string());
+        }
+
+        // Memory
+        let global_mem = alius_store::memory::MemoryStore::global().ok();
+        let mem_count = global_mem.map(|m| m.list().len()).unwrap_or(0);
+        checks.push(format!("  OK Memories: {} entries", mem_count));
+
+        // MCP
+        let mcp_config = alius_mcp::load_config().ok();
+        let mcp_count = mcp_config.map(|c| c.servers.len()).unwrap_or(0);
+        checks.push(format!("  OK MCP servers: {} configured", mcp_count));
+
+        // Plugins
+        let plugin_count = alius_plugin::list_plugins().ok().map(|p| p.len()).unwrap_or(0);
+        checks.push(format!("  OK Plugins: {} installed", plugin_count));
+
+        // Workflows
+        let wf_dir = alius_workflow::workflows_dir();
+        let wf_count = alius_workflow::load_workflows(&wf_dir).ok().map(|w| w.len()).unwrap_or(0);
+        checks.push(format!("  OK Workflows: {} available", wf_count));
+
+        let mut out = format!("{}System Health Check{}\n", BOLD, RESET);
+        out.push_str(&checks.join("\n"));
+        Ok(out)
+    }
+
+    /// /trace command
+    fn cmd_trace(&self, parts: Vec<&str>) -> Result<String> {
+        let sub = parts.get(1).copied().unwrap_or("latest");
+        match sub {
+            "latest" | "show" => {
+                let msgs = self.conversation.messages();
+                if msgs.is_empty() {
+                    return Ok("No messages in conversation".to_string());
+                }
+                let mut out = format!("{}Conversation Trace ({} messages){}\n", BOLD, RESET, msgs.len());
+                for (i, msg) in msgs.iter().enumerate() {
+                    let role = match msg.role {
+                        alius_protocol::MessageRole::System => "SYS",
+                        alius_protocol::MessageRole::User => "USR",
+                        alius_protocol::MessageRole::Assistant => "AST",
+                        alius_protocol::MessageRole::Summary => "SUM",
+                    };
+                    let preview = if msg.content.len() > 80 {
+                        format!("{}...", &msg.content[..80])
+                    } else {
+                        msg.content.clone()
+                    };
+                    out.push_str(&format!("  {:3} [{}] {}\n", i + 1, role, preview));
+                }
+                Ok(out.trim_end().to_string())
+            }
+            _ => Ok("Usage: /trace [latest]".to_string()),
         }
     }
 }

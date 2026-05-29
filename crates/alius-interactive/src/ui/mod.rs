@@ -91,6 +91,8 @@ pub fn show_help() {
     println!("  {}/tools{}       - List available tools", GREEN, RESET);
     println!("  {}/review{}      - Review last answer (review_model)", GREEN, RESET);
     println!("  {}/memory{}     - Memory (show|save|list|clear)", GREEN, RESET);
+    println!("  {}/doctor{}     - System health check", GREEN, RESET);
+    println!("  {}/trace{}      - Show conversation trace", GREEN, RESET);
     println!("  {}/clear{}       - Clear conversation history", GREEN, RESET);
     println!("  {}/help{}        - Show this help", GREEN, RESET);
     println!("  {}/quit{}        - Exit Alius", GREEN, RESET);

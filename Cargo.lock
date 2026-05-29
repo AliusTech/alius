@@ -70,10 +70,13 @@ version = "0.4.0"
 dependencies = [
  "alius-config",
  "alius-formula",
+ "alius-mcp",
  "alius-model",
+ "alius-plugin",
  "alius-protocol",
  "alius-store",
  "alius-tools",
+ "alius-workflow",
  "anyhow",
  "chrono",
  "dialoguer",
