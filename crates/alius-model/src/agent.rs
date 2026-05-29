@@ -112,7 +112,7 @@ impl AliusAgent {
         conversation.add_user_message(user_input);
 
         // Get tool definitions from registry
-        let tools = self.registry.to_openai_tools();
+        let tools = self.registry.to_tool_defs();
 
         // Agent loop: call model, execute tools if needed, repeat
         loop {
@@ -232,7 +232,7 @@ impl AliusAgent {
     async fn get_model_response(
         &self,
         conversation: &Conversation,
-        tools: Vec<serde_json::Value>,
+        tools: Vec<alius_protocol::ToolDef>,
     ) -> anyhow::Result<ModelResponse> {
         let (stream, tool_calls) = self.client.chat_stream_with_tools(conversation, tools).await?;
 
@@ -267,7 +267,7 @@ impl AliusAgent {
         &self,
         conversation: &Conversation,
         tool_results: Vec<(String, String, String)>,
-        tools: Vec<serde_json::Value>,
+        tools: Vec<alius_protocol::ToolDef>,
     ) -> anyhow::Result<ModelResponse> {
         let (stream, tool_calls) = self.client
             .continue_with_tool_results(conversation, tool_results, tools)

@@ -17,6 +17,8 @@ futures = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = "0.1"
+reqwest = { workspace = true }
+bytes = { workspace = true }
 alius-protocol = { workspace = true }
 alius-config = { workspace = true }
 alius-tools = { workspace = true }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::AliusTool;
+use alius_protocol::ToolDef;
 
 /// Tool registry for managing available tools
 pub struct ToolRegistry {
@@ -54,6 +55,18 @@ impl ToolRegistry {
                         "parameters": tool.input_schema(),
                     }
                 })
+            })
+            .collect()
+    }
+
+    /// Get all tools as provider-agnostic ToolDef list
+    pub fn to_tool_defs(&self) -> Vec<ToolDef> {
+        self.tools
+            .values()
+            .map(|tool| ToolDef {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                parameters: tool.input_schema(),
             })
             .collect()
     }

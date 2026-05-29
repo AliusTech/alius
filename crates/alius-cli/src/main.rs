@@ -20,7 +20,7 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Load settings from default location or specified config file
-    let settings = Settings::default(); // TODO: Implement proper config loading
+    let settings = Settings::load()?;
 
     match cli.command {
         // No subcommand or explicit REPL: start interactive mode

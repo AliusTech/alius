@@ -6,6 +6,13 @@
 
 use alius_protocol::SoulRole;
 
+/// Built-in soul roles available for selection.
+pub const SOUL_ROLES: &[&str] = &[
+    "Frontend Engineer",
+    "Backend Developer",
+    "Operations Personnel",
+];
+
 /// Get the system prompt for a given soul role.
 ///
 /// Maps role names to detailed system prompts that define the agent's

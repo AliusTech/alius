@@ -25,6 +25,15 @@ pub mod retry;
 /// Agent loop implementation with tool calling support.
 pub mod agent;
 
+/// LLM provider trait and ChatStream type.
+pub mod provider;
+
+/// OpenAI-compatible provider implementation.
+pub mod openai_provider;
+
+/// Anthropic native provider implementation.
+pub mod anthropic_provider;
+
 // Re-export all public types for convenient access
 pub use client::*;
 pub use conversation::*;
@@ -32,3 +41,4 @@ pub use events::*;
 pub use agent_events::*;
 pub use retry::*;
 pub use agent::*;
+pub use provider::{LlmProvider, ChatStream, ToolResponse};

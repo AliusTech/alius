@@ -97,6 +97,16 @@ impl Conversation {
         self.summary = None;
     }
 
+    /// Create a conversation from existing messages (e.g. loaded from store).
+    pub fn from_messages(system_prompt: Option<String>, messages: Vec<Message>) -> Self {
+        Self {
+            messages,
+            system_prompt,
+            max_tokens: 4096,
+            summary: None,
+        }
+    }
+
     /// Get message count
     pub fn len(&self) -> usize {
         self.messages.len()

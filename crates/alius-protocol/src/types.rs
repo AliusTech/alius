@@ -128,3 +128,18 @@ impl SessionMetadata {
         }
     }
 }
+
+/// Provider-agnostic tool definition for LLM function calling.
+///
+/// Each provider converts this to its native format:
+/// - OpenAI: `{type:"function", function:{name, description, parameters}}`
+/// - Anthropic: `{name, description, input_schema}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDef {
+    /// Tool name (used by the LLM to call the tool).
+    pub name: String,
+    /// Tool description (shown to the LLM).
+    pub description: String,
+    /// JSON Schema for the tool's input parameters.
+    pub parameters: serde_json::Value,
+}
