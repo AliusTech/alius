@@ -83,6 +83,46 @@ pub enum Command {
         #[command(subcommand)]
         command: CoreCommand,
     },
+
+    /// Manage Soul installation and activation.
+    #[command(about = "Soul management")]
+    Soul {
+        #[command(subcommand)]
+        command: SoulCommand,
+    },
+}
+
+/// Subcommands for Soul management.
+#[derive(Subcommand)]
+pub enum SoulCommand {
+    /// List installed souls.
+    #[command(about = "List installed souls")]
+    List,
+
+    /// Install a soul from the formula repository.
+    #[command(about = "Install a soul")]
+    Install {
+        /// Soul ID to install (e.g. "coder", "researcher").
+        id: String,
+    },
+
+    /// Activate a soul for the current project.
+    #[command(about = "Activate a soul")]
+    Use {
+        /// Soul ID to activate.
+        id: String,
+    },
+
+    /// Show the currently activated soul.
+    #[command(about = "Show current soul")]
+    Current,
+
+    /// Remove an installed soul.
+    #[command(about = "Remove a soul")]
+    Remove {
+        /// Soul ID to remove.
+        id: String,
+    },
 }
 
 /// Subcommands for formula repository management.

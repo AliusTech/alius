@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use alius::{Cli, Command, ConfigCommand, CoreCommand};
+use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
@@ -50,6 +50,10 @@ pub async fn run() -> Result<()> {
         // Formula repository management
         Some(Command::Core { command }) => {
             handle_core(command)?;
+        }
+        // Soul management
+        Some(Command::Soul { command }) => {
+            handle_soul(command)?;
         }
         // Initialize project configuration
         Some(Command::Init) => {
@@ -160,6 +164,61 @@ fn handle_core(cmd: CoreCommand) -> Result<()> {
                 }
                 None => println!("Formula not found: {}", id),
             }
+        }
+    }
+    Ok(())
+}
+
+/// Handle soul management subcommands.
+fn handle_soul(cmd: SoulCommand) -> Result<()> {
+    match cmd {
+        SoulCommand::List => {
+            let souls = alius_formula::list_installed_souls()?;
+            if souls.is_empty() {
+                println!("No souls installed. Run: alius soul install <id>");
+            } else {
+                let current = alius_formula::current_project_soul();
+                println!("Installed Souls:");
+                for s in &souls {
+                    let marker = if current.as_deref() == Some(&s.id) { " (active)" } else { "" };
+                    println!("  {:<20} {} v{}{}", s.id, s.name, s.version, marker);
+                }
+            }
+        }
+        SoulCommand::Install { id } => {
+            // Check if already installed
+            let existing = alius_formula::list_installed_souls()?;
+            if existing.iter().any(|s| s.id == id) {
+                println!("Soul '{}' is already installed", id);
+                return Ok(());
+            }
+            // Find formula in repo
+            let repo = alius_formula::official_repo_path();
+            if !repo.exists() {
+                println!("Repository not found. Run: alius core update");
+                return Ok(());
+            }
+            match alius_formula::find_formula(&repo, "souls", &id)? {
+                Some(formula) => {
+                    let path = alius_formula::install_soul(&formula)?;
+                    println!("Installed '{}' v{} to {}", id, formula.version, path.display());
+                }
+                None => println!("Formula not found: {}. Run: alius core list", id),
+            }
+        }
+        SoulCommand::Use { id } => {
+            let path = alius_formula::activate_soul(&id)?;
+            println!("Activated '{}' in {}", id, path.display());
+        }
+        SoulCommand::Current => {
+            match alius_formula::current_project_soul() {
+                Some(id) => println!("Current soul: {}", id),
+                None => println!("No soul activated. Run: alius soul use <id>"),
+            }
+        }
+        SoulCommand::Remove { id } => {
+            alius_formula::remove_soul(&id)?;
+            println!("Removed soul '{}'", id);
         }
     }
     Ok(())
