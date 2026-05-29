@@ -97,6 +97,35 @@ pub enum Command {
         #[command(subcommand)]
         command: PluginCommand,
     },
+
+    /// Manage MCP (Model Context Protocol) servers.
+    #[command(about = "MCP server management")]
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
+}
+
+/// Subcommands for MCP server management.
+#[derive(Subcommand)]
+pub enum McpCommand {
+    /// List configured MCP servers.
+    #[command(about = "List configured MCP servers")]
+    List,
+
+    /// Start an MCP server.
+    #[command(about = "Start an MCP server")]
+    Start {
+        /// Server name to start.
+        name: String,
+    },
+
+    /// List tools offered by an MCP server.
+    #[command(about = "List MCP server tools")]
+    Tools {
+        /// Server name to query.
+        name: String,
+    },
 }
 
 /// Subcommands for plugin management.

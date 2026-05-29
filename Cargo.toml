@@ -10,10 +10,11 @@ members = [
     "crates/alius-tools",
     "crates/alius-formula",
     "crates/alius-plugin",
+    "crates/alius-mcp",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Alius Tech"]
 license = "MIT"
@@ -56,3 +57,4 @@ alius-tools = { path = "crates/alius-tools" }
 alius-interactive = { path = "crates/alius-interactive" }
 alius-formula = { path = "crates/alius-formula" }
 alius-plugin = { path = "crates/alius-plugin" }
+alius-mcp = { path = "crates/alius-mcp" }

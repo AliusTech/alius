@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand};
+use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand, McpCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
@@ -58,6 +58,10 @@ pub async fn run() -> Result<()> {
         // Plugin management
         Some(Command::Plugin { command }) => {
             handle_plugin(command)?;
+        }
+        // MCP server management
+        Some(Command::Mcp { command }) => {
+            handle_mcp(command)?;
         }
         // Initialize project configuration
         Some(Command::Init) => {
@@ -265,6 +269,48 @@ fn handle_plugin(cmd: PluginCommand) -> Result<()> {
         PluginCommand::Remove { id } => {
             alius_plugin::remove_plugin(&id)?;
             println!("Removed plugin '{}'", id);
+        }
+    }
+    Ok(())
+}
+
+/// Handle MCP server management subcommands.
+fn handle_mcp(cmd: McpCommand) -> Result<()> {
+    match cmd {
+        McpCommand::List => {
+            let servers = alius_mcp::list_configured_servers()?;
+            if servers.is_empty() {
+                println!("No MCP servers configured. Create alius/mcp.json or ~/.alius/mcp.json");
+            } else {
+                println!("Configured MCP Servers:");
+                for (name, config) in &servers {
+                    println!("  {:<20} {} {}", name, config.command, config.args.join(" "));
+                }
+            }
+        }
+        McpCommand::Start { name } => {
+            let config = alius_mcp::load_config()?;
+            let server_config = config.servers.get(&name)
+                .ok_or_else(|| anyhow::anyhow!("Server '{}' not found in config", name))?;
+            let mut server = alius_mcp::McpServer::start(&name, server_config)?;
+            let tools = server.list_tools()?;
+            println!("Started '{}': {} tools available", name, tools.len());
+            for t in &tools {
+                println!("  {:<30} {}", t.name, t.description);
+            }
+            server.stop()?;
+        }
+        McpCommand::Tools { name } => {
+            let config = alius_mcp::load_config()?;
+            let server_config = config.servers.get(&name)
+                .ok_or_else(|| anyhow::anyhow!("Server '{}' not found in config", name))?;
+            let mut server = alius_mcp::McpServer::start(&name, server_config)?;
+            let tools = server.list_tools()?;
+            println!("Tools from '{}':", name);
+            for t in &tools {
+                println!("  {:<30} {}", t.name, t.description);
+            }
+            server.stop()?;
         }
     }
     Ok(())
