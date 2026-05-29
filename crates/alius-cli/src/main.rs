@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand};
+use alius::{Cli, Command, ConfigCommand, CoreCommand, SoulCommand, PluginCommand};
 use alius_config::Settings;
 use alius_interactive::run_repl;
 use alius_model::LlmClient;
@@ -54,6 +54,10 @@ pub async fn run() -> Result<()> {
         // Soul management
         Some(Command::Soul { command }) => {
             handle_soul(command)?;
+        }
+        // Plugin management
+        Some(Command::Plugin { command }) => {
+            handle_plugin(command)?;
         }
         // Initialize project configuration
         Some(Command::Init) => {
@@ -200,7 +204,7 @@ fn handle_soul(cmd: SoulCommand) -> Result<()> {
             }
             match alius_formula::find_formula(&repo, "souls", &id)? {
                 Some(formula) => {
-                    let path = alius_formula::install_soul(&formula)?;
+                    let path = alius_formula::install_soul(&formula, &repo)?;
                     println!("Installed '{}' v{} to {}", id, formula.version, path.display());
                 }
                 None => println!("Formula not found: {}. Run: alius core list", id),
@@ -219,6 +223,48 @@ fn handle_soul(cmd: SoulCommand) -> Result<()> {
         SoulCommand::Remove { id } => {
             alius_formula::remove_soul(&id)?;
             println!("Removed soul '{}'", id);
+        }
+    }
+    Ok(())
+}
+
+/// Handle plugin management subcommands.
+fn handle_plugin(cmd: PluginCommand) -> Result<()> {
+    match cmd {
+        PluginCommand::List => {
+            let plugins = alius_plugin::list_plugins()?;
+            if plugins.is_empty() {
+                println!("No plugins installed.");
+            } else {
+                println!("Installed Plugins:");
+                for p in &plugins {
+                    println!("  {:<20} {} v{}", p.manifest.id, p.manifest.name, p.manifest.version);
+                    println!("  {:<20} {}", "", p.manifest.description);
+                }
+            }
+        }
+        PluginCommand::Install { path } => {
+            let source = std::path::PathBuf::from(&path);
+            let manifest = alius_plugin::install_plugin(&source)?;
+            println!("Installed plugin '{}' v{}", manifest.id, manifest.version);
+        }
+        PluginCommand::Info { id } => {
+            match alius_plugin::find_plugin(&id)? {
+                Some(p) => {
+                    println!("{} (v{})", p.manifest.name, p.manifest.version);
+                    println!("  ID:          {}", p.manifest.id);
+                    println!("  Description: {}", p.manifest.description);
+                    if let Some(author) = &p.manifest.author {
+                        println!("  Author:      {}", author);
+                    }
+                    println!("  WASM:        {}", p.wasm_path.display());
+                }
+                None => println!("Plugin not found: {}", id),
+            }
+        }
+        PluginCommand::Remove { id } => {
+            alius_plugin::remove_plugin(&id)?;
+            println!("Removed plugin '{}'", id);
         }
     }
     Ok(())

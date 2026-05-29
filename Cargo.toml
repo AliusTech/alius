@@ -9,10 +9,11 @@ members = [
     "crates/alius-store",
     "crates/alius-tools",
     "crates/alius-formula",
+    "crates/alius-plugin",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Alius Tech"]
 license = "MIT"
@@ -37,6 +38,9 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "1"
 
+# WASM
+wasmtime = "29"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -51,3 +55,4 @@ alius-store = { path = "crates/alius-store" }
 alius-tools = { path = "crates/alius-tools" }
 alius-interactive = { path = "crates/alius-interactive" }
 alius-formula = { path = "crates/alius-formula" }
+alius-plugin = { path = "crates/alius-plugin" }

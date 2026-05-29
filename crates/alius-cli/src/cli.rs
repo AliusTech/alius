@@ -90,6 +90,42 @@ pub enum Command {
         #[command(subcommand)]
         command: SoulCommand,
     },
+
+    /// Manage WASM plugins.
+    #[command(about = "Plugin management")]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+}
+
+/// Subcommands for plugin management.
+#[derive(Subcommand)]
+pub enum PluginCommand {
+    /// List installed plugins.
+    #[command(about = "List installed plugins")]
+    List,
+
+    /// Install a plugin from a local directory.
+    #[command(about = "Install a plugin")]
+    Install {
+        /// Path to directory containing plugin.toml + plugin.wasm.
+        path: String,
+    },
+
+    /// Show details of an installed plugin.
+    #[command(about = "Show plugin details")]
+    Info {
+        /// Plugin ID to look up.
+        id: String,
+    },
+
+    /// Remove an installed plugin.
+    #[command(about = "Remove a plugin")]
+    Remove {
+        /// Plugin ID to remove.
+        id: String,
+    },
 }
 
 /// Subcommands for Soul management.
