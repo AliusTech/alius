@@ -80,23 +80,12 @@ jobs:
     needs: [resolve-version, create-release]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: read
-    container:
-      image: ghcr.io/aliustech/rust-build-env:linux-stable
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      contents: write
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dependencies
-        run: |
-          apt-get update && apt-get install -y jq
-          GH_VER="2.67.0"
-          curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" | tar xz
-          cp "gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh
-          gh --version
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Verify and fix version consistency
         run: |
