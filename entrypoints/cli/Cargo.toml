@@ -1,0 +1,55 @@
+[package]
+name = "alius-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Alius CLI entrypoint"
+
+[[bin]]
+name = "alius"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-openai = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+wasmtime = { workspace = true }
+toml = { workspace = true }
+config = { workspace = true }
+async-trait = { workspace = true }
+lazy_static = { workspace = true }
+tracing = { workspace = true }
+
+# Terminal
+rustyline = { version = "14", features = ["derive"] }
+terminal_size = "0.4"
+
+# TUI
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Internal crates
+protocol-interface = { workspace = true }
+core-runtime = { workspace = true }
+runtime-config = { workspace = true }
+runtime-model = { workspace = true }
+runtime-tools = { workspace = true }
+runtime-store = { workspace = true }
+
+# i18n
+rust-i18n = "3"
+
+[dev-dependencies]
+tempfile = { workspace = true }

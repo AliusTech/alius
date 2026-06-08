@@ -1,0 +1,31 @@
+# Tool registration and execution policy
+
+[registry]
+rust_wasm_modules = true
+mcp_tools = false
+workflow_tools = false
+
+[execution]
+default_timeout_ms = 120000
+max_parallel_tools = 4
+persist_tool_trace = true
+
+[confirmation]
+read_only_tools = "auto"
+write_tools = "ask"
+shell_tools = "ask"
+network_tools = "ask"
+remote_a2a_tools = "deny"
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = false
+register_as_tools = false
+
+[plugin]
+load_on_workspace_start = false
+register_as_tools = false
+
+[workflow]
+load_project_workflows = false
+register_as_tools = false

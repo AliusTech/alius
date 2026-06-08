@@ -1,0 +1,496 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - release
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  resolve-version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ALIUS_RELEASE_TOKEN }}
+
+      - name: Read version from VERSION.txt
+        id: version
+        run: |
+          VERSION=$(cat VERSION.txt | tr -d '[:space:]')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=v${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Check version consistency
+        run: bash scripts/check-version.sh
+
+      - name: Create tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git ls-remote origin "refs/tags/${TAG}" | grep -q .; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created tag ${TAG}"
+          fi
+
+  create-release:
+    name: Create GitHub Release
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Create or verify release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.resolve-version.outputs.tag_name }}"
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping creation"
+          else
+            TAG_SHA=$(git ls-remote origin "refs/tags/${TAG}" | cut -f1)
+            if [ -z "$TAG_SHA" ]; then
+              TAG_SHA="$GITHUB_SHA"
+            fi
+            echo "Creating release $TAG at commit $TAG_SHA..."
+            gh release create "$TAG" \
+              --title "v${VERSION}" \
+              --generate-notes \
+              --target "$TAG_SHA"
+          fi
+
+  build-linux:
+    name: Build Linux
+    needs: [resolve-version, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify and fix version consistency
+        run: |
+          TAG_VERSION="${{ needs.resolve-version.outputs.version }}"
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="alius-cli") | .version')
+          echo "Tag version: $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::warning::Tag version $TAG_VERSION != Cargo version $CARGO_VERSION, auto-fixing Cargo.toml"
+            sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+            echo "Cargo.toml updated to version $TAG_VERSION"
+          fi
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.resolve-version.outputs.version }}-x86_64-linux
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release
+
+      - name: Prepare artifacts
+        run: |
+          cd target/release
+          tar -czvf ../../alius-linux-x64.tar.gz alius
+          cd ../..
+
+      - name: Upload artifact to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.resolve-version.outputs.tag_name }} \
+            alius-linux-x64.tar.gz --clobber
+
+  build-macos-x64:
+    name: Build macOS x64
+    needs: [resolve-version, create-release]
+    runs-on: macos-26-intel
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify and fix version consistency
+        run: |
+          TAG_VERSION="${{ needs.resolve-version.outputs.version }}"
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="alius-cli") | .version')
+          echo "Tag version: $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::warning::Tag version $TAG_VERSION != Cargo version $CARGO_VERSION, auto-fixing Cargo.toml"
+            sed -i '' "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+            echo "Cargo.toml updated to version $TAG_VERSION"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.resolve-version.outputs.version }}-x86_64-darwin
+          cache-on-failure: true
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release
+
+      - name: Prepare artifact
+        run: |
+          cd target/release
+          tar -czvf ../../alius-macos-x64.tar.gz alius
+          cd ../..
+
+      - name: Upload artifact to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.resolve-version.outputs.tag_name }} \
+            alius-macos-x64.tar.gz --clobber
+
+  build-macos-arm64:
+    name: Build macOS ARM64
+    needs: [resolve-version, create-release]
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify and fix version consistency
+        run: |
+          TAG_VERSION="${{ needs.resolve-version.outputs.version }}"
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="alius-cli") | .version')
+          echo "Tag version: $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::warning::Tag version $TAG_VERSION != Cargo version $CARGO_VERSION, auto-fixing Cargo.toml"
+            sed -i '' "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+            echo "Cargo.toml updated to version $TAG_VERSION"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.resolve-version.outputs.version }}-aarch64-darwin
+          cache-on-failure: true
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release
+
+      - name: Prepare artifact
+        run: |
+          cd target/release
+          tar -czvf ../../alius-macos-arm64.tar.gz alius
+          cd ../..
+
+      - name: Upload artifact to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.resolve-version.outputs.tag_name }} \
+            alius-macos-arm64.tar.gz --clobber
+
+  build-windows:
+    name: Build Windows
+    needs: [resolve-version, create-release]
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify and fix version consistency
+        shell: bash
+        run: |
+          TAG_VERSION="${{ needs.resolve-version.outputs.version }}"
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="alius-cli") | .version')
+          echo "Tag version: $TAG_VERSION"
+          echo "Cargo version: $CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::warning::Tag version $TAG_VERSION != Cargo version $CARGO_VERSION, auto-fixing Cargo.toml"
+            sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+            echo "Cargo.toml updated to version $TAG_VERSION"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ needs.resolve-version.outputs.version }}-x86_64-windows
+          cache-on-failure: true
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release
+
+      - name: Prepare artifact
+        run: |
+          cd target/release
+          7z a ../../alius-windows-x64.zip alius.exe
+          cd ../..
+
+      - name: Upload artifact to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.resolve-version.outputs.tag_name }} \
+            alius-windows-x64.zip --clobber
+
+  verify-assets:
+    name: Verify Release Assets
+    needs:
+      - resolve-version
+      - build-linux
+      - build-macos-x64
+      - build-macos-arm64
+      - build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify all assets exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-version.outputs.tag_name }}
+        run: |
+          echo "Verifying assets for release $TAG..."
+
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          echo "Found assets:"
+          echo "$ASSETS"
+
+          REQUIRED=(
+            "alius-linux-x64.tar.gz"
+            "alius-macos-x64.tar.gz"
+            "alius-macos-arm64.tar.gz"
+            "alius-windows-x64.zip"
+          )
+
+          MISSING=0
+          for asset in "${REQUIRED[@]}"; do
+            if ! echo "$ASSETS" | grep -q "$asset"; then
+              echo "::error::Missing required asset: $asset"
+              MISSING=1
+            fi
+          done
+
+          if [ $MISSING -ne 0 ]; then
+            echo "::error::Some required assets are missing"
+            exit 1
+          fi
+
+          echo "All required assets verified"
+
+  publish-npm:
+    name: Publish npm
+    needs:
+      - resolve-version
+      - verify-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Verify Trusted Publishing prerequisites
+        run: |
+          node --version
+          npm --version
+          node - <<'NODE'
+          const { execSync } = require('child_process');
+
+          function assertAtLeast(name, actual, minimum) {
+            const got = actual.replace(/^v/, '').split('.').map(Number);
+            const min = minimum.split('.').map(Number);
+            for (let i = 0; i < min.length; i += 1) {
+              if ((got[i] || 0) > min[i]) return;
+              if ((got[i] || 0) < min[i]) {
+                throw new Error(`${name} ${actual} is below required ${minimum}`);
+              }
+            }
+          }
+
+          assertAtLeast('Node.js', process.version, '22.14.0');
+          assertAtLeast('npm', execSync('npm --version', { encoding: 'utf8' }).trim(), '11.5.1');
+          NODE
+
+      - name: Prepare npm packages
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          RELEASE_TAG="${{ needs.resolve-version.outputs.tag_name }}"
+          node npm-packages/generate-packages.js "$VERSION" "$RELEASE_TAG"
+          node npm-packages/verify-release-version.js "$VERSION" "$RELEASE_TAG"
+
+      - name: Publish platform packages
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+
+          for pkg in alius-darwin-x64 alius-darwin-arm64 alius-linux-x64 alius-win32-x64; do
+            if npm view "@alius-tech/$pkg@$VERSION" version >/dev/null 2>&1; then
+              echo "Skipping @alius-tech/$pkg@$VERSION (already published)"
+              continue
+            fi
+            echo "Publishing @alius-tech/$pkg@$VERSION..."
+            cd "npm-packages/$pkg"
+            npm publish --access public --provenance --tag latest
+            cd ../..
+          done
+
+      - name: Publish main package
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+
+          if npm view "@alius-tech/alius@$VERSION" version >/dev/null 2>&1; then
+            echo "Skipping @alius-tech/alius@$VERSION (already published)"
+            exit 0
+          fi
+
+          cd npm-packages/alius
+          npm publish --access public --provenance --tag latest
+
+  update-homebrew:
+    name: Update Homebrew
+    needs:
+      - resolve-version
+      - verify-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download release artifacts
+        run: |
+          RELEASE_TAG="${{ needs.resolve-version.outputs.tag_name }}"
+          BASE_URL="https://github.com/AliusTech/alius/releases/download/${RELEASE_TAG}"
+          mkdir -p artifacts
+
+          curl -fsSL -o artifacts/alius-macos-arm64.tar.gz "${BASE_URL}/alius-macos-arm64.tar.gz"
+          curl -fsSL -o artifacts/alius-macos-x64.tar.gz "${BASE_URL}/alius-macos-x64.tar.gz"
+          curl -fsSL -o artifacts/alius-linux-x64.tar.gz "${BASE_URL}/alius-linux-x64.tar.gz"
+
+      - name: Compute SHA256 checksums
+        id: sha256
+        run: |
+          echo "arm64=$(sha256sum artifacts/alius-macos-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "x64=$(sha256sum artifacts/alius-macos-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_x64=$(sha256sum artifacts/alius-linux-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: AliusTech/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Check if version already published
+        id: check
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          FORMULA="tap/Formula/alius.rb"
+          if [ -f "$FORMULA" ] && grep -q "version \"${VERSION}\"" "$FORMULA"; then
+            echo "Homebrew formula already at version ${VERSION}, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update formula
+        if: steps.check.outputs.skip != 'true'
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          SHA256_ARM64: ${{ steps.sha256.outputs.arm64 }}
+          SHA256_X64: ${{ steps.sha256.outputs.x64 }}
+          SHA256_LINUX_X64: ${{ steps.sha256.outputs.linux_x64 }}
+        run: |
+          rm -rf tap/Formula
+          mkdir -p tap/Formula
+          cat > tap/Formula/alius.rb <<'TEMPLATE'
+          class Alius < Formula
+            desc "LLM Agent CLI - Software Self-Evolution"
+            homepage "https://github.com/AliusTech/alius"
+            version "%%VERSION%%"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/AliusTech/alius/releases/download/%%RELEASE_TAG%%/alius-macos-arm64.tar.gz"
+                sha256 "%%SHA256_ARM64%%"
+              else
+                url "https://github.com/AliusTech/alius/releases/download/%%RELEASE_TAG%%/alius-macos-x64.tar.gz"
+                sha256 "%%SHA256_X64%%"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/AliusTech/alius/releases/download/%%RELEASE_TAG%%/alius-linux-x64.tar.gz"
+              sha256 "%%SHA256_LINUX_X64%%"
+            end
+
+            def install
+              bin.install "alius"
+            end
+
+            test do
+              system bin/"alius", "--version"
+            end
+          end
+          TEMPLATE
+
+          sed -i "s/%%VERSION%%/${VERSION}/g" tap/Formula/alius.rb
+          sed -i "s/%%RELEASE_TAG%%/${{ needs.resolve-version.outputs.tag_name }}/g" tap/Formula/alius.rb
+          sed -i "s/%%SHA256_ARM64%%/${SHA256_ARM64}/g" tap/Formula/alius.rb
+          sed -i "s/%%SHA256_X64%%/${SHA256_X64}/g" tap/Formula/alius.rb
+          sed -i "s/%%SHA256_LINUX_X64%%/${SHA256_LINUX_X64}/g" tap/Formula/alius.rb
+
+      - name: Push formula update
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/alius.rb
+          git diff --staged --quiet && exit 0
+          git commit -m "Update alius to ${VERSION}"
+          git push

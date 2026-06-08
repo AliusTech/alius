@@ -1,0 +1,280 @@
+//! CLI command definitions for the Alius workspace crate.
+//!
+//! This module defines the command-line interface structure using `clap` derive macros.
+//! It supports global flags (model, provider, workspace, config, verbosity) and
+//! subcommands (repl, run, config, version).
+
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+/// Root CLI structure for the Alius command-line tool.
+///
+/// Supports global flags that apply to all subcommands:
+/// - `--model`: Override the default LLM model
+/// - `--provider`: Override the default LLM provider
+/// - `--workspace`: Set the working directory context
+/// - `--config`: Specify a custom configuration file
+/// - `--verbose` / `-v`: Increase logging verbosity
+#[derive(Parser)]
+#[command(name = "alius")]
+#[command(author, about, long_about = None)]
+#[command(version = env!("ALIUS_VERSION"))]
+pub struct Cli {
+    /// Optional subcommand to execute. Defaults to REPL mode if omitted.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Override the default LLM model (e.g., "gpt-4o", "glm-5.1").
+    #[arg(short, long)]
+    pub model: Option<String>,
+
+    /// Override the default LLM provider (e.g., "openai", "anthropic", "google", "bigmodel").
+    #[arg(short = 'p', long)]
+    pub provider: Option<String>,
+
+    /// Set the working directory for file operations.
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+
+    /// Path to a custom configuration file. Overrides ~/.alius/config.toml.
+    #[arg(short = 'c', long)]
+    pub config: Option<PathBuf>,
+
+    /// Verbosity level. Repeat for more detail: -v (info), -vv (debug), -vvv (trace).
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+}
+
+/// Available subcommands for the Alius CLI.
+#[derive(Subcommand)]
+pub enum Command {
+    /// Start the interactive REPL (Read-Eval-Print Loop) mode.
+    /// This is the default behavior when no subcommand is specified.
+    Repl,
+
+    /// Run a single prompt in non-interactive mode and print the response.
+    Run {
+        /// The prompt text to send to the LLM.
+        #[arg(short, long)]
+        prompt: String,
+
+        /// Override the default model for this run.
+        #[arg(short = 'm', long)]
+        model: Option<String>,
+    },
+
+    /// Manage configuration settings (show, validate, or set soul role).
+    Config {
+        /// The configuration subcommand to execute.
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
+    /// Display version information (resolved from git tag or Cargo.toml).
+    Version,
+
+    /// Initialize a project-level configuration file (./.alius/config.toml).
+    #[command(about = "Initialize project configuration")]
+    Init,
+
+    /// Manage the official Soul repository.
+    #[command(about = "Official Soul repository management")]
+    Core {
+        #[command(subcommand)]
+        command: CoreCommand,
+    },
+
+    /// Manage Soul installation and activation.
+    #[command(about = "Soul management")]
+    Soul {
+        #[command(subcommand)]
+        command: SoulCommand,
+    },
+
+    /// Manage WASM plugins.
+    #[command(about = "Plugin management")]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+
+    /// Manage MCP (Model Context Protocol) servers.
+    #[command(about = "MCP server management")]
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
+
+    /// Manage and run workflows.
+    #[command(about = "Workflow management")]
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
+}
+
+/// Subcommands for MCP server management.
+#[derive(Subcommand)]
+pub enum McpCommand {
+    /// List configured MCP servers.
+    #[command(about = "List configured MCP servers")]
+    List,
+
+    /// Start an MCP server.
+    #[command(about = "Start an MCP server")]
+    Start {
+        /// Server name to start.
+        name: String,
+    },
+
+    /// List tools offered by an MCP server.
+    #[command(about = "List MCP server tools")]
+    Tools {
+        /// Server name to query.
+        name: String,
+    },
+}
+
+/// Subcommands for workflow management.
+#[derive(Subcommand)]
+pub enum WorkflowCommand {
+    /// List available workflows.
+    #[command(about = "List workflows")]
+    List,
+
+    /// Run a workflow.
+    #[command(about = "Run a workflow")]
+    Run {
+        /// Workflow name or path to JSON file.
+        name: String,
+    },
+
+    /// Validate a workflow file.
+    #[command(about = "Validate workflow file")]
+    Validate {
+        /// Path to workflow JSON file.
+        path: String,
+    },
+}
+
+/// Subcommands for plugin management.
+#[derive(Subcommand)]
+pub enum PluginCommand {
+    /// List installed plugins.
+    #[command(about = "List installed plugins")]
+    List,
+
+    /// Install a plugin from a local directory.
+    #[command(about = "Install a plugin")]
+    Install {
+        /// Path to directory containing plugin.toml + plugin.wasm.
+        path: String,
+    },
+
+    /// Show details of an installed plugin.
+    #[command(about = "Show plugin details")]
+    Info {
+        /// Plugin ID to look up.
+        id: String,
+    },
+
+    /// Remove an installed plugin.
+    #[command(about = "Remove a plugin")]
+    Remove {
+        /// Plugin ID to remove.
+        id: String,
+    },
+}
+
+/// Subcommands for Soul management.
+#[derive(Subcommand)]
+pub enum SoulCommand {
+    /// Sync all official souls from alius-souls into the local soul cache.
+    #[command(about = "Update local souls from alius-souls")]
+    Update,
+
+    /// List installed souls.
+    #[command(about = "List installed souls")]
+    List,
+
+    /// Install a soul from the official Soul repository.
+    #[command(about = "Install a soul")]
+    Install {
+        /// Soul ID to install (e.g. "coder", "researcher").
+        id: String,
+    },
+
+    /// Show the currently activated soul.
+    #[command(about = "Show current soul")]
+    Current,
+
+    /// Remove an installed soul.
+    #[command(about = "Remove a soul")]
+    Remove {
+        /// Soul ID to remove.
+        id: String,
+    },
+}
+
+/// Subcommands for official Soul repository management.
+#[derive(Subcommand)]
+pub enum CoreCommand {
+    /// Clone or update the official Soul repository from remote.
+    #[command(about = "Update official Soul repository")]
+    Update,
+
+    /// List available souls from the official Soul repository.
+    #[command(about = "List available souls")]
+    List,
+
+    /// Show details of a specific soul.
+    #[command(about = "Show soul details")]
+    Info {
+        /// Soul ID to look up (e.g. "coder", "researcher").
+        id: String,
+    },
+}
+
+/// Subcommands for configuration management.
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Display the current merged configuration.
+    Show,
+
+    /// Validate the configuration file for correctness.
+    Validate,
+
+    /// Set the soul role (agent persona).
+    ///
+    /// The soul role defines the agent's behavior and expertise area.
+    Soul {
+        /// The role name to set (e.g., "Frontend Engineer", "Backend Developer").
+        #[arg(short, long)]
+        role: String,
+    },
+
+    /// Manage secure credentials in the OS keyring.
+    Credential {
+        #[command(subcommand)]
+        command: CredentialCommand,
+    },
+}
+
+/// Subcommands for credential management.
+#[derive(Subcommand)]
+pub enum CredentialCommand {
+    /// Store a credential in the OS keyring.
+    Set {
+        /// Key name (e.g. "OPENAI_API_KEY").
+        key: String,
+        /// The secret value.
+        value: String,
+    },
+    /// Delete a credential from the OS keyring.
+    Delete {
+        /// Key name to delete.
+        key: String,
+    },
+    /// Check if the OS keyring is available.
+    Check,
+}

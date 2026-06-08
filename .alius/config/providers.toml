@@ -1,0 +1,39 @@
+# Model providers and routing configuration
+
+[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Plan Model compatibility tier."
+provider = "bigmodel"
+model = ""
+
+[tiers.medium]
+description = "Execute Model compatibility tier."
+provider = "bigmodel"
+model = ""
+
+[tiers.high]
+description = "Review Model compatibility tier."
+provider = "bigmodel"
+model = ""
+
+[providers.bigmodel]
+enabled = true
+kind = "openai-compatible"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+api_key_env = "BIGMODEL_API_KEY"
+
+[providers.xiaomi_mimo]
+enabled = false
+kind = "openai-compatible"
+base_url = "https://api.xiaomimimo.com/v1"
+api_key_env = "XIAOMI_MIMO_API_KEY"
+
+[providers.deepseek]
+enabled = false
+kind = "openai-compatible"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"

@@ -1,0 +1,66 @@
+# Project permissions and capability boundaries
+
+[filesystem]
+workspace_root = "."
+allow_read = true
+allow_write = true
+allow_delete = false
+require_confirmation_for_write = true
+require_confirmation_for_delete = true
+
+[shell]
+enabled = true
+require_confirmation = true
+workspace_scoped = true
+deny_unknown_scope = true
+require_confirmation_for_outside_workspace = true
+allowlist = []
+denylist = [
+  "rm -rf /",
+  "rm -rf ~",
+  "rm -rf .",
+  "rm -rf *",
+  "git reset --hard",
+  "git checkout --",
+  "sudo",
+  "dd",
+]
+
+[shell.scope]
+allow_read_outside_workspace = false
+allow_write_outside_workspace = false
+allow_delete_workspace_root = false
+allow_delete_outside_workspace = false
+follow_symlink_outside_workspace = false
+allow_redirection_outside_workspace = false
+allow_shell_eval_without_inspection = false
+
+[network]
+enabled = true
+require_confirmation = true
+allowlist = []
+denylist = []
+
+[memory]
+allow_read = true
+allow_write = true
+allow_semantic_index_rebuild = true
+
+[project_documents]
+allow_update = true
+require_history_entry = true
+root = ".alius/workspace"
+
+[remote_a2a]
+enabled = false
+allow_filesystem = false
+allow_shell = false
+allow_network = false
+allowed_tools = []
+
+[embedded_sdk]
+allow_shell = false
+allow_local_tools = false
+allow_lancedb = false
+allow_local_embedding = false
+allow_plugin_runtime = false

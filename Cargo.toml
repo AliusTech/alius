@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "entrypoints/cli",
+    "entrypoints/jsonrpc",
+    "protocol",
+    "runtime/core",
+    "runtime/config",
+    "runtime/model",
+    "runtime/tools",
+    "runtime/memory",
+]
+
+[workspace.package]
+version = "0.0.2"
+edition = "2021"
+authors = ["Alius Tech"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# LLM - use rustls for TLS to avoid OpenSSL dependency for cross-compilation
+async-openai = { version = "0.20", default-features = false, features = ["rustls"] }
+
+# HTTP client - use rustls-tls for cross-compilation compatibility
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
+bytes = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error
+anyhow = "1"
+thiserror = "1"
+
+# WASM
+wasmtime = "43"
+toml = "0.8"
+config = "0.14"
+async-trait = "0.1"
+lazy_static = "1.4"
+tracing = "0.1"
+tiktoken = "3.1"
+tempfile = "3"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Internal crates
+protocol-interface = { path = "protocol" }
+core-runtime = { path = "runtime/core" }
+jsonrpc = { path = "entrypoints/jsonrpc" }
+runtime-config = { path = "runtime/config" }
+runtime-model = { path = "runtime/model" }
+runtime-tools = { path = "runtime/tools" }
+runtime-store = { path = "runtime/memory" }
+
+# 优化 CI 构建速度：跳过 debug info，启用并行 codegen
+[profile.release]
+debug = 0
+codegen-units = 16

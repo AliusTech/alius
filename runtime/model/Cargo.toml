@@ -1,0 +1,30 @@
+[package]
+name = "runtime-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "LLM client and agent for Alius runtime"
+
+[features]
+default = ["std"]
+std = []
+embedded = []
+
+[dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+async-openai = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+keyring = "3"
+
+protocol-interface = { workspace = true }
+runtime-config = { workspace = true }
+runtime-tools = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "jsonrpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "JSON-RPC 2.0 server entrypoint for Alius"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+protocol-interface = { workspace = true }
+core-runtime = { workspace = true }

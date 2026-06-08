@@ -1,0 +1,89 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0). Leave empty to use VERSION.txt.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    name: Create Release PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ALIUS_RELEASE_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(tr -d '[:space:]' < VERSION.txt)
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Sync version to all files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ./scripts/sync-version.sh "$VERSION"
+
+      - name: Ensure release branch exists
+        run: |
+          git ls-remote --exit-code origin "refs/heads/release" \
+            || git push origin HEAD:refs/heads/release
+
+      - name: Commit version bump
+        id: commit
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git checkout -b release-pr-${VERSION}
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            git config user.name "alius"
+            git config user.email "weixug@alius.tech"
+            git commit -m "chore: prepare release v${VERSION}"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push branch
+        if: steps.commit.outputs.has_changes == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git push origin release-pr-${VERSION} --force
+
+      - name: Create or update PR
+        env:
+          GH_TOKEN: ${{ secrets.ALIUS_RELEASE_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release-pr-${VERSION}"
+          TITLE="release: v${VERSION}"
+          BODY="Automated release preparation for v${VERSION}.
+
+          Merging this PR will trigger the release build."
+
+          EXISTING=$(gh pr list --base release --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing PR #$EXISTING"
+            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+          else
+            gh pr create \
+              --base release \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body "$BODY"
+          fi

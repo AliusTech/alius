@@ -1,0 +1,4 @@
+id = "hello"
+name = "Hello Test Plugin"
+version = "0.1.0"
+description = "Minimal test plugin for Phase 1 verification"

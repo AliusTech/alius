@@ -1,0 +1,19 @@
+[package]
+name = "runtime-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Configuration management for Alius runtime"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+config = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+protocol-interface = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

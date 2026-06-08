@@ -1,0 +1,13 @@
+[llm]
+provider = "openai"
+model = ""
+
+[agent]
+max_retries = 3
+timeout_seconds = 60
+
+[soul]
+role = ""
+
+[ui]
+locale = "en"

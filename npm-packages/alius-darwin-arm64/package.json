@@ -1,0 +1,45 @@
+{
+  "name": "@alius-tech/alius-darwin-arm64",
+  "version": "0.0.1",
+  "description": "Alius CLI binary for macOS Apple Silicon (ARM64)",
+  "author": {
+    "name": "Alius Tech",
+    "email": "alius@aliustech.com",
+    "url": "https://aliustech.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AliusTech/alius.git",
+    "directory": "npm-packages/alius-darwin-arm64"
+  },
+  "homepage": "https://github.com/AliusTech/alius#readme",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./binary": "./index.js"
+  },
+  "binary": {
+    "artifact": "alius-macos-arm64.tar.gz",
+    "releaseTag": "0.0.1",
+    "downloadUrl": "https://github.com/AliusTech/alius/releases/download/0.0.1/alius-macos-arm64.tar.gz"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "index.js",
+    "package.json"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/download.js"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

@@ -1,0 +1,32 @@
+# Alius project configuration
+
+[project]
+name = ""
+version = 1
+
+[runtime]
+default_mode = "plan"
+tui_workspace = true
+legacy_repl_env = "ALIUS_LEGACY_REPL"
+auto_review = false
+
+[model]
+default_provider = ""
+default_model = ""
+router_profile = "standard"
+
+[session]
+persist_messages = true
+persist_events = true
+
+[logging]
+enabled = true
+level = "info"
+redact_secrets = true
+flush_error_immediately = true
+
+[compat]
+read_legacy_project_config = true
+read_legacy_mcp_config = true
+read_legacy_project_memory = true
+read_legacy_design_docs = true

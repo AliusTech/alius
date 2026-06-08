@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1000" viewBox="0 0 1680 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Engineering Main Chain</title>
+  <desc id="desc">Alius engineering main chain from product entrypoints through protocol interface, core runtime, session manager, Loop Engine, model provider, tool executor and shell gate, memory system, and CoreEvent stream.</desc>
+  <defs>
+    <pattern id="paper" width="18" height="18" patternUnits="userSpaceOnUse">
+      <rect width="18" height="18" fill="#fbf6ea"/>
+      <path d="M0 17.5H18M17.5 0V18" stroke="#e8dcc8" stroke-width="0.5" opacity="0.22"/>
+    </pattern>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="4" dy="7" stdDeviation="0.8" flood-color="#101010" flood-opacity="0.18"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2 2L12 7L2 12" fill="none" stroke="#181818" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .title-cn { font-family: "Kaiti SC", "STKaiti", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 76px; font-weight: 800; fill: #171717; letter-spacing: 2px; }
+      .title-en { font-family: "Bradley Hand", "Comic Sans MS", "PingFang SC", sans-serif; font-size: 34px; font-weight: 700; fill: #666; }
+      .label { font-family: "Kaiti SC", "STKaiti", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 31px; font-weight: 700; fill: #171717; }
+      .label-small { font-family: "Kaiti SC", "STKaiti", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 27px; font-weight: 700; fill: #171717; }
+      .ink { stroke: #171717; stroke-width: 4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .sketch { stroke: #171717; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0.42; }
+      .box { fill: #fffdf7; stroke: #171717; stroke-width: 3.4; filter: url(#softShadow); }
+      .box-ghost { fill: none; stroke: #171717; stroke-width: 1.6; opacity: 0.38; }
+      .accent { fill: #cfeef7; stroke: #171717; stroke-width: 3; }
+      .muted { stroke: #7aaec0; stroke-width: 5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .thin { stroke: #171717; stroke-width: 2.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="1000" fill="url(#paper)"/>
+  <text x="840" y="82" text-anchor="middle" class="title-cn">Engineering Main Chain</text>
+  <text x="840" y="130" text-anchor="middle" class="title-en"></text>
+  <path d="M598 98C711 121 947 121 1082 99" class="sketch"/>
+  <path d="M554 61l40 14M1090 75l44-18M545 111l38-7M1111 114l36 8" class="sketch"/>
+
+  <g transform="translate(598 168)">
+    <rect x="0" y="0" width="484" height="82" rx="20" class="box"/>
+    <rect x="6" y="6" width="472" height="70" rx="17" class="box-ghost"/>
+    <rect x="42" y="20" width="58" height="44" rx="4" fill="#cfeef7" stroke="#171717" stroke-width="3"/>
+    <path d="M42 31h58M59 44l13 9l-13 9M76 62h15" class="thin"/>
+    <text x="292" y="52" text-anchor="middle" class="label">CLI / TUI / SDK / A2A</text>
+  </g>
+  <path d="M840 250v42" class="ink" marker-end="url(#arrow)"/>
+
+  <g transform="translate(598 298)">
+    <rect x="0" y="0" width="484" height="82" rx="20" class="box"/>
+    <rect x="6" y="6" width="472" height="70" rx="17" class="box-ghost"/>
+    <path d="M73 18l35 14v28c0 22-18 33-35 38c-17-5-35-16-35-38V32z" fill="#cfeef7" stroke="#171717" stroke-width="3"/>
+    <path d="M56 51l13 14l24-30" class="muted"/>
+    <text x="306" y="52" text-anchor="middle" class="label-small">Protocol Interface Layer</text>
+  </g>
+  <path d="M840 380v42" class="ink" marker-end="url(#arrow)"/>
+
+  <g transform="translate(598 428)">
+    <rect x="0" y="0" width="484" height="82" rx="20" class="box"/>
+    <rect x="6" y="6" width="472" height="70" rx="17" class="box-ghost"/>
+    <circle cx="75" cy="42" r="27" fill="#fffdf7" stroke="#171717" stroke-width="4"/>
+    <circle cx="75" cy="42" r="11" fill="#fbf6ea" stroke="#171717" stroke-width="3"/>
+    <path d="M75 8v18M75 58v18M41 42h18M91 42h18M51 18l13 13M86 53l13 13M99 18L86 31M64 53L51 66" class="thin"/>
+    <text x="288" y="52" text-anchor="middle" class="label">Core Runtime</text>
+  </g>
+  <path d="M840 510v42" class="ink" marker-end="url(#arrow)"/>
+
+  <g transform="translate(598 558)">
+    <rect x="0" y="0" width="484" height="82" rx="20" class="box"/>
+    <rect x="6" y="6" width="472" height="70" rx="17" class="box-ghost"/>
+    <circle cx="56" cy="34" r="12" class="accent"/>
+    <circle cx="84" cy="34" r="12" class="accent"/>
+    <circle cx="112" cy="34" r="12" class="accent"/>
+    <path d="M38 67c1-20 9-28 18-28s17 8 18 28M66 67c1-20 9-28 18-28s17 8 18 28M94 67c1-20 9-28 18-28s17 8 18 28" class="thin"/>
+    <text x="306" y="52" text-anchor="middle" class="label">Session Manager</text>
+  </g>
+  <path d="M840 640v42" class="ink" marker-end="url(#arrow)"/>
+
+  <g transform="translate(598 688)">
+    <rect x="0" y="0" width="484" height="82" rx="20" class="box"/>
+    <rect x="6" y="6" width="472" height="70" rx="17" class="box-ghost"/>
+    <circle cx="70" cy="42" r="25" fill="#fffdf7" stroke="#171717" stroke-width="4"/>
+    <circle cx="70" cy="42" r="10" fill="#fbf6ea" stroke="#171717" stroke-width="3"/>
+    <circle cx="111" cy="56" r="17" fill="#fffdf7" stroke="#171717" stroke-width="3"/>
+    <circle cx="111" cy="56" r="7" fill="#fbf6ea" stroke="#171717" stroke-width="2"/>
+    <path d="M70 12v16M70 56v16M40 42h16M84 42h16M48 22l11 11M83 51l11 11M94 22L83 33M59 51L48 62" class="thin"/>
+    <path d="M138 36c9 12 10 25 5 37M33 63c-8-13-8-27-2-40" class="sketch"/>
+    <text x="305" y="52" text-anchor="middle" class="label">Loop Engine</text>
+  </g>
+
+  <path d="M644 765C560 812 458 796 408 846" class="ink" marker-end="url(#arrow)"/>
+  <path d="M742 770v70" class="ink" marker-end="url(#arrow)"/>
+  <path d="M938 770v70" class="ink" marker-end="url(#arrow)"/>
+  <path d="M1036 765C1128 813 1226 797 1274 846" class="ink" marker-end="url(#arrow)"/>
+
+  <g transform="translate(290 842)">
+    <rect x="0" y="0" width="245" height="118" rx="18" class="box"/>
+    <rect x="6" y="6" width="233" height="106" rx="15" class="box-ghost"/>
+    <path d="M46 77c-22-4-31-34-8-48c8-31 55-26 58 6c24 0 38 29 20 47" fill="none" stroke="#7aaec0" stroke-width="5"/>
+    <path d="M85 46l27 14v29l-27 15l-27-15V60zM58 60l27 14l27-14M85 74v30" class="thin"/>
+    <text x="171" y="47" text-anchor="middle" class="label-small">Model</text>
+    <text x="171" y="80" text-anchor="middle" class="label-small">Provider</text>
+  </g>
+
+  <g transform="translate(566 842)">
+    <rect x="0" y="0" width="270" height="118" rx="18" class="box"/>
+    <rect x="6" y="6" width="258" height="106" rx="15" class="box-ghost"/>
+    <rect x="31" y="32" width="62" height="50" rx="5" fill="#cfeef7" stroke="#171717" stroke-width="3"/>
+    <path d="M31 43h62M49 57l13 9l-13 9M67 81h16" class="thin"/>
+    <text x="174" y="44" text-anchor="middle" class="label-small">Tool Executor /</text>
+    <text x="174" y="78" text-anchor="middle" class="label-small">Shell Gate</text>
+  </g>
+
+  <g transform="translate(862 842)">
+    <rect x="0" y="0" width="245" height="118" rx="18" class="box"/>
+    <rect x="6" y="6" width="233" height="106" rx="15" class="box-ghost"/>
+    <path d="M39 67c-9-18 7-34 25-25c7-18 30-10 31 6c16 2 21 23 5 32c-7 13-30 11-35-1c-11 8-23 2-26-12z" fill="#fffdf7" stroke="#171717" stroke-width="3"/>
+    <path d="M66 43v39M50 62h47M54 49c10 7 14 17 10 31M86 49c-12 10-12 22-4 32" class="sketch"/>
+    <text x="169" y="47" text-anchor="middle" class="label-small">Memory</text>
+    <text x="169" y="80" text-anchor="middle" class="label-small">System</text>
+  </g>
+
+  <g transform="translate(1138 842)">
+    <rect x="0" y="0" width="260" height="118" rx="18" class="box"/>
+    <rect x="6" y="6" width="248" height="106" rx="15" class="box-ghost"/>
+    <path d="M34 39h95M34 65h95M34 91h95" class="thin"/>
+    <circle cx="75" cy="39" r="11" class="accent"/>
+    <circle cx="104" cy="65" r="11" fill="#fffdf7" stroke="#171717" stroke-width="3"/>
+    <circle cx="61" cy="91" r="11" class="accent"/>
+    <text x="188" y="47" text-anchor="middle" class="label-small">CoreEvent</text>
+    <text x="188" y="80" text-anchor="middle" class="label-small">Stream</text>
+  </g>
+</svg>
