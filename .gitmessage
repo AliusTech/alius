@@ -1,0 +1,43 @@
+# ============================================================
+#  Alius Commit Message Template
+#  ============================================================
+#
+#  提交前请阅读: .alius/workspace/docs/standards/CONVENTIONAL_COMMITS.md
+#  发布流程: .alius/workspace/docs/standards/RELEASE_PROCESS.md
+#
+#  格式: <type>[(scope)]: <description>
+#
+#  类型      版本    说明
+#  fix:     PATCH   修 Bug (触发 release-please)
+#  feat:    MINOR   新功能 (触发 release-please)
+#  feat!:   MAJOR   破坏性变更 (触发 release-please)
+#
+#  其他: chore:, docs:, style:, refactor:, perf:, test:, build:, ci:
+#        （仅 fix/feat 触发版本发版，其他计入 CHANGELOG）
+#
+#  发布流程:
+#  1. 提交符合格式的代码
+#  2. release-please 自动创建 Release PR
+#  3. 合并 PR 后自动创建 tag 和 GitHub Release
+#  4. tag 触发 release.yml 构建多平台二进制文件
+#
+#  规则:
+#  - 关键字必须小写，后跟冒号+空格: "fix: "  ✅  "Fix: " ❌
+#  - 描述不超过 50 字符，小写开头，无句号
+#  - 一个 commit 只做一件事
+#  - 破坏性变更加 ! 或脚注写 BREAKING CHANGE:
+#
+#  示例:
+#  fix: correct model selection error
+#  feat(tui): add arrow key navigation
+#  chore: update release-please config
+#
+# ============================================================
+
+# 类型(type):
+# fix / feat / chore / docs / style / refactor / perf / test / build / ci
+
+# 作用域(scope，可选):
+# (tui) / (core) / (npm) / (deps)
+
+# 描述(description，必填):

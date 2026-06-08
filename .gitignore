@@ -1,0 +1,13 @@
+# Ignore everything hidden (dot-files/dot-dirs)
+.*
+!.alius/
+!.github/
+!.gitignore
+!.gitmessage
+!.release-please-manifest.json
+
+# Build artifacts
+/target
+
+# OS files
+.DS_Store

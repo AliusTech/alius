@@ -1,0 +1,51 @@
+# Model providers and routing configuration
+
+[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Fast, low-cost tasks such as classification, short rewrites, and metadata extraction."
+provider = "openai"
+model = ""
+
+[tiers.medium]
+description = "Default project work, code reading, planning, and normal agent turns."
+provider = "openai"
+model = ""
+
+[tiers.high]
+description = "Large refactors, architecture reasoning, long-context analysis, and high-risk changes."
+provider = "openai"
+model = ""
+
+[providers.openai]
+enabled = true
+kind = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.anthropic]
+enabled = false
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.google]
+enabled = false
+kind = "google"
+base_url = ""
+api_key_env = "GOOGLE_API_KEY"
+
+[providers.bigmodel]
+enabled = false
+kind = "openai-compatible"
+base_url = ""
+api_key_env = "BIGMODEL_API_KEY"
+
+[providers.custom]
+enabled = false
+kind = "openai-compatible"
+base_url = ""
+api_key_env = "ALIUS_CUSTOM_API_KEY"

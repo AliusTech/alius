@@ -1,0 +1,50 @@
+# Tool registration and execution policy
+
+[registry]
+builtin_tools = true
+mcp_tools = false
+plugin_tools = false
+workflow_tools = false
+
+[execution]
+default_timeout_ms = 120000
+max_parallel_tools = 4
+persist_tool_trace = true
+
+[confirmation]
+read_only_tools = "auto"
+write_tools = "ask"
+shell_tools = "ask"
+network_tools = "ask"
+remote_a2a_tools = "deny"
+
+[builtin]
+read_file = true
+list_dir = true
+write_file = true
+edit_file = true
+search = true
+find_files = true
+move_file = true
+delete_file = true
+create_dir = true
+code_stats = true
+bash = true
+web_fetch = false
+web_search = false
+ask_user_question = true
+plan = true
+todo = true
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = false
+register_as_tools = false
+
+[plugin]
+load_on_workspace_start = false
+register_as_tools = false
+
+[workflow]
+load_project_workflows = false
+register_as_tools = false

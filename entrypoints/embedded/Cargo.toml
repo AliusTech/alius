@@ -1,0 +1,54 @@
+[package]
+name = "alius-embedded"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = ["std"]
+
+# Standard library support (for Linux/RTOS with stdlib)
+std = ["tokio/rt-multi-thread", "alloc"]
+
+# Minimal embedded build - EXCLUDES desktop/CLI/TUI/WASM features
+embedded = [
+    "dep:critical-section",
+    "protocol-interface/embedded",
+    "core-runtime/embedded",
+]
+
+# ESP32-specific features
+# Note: This feature enables ESP-specific code paths but ESP-IDF dependencies
+# are only activated on ESP targets via target-specific dependencies below
+esp32 = [
+    "embedded",
+]
+
+# Allocation-only (for no_std with alloc)
+alloc = []
+
+# Full features - for desktop use only
+full = ["std"]
+
+[dependencies]
+# Core dependencies (minimal set only)
+tokio = { workspace = true, default-features = false, features = ["rt", "net", "time"] }
+serde = { workspace = true, default-features = false, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Protocol and runtime - with embedded feature flags
+protocol-interface = { path = "../../protocol", default-features = false }
+core-runtime = { path = "../../runtime/core", default-features = false }
+runtime-model = { path = "../../runtime/model", default-features = false }
+
+# Optional: for embedded mode
+critical-section = { version = "1.0", optional = true }
+
+# ESP32-specific dependencies (compatible versions)
+# These are only compiled on ESP-IDF targets to prevent build errors on desktop platforms
+[target.'cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "espidf")))'.dependencies]
+esp-idf-sys = { version = "0.33", optional = true, features = ["native"] }
+esp-idf-hal = { version = "0.42", optional = true }
+embedded-svc = { version = "0.25", optional = true }

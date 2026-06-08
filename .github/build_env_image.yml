@@ -1,0 +1,42 @@
+name: Build Release Env Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/aliustech/rust-build-env
+
+jobs:
+  linux:
+    name: Linux build env
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Linux image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/linux
+          file: docker/linux/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:linux-stable
+            ${{ env.IMAGE }}:linux-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/AliusTech/alius
+            org.opencontainers.image.revision=${{ github.sha }}

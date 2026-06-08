@@ -1,0 +1,18 @@
+[package]
+name = "runtime-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Tool system for Alius runtime"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+lazy_static = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+regex = "1"
+protocol-interface = { workspace = true }

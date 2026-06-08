@@ -1,0 +1,51 @@
+# Protocol Interface Layer configuration
+
+[protocol]
+major = 1
+minor = 0
+trace_enabled = true
+event_sequence_enabled = true
+
+[local_rust]
+enabled = true
+transport = "in-process"
+default_origin = "LocalTui"
+
+[json_rpc]
+enabled = false
+transport = "stdio-or-socket"
+socket_path = ".alius/run/alius.sock"
+method_prefix = "alius"
+
+[ide_rpc]
+enabled = false
+transport = "lsp-like"
+workspace_scoped_filesystem = true
+
+[a2a]
+enabled = false
+server_enabled = false
+client_enabled = false
+agent_card_source = ".alius/config/soul.toml"
+default_remote_capability = "minimal"
+
+[ffi]
+enabled = false
+core = "lite"
+event_delivery = "poll"
+
+[events]
+buffer_size = 1024
+persist = true
+allow_resume = true
+visibility_default = "ProductVisible"
+
+[commands]
+approve_tool = true
+reject_tool = true
+answer_question = true
+select_option = true
+update_plan = true
+cancel_run = true
+pause_run = false
+resume_run = true

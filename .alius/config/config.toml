@@ -1,0 +1,14 @@
+[llm]
+provider = "openai"
+model = "gpt-4o-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[agent]
+max_retries = 3
+timeout_seconds = 60
+
+[soul]
+role = ""
+
+[ui]
+locale = "en"
