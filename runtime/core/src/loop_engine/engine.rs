@@ -318,6 +318,7 @@ impl LoopEngine {
             run_ref,
             trace_id,
             &mut seq,
+            None, // log_writer — not wired in Chat path yet
         )
         .await
         {
@@ -615,6 +616,7 @@ impl LoopEngine {
                 run_ref,
                 trace_id,
                 &mut seq,
+                None, // log_writer — TODO: wire from LoopContext
             )
             .await
             {

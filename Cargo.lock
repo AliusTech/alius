@@ -577,6 +577,7 @@ name = "core-runtime"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "critical-section",
  "dirs",

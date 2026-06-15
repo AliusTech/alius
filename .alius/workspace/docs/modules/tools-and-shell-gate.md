@@ -108,12 +108,16 @@ When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step
 1. **Request**: emit `ToolConfirmationRequired` event, store a oneshot sender in `SessionManager`, transition run status to `WaitingForApproval`.
 2. **Await**: the loop blocks on the oneshot receiver.
 3. **Approved** (`rx.await` returns `Ok(true)`): restore status to `Running` only if still in `WaitingForApproval`; execute the tool; emit `ToolCallCompleted`.
-4. **Denied** (`rx.await` returns `Ok(false)`): tool is NOT executed; emit `ToolCallCompleted` with `success: false`, `denied: true`, `denial_reason: "denied_by_user"`.
-5. **Cancelled** (sender dropped, `rx.await` returns `Err`): status is NOT restored from `Cancelled`; no tool execution; the loop exits via cancel token.
-6. **No session**: fail-closed — tool is NOT executed, returns `denied` result.
+4. **Denied** (`rx.await` returns `Ok(false)`): tool is NOT executed; emit `ToolCallCompleted` with `success: false`, `denied: true`, `denial_reason: "denied_by_user"`. The entire batch is aborted — remaining tool calls are skipped.
+5. **Cancelled** (sender dropped, `rx.await` returns `Err`): batch aborted, status is NOT restored from `Cancelled`.
+6. **No session**: fail-closed — batch aborted, returns `unavailable` reason.
 
-**Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` when the current status is `WaitingForApproval`. The status check + update in `deliver_confirmation` is atomic (under the same write lock) to prevent a race with `cancel_run`.
+**Fail-fast**: `execute_tools` processes tool calls sequentially. Once any confirmation is denied, cancelled, or unavailable, the remaining tool calls in the batch are filled with "skipped" error placeholders and NOT executed.
 
-**Loop termination on denial**: after tool execution, `run_plan` and `run_chat_with_tools` check if any tool result indicates user denial (output starts with `"error: tool"` and ends with `"denied by user"`). If so, the loop immediately emits `ErrorRaised(code: "tool_denied")` and `FinalResult(success: false)`, preventing the model from being fed the denial output and continuing to request more dangerous operations.
+**Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` on explicit `Approved` decision and only when the current status is `WaitingForApproval`. The status check + update in `deliver_confirmation` is atomic (under the same write lock) to prevent a race with `cancel_run`.
 
-**Audit logging**: confirmation events (`requested`, `approved`, `denied`, `cancelled`) are logged via `audit::log_confirmation` with `tool_name`, `tool_call_id`, `run_ref`, `trace_id`. Raw args and sensitive content are NOT logged.
+**Loop termination on denial**: `run_plan` and `run_chat_with_tools` also check for denial at the engine level via `any_tool_denied()`, emitting `ErrorRaised(code: "tool_denied")` and `FinalResult(success: false)` to prevent the model from continuing after user denial.
+
+**Confirmation decision type**: `confirm_and_await` returns a `ConfirmationDecision` enum (`Approved`, `Denied`, `Cancelled`, `Unavailable`) instead of a raw `bool`, preserving the reason for audit and error reporting.
+
+**Audit logging**: confirmation events are written to the event log via `audit::log_confirmation` when a `LogWriter` is available in `execute_tools`. Events include `requested`, `approved`, `denied_by_user`, `cancelled`, and `no_session` with `tool_name`, `tool_call_id`, `run_ref`, `trace_id`. Raw args and sensitive content are NOT logged.
