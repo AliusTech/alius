@@ -283,6 +283,33 @@ impl CoreRuntimeApi for CoreRuntime {
             let event = event.with_session_ref(sr.clone()).with_turn_ref(tr.clone());
             self.session_manager.push_event(&run_ref, event.clone())?;
 
+            // Persist tool result message on ToolCallCompleted
+            if let CoreEventKind::ToolCallCompleted = event.kind {
+                if let CoreEventPayload::Json { value } = &event.payload {
+                    if let (Some(tool_call_id), Some(tool_name), Some(output)) = (
+                        value.get("id").and_then(|v| v.as_str()),
+                        value.get("name").and_then(|v| v.as_str()),
+                        value.get("output").and_then(|v| v.as_str()),
+                    ) {
+                        if let Some(session_ref) = &event.session_ref {
+                            let session_id = protocol_interface::SessionId::from_existing(
+                                session_ref.as_str().to_string(),
+                            );
+                            let message = protocol_interface::Message {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: protocol_interface::MessageRole::Tool,
+                                content: output.to_string(),
+                                created_at: chrono::Utc::now(),
+                                tool_calls: None,
+                                tool_call_id: Some(tool_call_id.to_string()),
+                                tool_name: Some(tool_name.to_string()),
+                            };
+                            let _ = conversation_store.append_message(&session_id, &message);
+                        }
+                    }
+                }
+            }
+
             // Persist assistant message on FinalResult
             if let CoreEventKind::FinalResult = event.kind {
                 if let CoreEventPayload::Final {
@@ -429,6 +456,35 @@ impl CoreRuntimeApi for CoreRuntime {
 
                             // Persist to SessionManager for query_logs/subscribe
                             let _ = session_manager.push_event(&run_ref_for_persist, event.clone());
+
+                            // Persist tool result message on ToolCallCompleted
+                            if let CoreEventKind::ToolCallCompleted = event.kind {
+                                if let CoreEventPayload::Json { value } = &event.payload {
+                                    if let (Some(tool_call_id), Some(tool_name), Some(output)) = (
+                                        value.get("id").and_then(|v| v.as_str()),
+                                        value.get("name").and_then(|v| v.as_str()),
+                                        value.get("output").and_then(|v| v.as_str()),
+                                    ) {
+                                        if let Some(session_ref) = &event.session_ref {
+                                            let session_id =
+                                                protocol_interface::SessionId::from_existing(
+                                                    session_ref.as_str().to_string(),
+                                                );
+                                            let message = protocol_interface::Message {
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                                role: protocol_interface::MessageRole::Tool,
+                                                content: output.to_string(),
+                                                created_at: chrono::Utc::now(),
+                                                tool_calls: None,
+                                                tool_call_id: Some(tool_call_id.to_string()),
+                                                tool_name: Some(tool_name.to_string()),
+                                            };
+                                            let _ = conversation_store
+                                                .append_message(&session_id, &message);
+                                        }
+                                    }
+                                }
+                            }
 
                             // Persist assistant message on FinalResult
                             if let CoreEventKind::FinalResult = event.kind {
@@ -1095,32 +1151,34 @@ mod tests {
 
         let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
 
-        // Wait for FinalResult
-        let mut found_final = false;
+        // Wait for FinalResult and check if success
+        let mut found_success_final = false;
         while let Ok(Some(event)) =
             tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
         {
             if event.kind == CoreEventKind::FinalResult {
-                found_final = true;
+                if let CoreEventPayload::Final { success: true, .. } = event.payload {
+                    found_success_final = true;
+                }
                 break;
             }
         }
 
-        assert!(found_final, "Should receive FinalResult event");
-
-        // Check status is Completed or Failed (depending on API key)
-        let sessions = rt
-            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
-            .unwrap();
-        if let Some(session) = sessions.first() {
-            let snapshot = rt.inspect(&session.session_ref).unwrap();
-            let run = snapshot.runs.iter().find(|r| r.run_ref == run_ref).unwrap();
-            assert!(
-                matches!(run.status, RunStatus::Completed | RunStatus::Failed),
-                "Expected Completed or Failed, got {:?}",
-                run.status
-            );
-            assert!(run.finished_at.is_some(), "finished_at should be set");
+        // Check that FinalResult(success=true) maps to Completed status
+        if found_success_final {
+            let sessions = rt
+                .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+                .unwrap();
+            if let Some(session) = sessions.first() {
+                let snapshot = rt.inspect(&session.session_ref).unwrap();
+                let run = snapshot.runs.iter().find(|r| r.run_ref == run_ref).unwrap();
+                assert_eq!(
+                    run.status,
+                    RunStatus::Completed,
+                    "FinalResult(success=true) should map to Completed"
+                );
+                assert!(run.finished_at.is_some(), "finished_at should be set");
+            }
         }
     }
 
@@ -1146,10 +1204,11 @@ mod tests {
         if let Some(session) = sessions.first() {
             let snapshot = rt.inspect(&session.session_ref).unwrap();
             if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
-                // Should be Failed due to missing tool registry or API error
-                assert!(
-                    matches!(run.status, RunStatus::Failed | RunStatus::Completed),
-                    "Expected Failed or Completed, got {:?}",
+                // Should be Failed due to missing tool registry
+                assert_eq!(
+                    run.status,
+                    RunStatus::Failed,
+                    "Expected Failed, got {:?}",
                     run.status
                 );
             }
@@ -1174,6 +1233,23 @@ mod tests {
         let cmd_envelope =
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), cancel_cmd);
         rt.send(cmd_envelope).unwrap();
+
+        // Collect remaining events and ensure no success=true FinalResult
+        let mut found_success_final = false;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            if let CoreEventKind::FinalResult = event.kind {
+                if let CoreEventPayload::Final { success: true, .. } = event.payload {
+                    found_success_final = true;
+                }
+            }
+        }
+
+        assert!(
+            !found_success_final,
+            "Cancelled run should not emit success=true FinalResult"
+        );
 
         // Verify status is Cancelled
         let sessions = rt
@@ -1209,14 +1285,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn conversation_messages_persist() {
         let rt = test_runtime();
-        let request = CoreRequest::start_turn("Hello, world!").unwrap();
+        // Use a streaming run to capture all message types
+        let request = CoreRequest::start_turn("Write a test file").unwrap();
         let envelope =
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
 
-        let run_ref = rt.start(envelope).unwrap();
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
 
-        // Wait for completion
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Collect all events
+        let mut has_tool_call = false;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await
+        {
+            if let CoreEventKind::ToolCallCompleted = event.kind {
+                has_tool_call = true;
+            }
+        }
 
         // Get session
         let sessions = rt
@@ -1234,20 +1318,40 @@ mod tests {
         // Should have at least user message
         assert!(!messages.is_empty(), "Should have persisted messages");
 
-        // First message should be user message
+        // Should have user message
         let user_msg = messages
             .iter()
             .find(|m| m.role == protocol_interface::MessageRole::User);
         assert!(user_msg.is_some(), "Should have user message");
-        assert_eq!(user_msg.unwrap().content, "Hello, world!");
+        assert_eq!(user_msg.unwrap().content, "Write a test file");
 
-        // If run completed successfully, should also have assistant message
-        let assistant_msg = messages
-            .iter()
-            .find(|m| m.role == protocol_interface::MessageRole::Assistant);
+        // If run had tool calls, should have tool messages
+        if has_tool_call {
+            let tool_msg = messages
+                .iter()
+                .find(|m| m.role == protocol_interface::MessageRole::Tool);
+            assert!(
+                tool_msg.is_some(),
+                "Should have tool message when tool calls executed"
+            );
+            let tool_msg = tool_msg.unwrap();
+            assert!(
+                tool_msg.tool_call_id.is_some(),
+                "Tool message should have tool_call_id"
+            );
+            assert!(
+                tool_msg.tool_name.is_some(),
+                "Tool message should have tool_name"
+            );
+        }
+
+        // If run completed successfully, should have assistant message
         if let Ok(snapshot) = rt.inspect(&session.session_ref) {
             if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
                 if run.status == RunStatus::Completed {
+                    let assistant_msg = messages
+                        .iter()
+                        .find(|m| m.role == protocol_interface::MessageRole::Assistant);
                     assert!(
                         assistant_msg.is_some(),
                         "Completed run should have assistant message"

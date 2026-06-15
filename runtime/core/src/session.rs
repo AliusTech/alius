@@ -264,8 +264,13 @@ impl SessionManager {
 
         state.cancel_token.cancel();
 
-        // Extract trace_id from existing events if available
-        let trace_id = state.events.first().map(|e| e.trace_id.clone());
+        // Extract trace_id and next sequence from existing events
+        let (trace_id, next_seq) = if let Some(first) = state.events.first() {
+            let max_seq = state.events.iter().map(|e| e.sequence).max().unwrap_or(0);
+            (Some(first.trace_id.clone()), max_seq + 1)
+        } else {
+            (None, 1)
+        };
         drop(runs);
 
         self.update_run_status(run_ref, RunStatus::Cancelled)?;
@@ -276,11 +281,12 @@ impl SessionManager {
             let cancel_event = CoreEvent::new(
                 run_ref.clone(),
                 trace_id,
-                0, // sequence will be ignored, just for event creation
-                CoreEventKind::ErrorRaised,
-                CoreEventPayload::Error {
-                    code: "cancelled".to_string(),
-                    message: "Run cancelled by user".to_string(),
+                next_seq,
+                CoreEventKind::RunCancelled,
+                CoreEventPayload::Json {
+                    value: serde_json::json!({
+                        "reason": "user_requested"
+                    }),
                 },
             );
             let _ = self.push_event(run_ref, cancel_event);
@@ -326,8 +332,11 @@ impl SessionManager {
                 .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?
         };
 
-        // Don't transition from Cancelled (it's a terminal state)
-        if current_status == RunStatus::Cancelled {
+        // Don't transition from terminal states (Cancelled, Completed, Failed)
+        if matches!(
+            current_status,
+            RunStatus::Cancelled | RunStatus::Completed | RunStatus::Failed
+        ) {
             return Ok(());
         }
 

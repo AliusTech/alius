@@ -413,11 +413,21 @@ impl LoopEngine {
         let mut final_content = String::new();
         let context_mgr = ContextManager::new(ctx.max_context_tokens);
 
+        // Track loop exit reason
+        enum ExitReason {
+            Success,
+            Cancelled,
+            Error,
+            MaxIterations,
+        }
+        let mut exit_reason = ExitReason::Success;
+
         let mut last_assistant_tool_calls: Option<Vec<runtime_model::ToolCall>> = None;
         loop {
             // Check for cancellation at the start of each iteration
             if let Some(token) = &ctx.cancel_token {
                 if token.is_cancelled() {
+                    exit_reason = ExitReason::Cancelled;
                     emit_final(
                         event_sink,
                         run_ref,
@@ -444,6 +454,7 @@ impl LoopEngine {
                         message: format!("max iterations ({}) reached", max_iterations),
                     },
                 ));
+                exit_reason = ExitReason::MaxIterations;
                 break;
             }
 
@@ -517,6 +528,7 @@ impl LoopEngine {
                             message: e.to_string(),
                         },
                     ));
+                    exit_reason = ExitReason::Error;
                     break;
                 }
             };
@@ -569,12 +581,14 @@ impl LoopEngine {
                         message,
                     },
                 ));
+                exit_reason = ExitReason::Error;
                 break;
             }
 
             // Check for cancellation before executing tools
             if let Some(token) = &ctx.cancel_token {
                 if token.is_cancelled() {
+                    exit_reason = ExitReason::Cancelled;
                     emit_final(
                         event_sink,
                         run_ref,
@@ -614,6 +628,7 @@ impl LoopEngine {
                             message: e.to_string(),
                         },
                     ));
+                    exit_reason = ExitReason::Error;
                     break;
                 }
             };
@@ -621,14 +636,18 @@ impl LoopEngine {
             pending_tool_results = normalize_tool_results(&tool_calls, &tool_results);
         }
 
-        emit_final(
-            event_sink,
-            run_ref,
-            trace_id,
-            &mut seq,
-            &final_content,
-            true,
-        );
+        // Only emit FinalResult if loop didn't already emit one (e.g., on cancel)
+        let success = matches!(exit_reason, ExitReason::Success);
+        if !matches!(exit_reason, ExitReason::Cancelled) {
+            emit_final(
+                event_sink,
+                run_ref,
+                trace_id,
+                &mut seq,
+                &final_content,
+                success,
+            );
+        }
 
         LoopExecutionResult {
             events: Vec::new(),
