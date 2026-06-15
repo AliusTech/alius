@@ -6,9 +6,17 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-16
+
+[2026-06-16 22:00] Alius: runtime/tools/src/shell_gate + runtime/tools/src/native - P3-1 Shell Gate 参数级影响范围与 workspace 边界加固: scope.rs 增强重定向目标检测（>, 2>, --output=）；shell.rs 加固 cwd 边界验证（拒绝绝对路径和 ../ 逃逸）；authorizer.rs 调整逻辑顺序使 workspace 边界检查优先于风险等级判断，确保所有外部路径命令（包括高风险如 rm -rf /tmp/foo）返回 Deny 而非 ApprovalRequired；tools-and-shell-gate.md 明确 workspace 边界违规是 hard deny；新增 58 个测试覆盖检测层、授权层和执行层。
+
 ## 2026-06-15
 
 [2026-06-15 18:00] Alius: runtime/core + runtime/memory + protocol - P2 Runtime state persistence and cancellation: streaming events now persist to SessionManager; RunStatus lifecycle auto-transitions on FinalResult/ErrorRaised/ToolConfirmationRequired; cancel_run triggers CancellationToken checked at loop/chat/tool execution points; Cancelled is terminal state; conversation messages (user/assistant) persist to ConversationStore; review_start reads from unified conversation history.
+
+[2026-06-15 14:32] Codex: .alius/workspace/docs/standards/development-workflow.md - Documented reviewer-owned branch setup before task assignment and reviewer-owned merge decisions after all goals and tests pass.
+
+[2026-06-15 14:29] Codex: .alius/workspace/docs/standards/development-workflow.md - Added the local feature-branch review workflow: developers submit functional branches, reviewers check design and functional acceptance, and accepted work is merged into the local master integration branch with commits allocated by function.
 
 [2026-06-15 13:27] Codex: entrypoints/cli/src/tui/workspace - Wired runtime tool confirmation responses during normal execution, plan drafting, and approved plan-step execution loops.
 
