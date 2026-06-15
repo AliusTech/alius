@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{AliusTool, WasmPluginTool};
+use crate::AliusTool;
 use protocol_interface::ToolDef;
 
 /// Tool registry for managing available tools
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<WasmPluginTool>>,
+    tools: HashMap<String, Arc<dyn AliusTool>>,
 }
 
 impl ToolRegistry {
@@ -18,18 +18,18 @@ impl ToolRegistry {
         }
     }
 
-    /// Register a Rust WASM module tool adapter.
-    pub fn register(&mut self, tool: WasmPluginTool) {
+    /// Register a tool implementation.
+    pub fn register<T>(&mut self, tool: T)
+    where
+        T: AliusTool + 'static,
+    {
         let name = tool.name();
         self.tools.insert(name.to_string(), Arc::new(tool));
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn AliusTool>> {
-        self.tools.get(name).map(|tool| {
-            let tool: Arc<dyn AliusTool> = tool.clone();
-            tool
-        })
+        self.tools.get(name).cloned()
     }
 
     /// Check if a tool exists

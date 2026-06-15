@@ -99,11 +99,7 @@ impl CoreRuntimeManager {
             .tool_registry_arc(Arc::new(registry))
             .build()?;
 
-        let manager = Self::from_runtime_with_context(
-            workspace_root,
-            runtime,
-            context,
-        );
+        let manager = Self::from_runtime_with_context(workspace_root, runtime, context);
 
         // Start MCP background initialization if feature is enabled
         #[cfg(feature = "mcp")]

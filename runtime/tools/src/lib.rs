@@ -1,3 +1,4 @@
+pub mod native;
 pub mod package;
 pub mod permission;
 pub mod registry;

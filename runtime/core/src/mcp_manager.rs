@@ -99,8 +99,8 @@ impl McpManager {
 
     /// Initialize MCP registry (async)
     async fn init_mcp() -> Result<Arc<McpRegistry>, String> {
-        let home_dir = dirs::home_dir()
-            .ok_or_else(|| "Cannot determine home directory".to_string())?;
+        let home_dir =
+            dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
 
         let mcp_config_path = home_dir.join(".alius/mcp/servers.toml");
 
@@ -134,7 +134,9 @@ impl McpManager {
         mcp_registry: Arc<McpRegistry>,
     ) -> Result<usize, String> {
         // Access MCP tools
-        let tools_map = mcp_registry.list_all_tools().await
+        let tools_map = mcp_registry
+            .list_all_tools()
+            .await
             .map_err(|e| format!("Failed to list tools: {}", e))?;
 
         // Count total tools across all servers
@@ -171,7 +173,10 @@ mod tests {
     fn test_mcp_manager_creation() {
         let manager = McpManager::new();
         // Manager should be created successfully
-        assert_eq!(std::mem::size_of_val(&manager), std::mem::size_of::<McpManager>());
+        assert_eq!(
+            std::mem::size_of_val(&manager),
+            std::mem::size_of::<McpManager>()
+        );
     }
 
     #[tokio::test]
@@ -212,18 +217,6 @@ mod tests {
 
         assert!(matches!(status, McpStatus::NotStarted));
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_mcp_manager_creation() {
-        let manager = McpManager::new();
-        let status = manager.status().await;
-        matches!(status, McpStatus::NotStarted);
-    }
 
     #[test]
     fn test_mcp_status_clone() {
@@ -232,6 +225,12 @@ mod tests {
             tools: 5,
         };
         let cloned = status.clone();
-        matches!(cloned, McpStatus::Ready { connected: 2, tools: 5 });
+        assert!(matches!(
+            cloned,
+            McpStatus::Ready {
+                connected: 2,
+                tools: 5
+            }
+        ));
     }
 }
