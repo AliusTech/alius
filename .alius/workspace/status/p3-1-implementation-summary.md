@@ -2,7 +2,7 @@
 
 **实施日期：** 2026-06-16  
 **分支：** fix/tools-shell-scope-args  
-**状态：** ✅ 完成并通过质量门
+**状态：** ✅ 完成并通过质量门（含 Review 修复）
 
 ---
 
@@ -10,9 +10,9 @@
 
 ### 目标
 
-确保 `shell` 工具执行前，Shell Gate 必须基于真实命令参数、重定向目标、cwd 和 workspace root 做范围判断，不能出现"只检查 command、不检查 args"或 workspace 外路径在 Chat/Bypass 下静默执行的问题。
+确保 `shell` 工具执行前，Shell Gate 必须基于真实命令参数、重定向目标、cwd 和 workspace root 做范围判断，**并且 workspace 外路径必须被拒绝执行**，不能出现"只检查 command、不检查 args"或 workspace 外路径在 Chat/Bypass 下静默执行的问题。
 
-### ✅ 已完成任务
+### ✅ 已完成任务（含 Review 修复）
 
 #### 1. 参数级范围分析增强
 
@@ -149,12 +149,73 @@ fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> Result<PathBuf, AliusErro
 ✅ **Chat/Bypass 模式不绕过 Shell Gate**
 - shell.rs 第 89-95 行构造 `ShellCommandRequest`
 - 第 96-98 行调用 `authorize()` 检查
-- `ShellGateDecision::Deny` 直接返回错误
+- **`ShellGateDecision::Deny` 直接返回错误（修复后）**
 - 不依赖 RuntimeMode 做门控判断
 
 ✅ **Plan 模式确认流程**
-- 高风险命令返回 `ApprovalRequired`
-- workspace 外路径通过 scope 分析硬拒绝
+- 高风险 workspace 内命令返回 `ApprovalRequired`
+- **workspace 外路径通过 `Deny` 硬拒绝（修复后）**
+
+---
+
+## Review 修复（P0 阻断问题）
+
+### 问题
+
+**[P0] workspace 外路径只被检测，没有被拒绝执行**
+- `authorizer.rs:103` 对 `external_paths` 返回 `ApprovalRequired`
+- `shell.rs:96` 只拦截 `Deny`，`ApprovalRequired` 继续执行
+- Chat/Bypass 下 `cat /etc/passwd`、`echo x > /tmp/out` 可能执行
+
+### 修复
+
+**1. 将外部路径从 ApprovalRequired 改为 Deny**
+
+```rust
+// runtime/tools/src/shell_gate/authorizer.rs:103-115
+// Hard boundary: external paths are always denied
+if !scope.external_paths.is_empty() {
+    return ShellGateDecision::Deny {
+        reason: format!(
+            "command references paths outside workspace: {:?}",
+            scope.external_paths
+        ),
+    };
+}
+```
+
+**2. ApprovalRequired 只保留给 workspace 内高风险命令**
+- `rm -rf ./build` → `ApprovalRequired`（workspace 内）
+- `cat /etc/passwd` → `Deny`（workspace 外）
+- `echo x > /tmp/out` → `Deny`（workspace 外）
+
+**3. 新增授权层测试（7 个）**
+
+runtime/tools/src/shell_gate/authorizer.rs:
+- `test_external_path_etc_passwd_denied`
+- `test_external_path_parent_escape_denied`
+- `test_external_path_output_flag_denied`
+- `test_external_path_stdout_redirect_denied`
+- `test_external_path_stderr_redirect_denied`
+- `test_workspace_internal_paths_allowed`
+- `test_high_risk_workspace_internal_requires_approval`
+
+**4. 新增执行层端到端测试（4 个）**
+
+runtime/tools/tests/shell_gate_integration.rs:
+- `test_execute_etc_passwd_rejected_in_chat`
+- `test_execute_stdout_redirect_rejected_in_chat`
+- `test_execute_stderr_redirect_rejected_in_plan`
+- `test_execute_output_flag_rejected_in_chat`
+
+验证 `Shell::execute()` 在所有模式下拒绝外部路径。
+
+**5. 更新文档**
+
+.alius/workspace/docs/modules/tools-and-shell-gate.md:
+- 明确 workspace 边界违规是 hard deny
+- ApprovalRequired 保留给 workspace 内高风险命令
+- 不属于 Chat/Bypass 可直接执行的操作
 
 ---
 
@@ -164,21 +225,51 @@ fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> Result<PathBuf, AliusErro
 ✓ cargo fmt --all -- --check
 ✓ cargo check --workspace --all-targets --all-features
 ✓ cargo clippy --workspace --all-targets --all-features -- -D warnings
-✓ cargo test -p runtime-tools shell_gate -- --test-threads=1 (39 tests)
-✓ cargo test -p runtime-tools --test shell_gate_integration -- --test-threads=1 (10 tests)
-✓ cargo test --workspace -- --test-threads=1 (434 tests passed)
+✓ cargo test -p runtime-tools shell_gate -- --test-threads=1 (54 tests)
+✓ cargo test -p runtime-tools --test shell_gate_integration -- --test-threads=1 (21 tests)
+✓ cargo test --workspace -- --test-threads=1 (457 tests passed)
 ```
 
 **测试统计：**
-- runtime-tools: 55 个测试（新增 21 个）
-- 集成测试: 10 个测试（新增）
-- 完整测试套件: 434 个测试全部通过
+- authorizer: 15 个测试（新增 7 个）
+- scope: 16 个测试（新增 8 个）
+- shell: 5 个测试（新增 5 个）
+- 集成测试: 21 个测试（新增 21 个）
+- 完整测试套件: 457 个测试全部通过
 
 ---
 
 ## 修改文件
 
-1. **runtime/tools/src/shell_gate/scope.rs**
+1. **runtime/tools/src/shell_gate/authorizer.rs** ⭐ 核心修复
+   - **修改 `authorize()` 将 external_paths 从 ApprovalRequired 改为 Deny**
+   - 新增 7 个测试用例验证外部路径拒绝
+
+2. **runtime/tools/src/shell_gate/scope.rs**
+   - 新增 `extract_redirections_from_command()` 函数
+   - 修改 `analyze_scope()` 同时检查 args 和 command
+   - 新增 8 个测试用例
+
+3. **runtime/tools/src/native/shell.rs**
+   - 修改 `resolve_cwd()` 返回 `Result<PathBuf, AliusError>`
+   - 添加绝对路径检查和 workspace 边界验证
+   - 更新调用点处理错误
+   - 新增 5 个测试用例
+
+4. **runtime/tools/src/native/mod.rs**
+   - 将 `shell` 模块改为 `pub mod` 以支持集成测试
+
+5. **runtime/tools/tests/shell_gate_integration.rs**（新文件）
+   - 21 个端到端集成测试
+   - 覆盖检测层、授权层、执行层
+   - 验证所有功能验收要求
+
+6. **.alius/workspace/docs/modules/tools-and-shell-gate.md**
+   - 明确 workspace 边界违规是 hard deny
+   - 更新 ApprovalRequired 语义说明
+
+7. **.alius/workspace/status/p3-1-implementation-summary.md**
+   - 完整实施文档和 Review 修复记录
    - 新增 `extract_redirections_from_command()` 函数
    - 修改 `analyze_scope()` 同时检查 args 和原始 command
    - 新增 8 个测试用例

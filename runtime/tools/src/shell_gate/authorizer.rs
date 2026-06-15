@@ -100,8 +100,10 @@ pub fn authorize(request: &ShellCommandRequest, config: &ShellGateConfig) -> She
                 .into(),
         };
     }
+
+    // Hard boundary: external paths are always denied
     if !scope.external_paths.is_empty() {
-        return ShellGateDecision::ApprovalRequired {
+        return ShellGateDecision::Deny {
             reason: format!(
                 "command references paths outside workspace: {:?}",
                 scope.external_paths
@@ -195,5 +197,89 @@ mod tests {
         let req = make_request_with_origin("rm file.txt", ShellOrigin::Embedded);
         let decision = authorize(&req, &ShellGateConfig::default());
         assert!(matches!(decision, ShellGateDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn test_external_path_etc_passwd_denied() {
+        let mut req = make_request("cat /etc/passwd");
+        req.args = vec!["/etc/passwd".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for /etc/passwd, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_external_path_parent_escape_denied() {
+        let mut req = make_request("cat ../outside/file.txt");
+        req.cwd = PathBuf::from("/workspace");
+        req.workspace_root = PathBuf::from("/workspace");
+        req.args = vec!["../outside/file.txt".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for ../outside escape, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_external_path_output_flag_denied() {
+        let mut req = make_request("gcc main.c --output=/tmp/out");
+        req.args = vec!["main.c".to_string(), "--output=/tmp/out".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for --output=/tmp/out, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_external_path_stdout_redirect_denied() {
+        let req = make_request("echo test > /tmp/out");
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for > /tmp/out, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_external_path_stderr_redirect_denied() {
+        let req = make_request("command 2>/tmp/err");
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for 2>/tmp/err, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_workspace_internal_paths_allowed() {
+        let mut req = make_request("cat ./src/main.rs");
+        req.args = vec!["./src/main.rs".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert_eq!(
+            decision,
+            ShellGateDecision::Allow,
+            "Expected Allow for workspace-internal path"
+        );
+    }
+
+    #[test]
+    fn test_high_risk_workspace_internal_requires_approval() {
+        let mut req = make_request("rm -rf ./build");
+        req.args = vec!["-rf".to_string(), "./build".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::ApprovalRequired { .. }),
+            "Expected ApprovalRequired for high-risk workspace-internal command, got {:?}",
+            decision
+        );
     }
 }
