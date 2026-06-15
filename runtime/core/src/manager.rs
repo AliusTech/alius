@@ -18,6 +18,9 @@ use runtime_tools::ToolPackageResolver;
 
 use crate::{CoreRuntime, CoreRuntimeBuilder};
 
+#[cfg(feature = "mcp")]
+use crate::mcp_manager::McpManager;
+
 /// Caller context used by the local manager when creating protocol envelopes.
 #[derive(Debug, Clone)]
 pub struct RuntimeManagerContext {
@@ -56,6 +59,8 @@ pub struct CoreRuntimeManager {
     interface: ProtocolInterface<CoreRuntime>,
     workspace_root: PathBuf,
     context: RuntimeManagerContext,
+    #[cfg(feature = "mcp")]
+    mcp_manager: Option<Arc<McpManager>>,
 }
 
 impl CoreRuntimeManager {
@@ -94,11 +99,17 @@ impl CoreRuntimeManager {
             .tool_registry_arc(Arc::new(registry))
             .build()?;
 
-        Ok(Self::from_runtime_with_context(
+        let manager = Self::from_runtime_with_context(
             workspace_root,
             runtime,
             context,
-        ))
+        );
+
+        // Start MCP background initialization if feature is enabled
+        #[cfg(feature = "mcp")]
+        manager.start_mcp_init();
+
+        Ok(manager)
     }
 
     /// Wrap an existing runtime with the default local CLI context.
@@ -112,10 +123,21 @@ impl CoreRuntimeManager {
         runtime: CoreRuntime,
         context: RuntimeManagerContext,
     ) -> Self {
+        #[cfg(feature = "mcp")]
+        let mcp_manager = {
+            let manager = Arc::new(McpManager::new());
+            // Note: Background initialization will be triggered separately
+            Some(manager)
+        };
+
+        #[cfg(not(feature = "mcp"))]
+        let mcp_manager = ();
         Self {
             interface: ProtocolInterface::new(runtime),
             workspace_root: workspace_root.into(),
             context,
+            #[cfg(feature = "mcp")]
+            mcp_manager,
         }
     }
 
@@ -157,6 +179,8 @@ impl CoreRuntimeManager {
 
     /// Cancel a run through the protocol interface.
     pub fn cancel(&self, run_ref: &RunRef, reason: Option<String>) -> Result<(), ProtocolError> {
+        // NOTE: Stage B cancel_pending_confirmations will be wired here once
+        // CoreRuntimeManager gains a session_manager handle (B4 follow-up).
         self.interface.cancel(run_ref, reason)
     }
 
@@ -223,6 +247,38 @@ impl CoreRuntimeManager {
     /// Run a health check.
     pub fn health_check(&self) -> Result<HealthReport, ProtocolError> {
         self.interface.health_check(&self.protocol_context())
+    }
+
+    /// Get MCP initialization status (only available with mcp feature)
+    #[cfg(feature = "mcp")]
+    pub async fn mcp_status(&self) -> crate::mcp_manager::McpStatus {
+        if let Some(manager) = &self.mcp_manager {
+            manager.status().await
+        } else {
+            crate::mcp_manager::McpStatus::NotStarted
+        }
+    }
+
+    /// Start MCP background initialization (only available with mcp feature)
+    #[cfg(feature = "mcp")]
+    pub fn start_mcp_init(&self) {
+        if let Some(manager) = &self.mcp_manager {
+            // Get tool registry from runtime
+            if let Some(registry) = self.runtime().tool_registry() {
+                manager.start_background_init(registry);
+                tracing::info!("MCP background initialization started");
+            } else {
+                tracing::warn!("MCP initialization skipped: no tool registry available");
+            }
+        }
+    }
+
+    /// Get list of available MCP tools (only available with mcp feature)
+    #[cfg(feature = "mcp")]
+    pub async fn mcp_tools(&self) -> Vec<String> {
+        // MCP tools will be registered in tool registry
+        // Return empty for now - tools are accessed via tool_list()
+        Vec::new()
     }
 
     fn run_loop_request(

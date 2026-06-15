@@ -12,9 +12,11 @@ pub mod patch;
 pub mod runtime;
 pub mod session;
 
+#[cfg(feature = "mcp")]
+pub mod mcp_manager;
+
 pub use event_adapter::EventAdapter;
 pub use loop_engine::{LoopContext, LoopEngine};
 pub use manager::{CoreRuntimeManager, RuntimeManagerContext};
 pub use runtime::{CoreRuntime, CoreRuntimeBuilder};
 pub use session::SessionManager;
-// Initial version setup
