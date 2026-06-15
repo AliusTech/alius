@@ -59,6 +59,10 @@ impl AliusTool for McpToolAdapter {
         self.input_schema.clone()
     }
 
+    fn source(&self) -> protocol_interface::core::ToolSource {
+        protocol_interface::core::ToolSource::Mcp
+    }
+
     fn required_permission(&self) -> PermissionLevel {
         // MCP tools are remote — treat as Execute-level by default.
         PermissionLevel::Execute

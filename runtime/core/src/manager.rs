@@ -270,14 +270,6 @@ impl CoreRuntimeManager {
         }
     }
 
-    /// Get list of available MCP tools (only available with mcp feature)
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_tools(&self) -> Vec<String> {
-        // MCP tools will be registered in tool registry
-        // Return empty for now - tools are accessed via tool_list()
-        Vec::new()
-    }
-
     fn run_loop_request(
         &self,
         text: &str,

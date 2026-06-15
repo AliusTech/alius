@@ -38,7 +38,7 @@ This file summarizes the current implementation state of Alius in this checkout.
 | --- | --- |
 | Agent Team | TUI state and view concepts exist, but live Agent Team or AgentNet traffic is not connected by default. |
 | A2A | Protocol concepts and config surfaces exist, but A2A runtime plumbing is not a live default feature. |
-| MCP tools | CLI management exists, but MCP tools are not fully merged into the default runtime tool loop. |
+| MCP tools | MCP server config, connection, and tool listing exist. When the `mcp` feature is enabled and `~/.alius/mcp/servers.toml` is present, MCP tools are registered into the shared `ToolRegistry` and visible via `tool_list` / JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization failure does not block runtime startup. |
 | Rust WASM module tools | Tool module loading and registration code exists, but capability policy and production ABI behavior need more hardening. |
 | Workflow runtime | Workflow commands and parsing exist, but prompt and tool steps should not be described as a complete automation engine. |
 

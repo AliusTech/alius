@@ -797,15 +797,7 @@ impl CoreRuntimeApi for CoreRuntime {
 
     fn tool_list(&self) -> Result<Vec<ToolInfo>, ProtocolError> {
         match &self.tool_registry {
-            Some(registry) => Ok(registry
-                .to_tool_defs()
-                .into_iter()
-                .map(|def| ToolInfo {
-                    name: def.name,
-                    description: def.description,
-                    source: ToolSource::RustWasm,
-                })
-                .collect()),
+            Some(registry) => Ok(registry.to_tool_infos()),
             None => Ok(Vec::new()),
         }
     }

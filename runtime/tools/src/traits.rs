@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 
 use crate::PermissionLevel;
+use protocol_interface::core::ToolSource;
 use protocol_interface::{AliusError, RuntimeMode};
 
 /// Context for tool execution
@@ -76,6 +77,12 @@ pub trait AliusTool: Send + Sync {
 
     /// JSON schema for input parameters
     fn input_schema(&self) -> JsonValue;
+
+    /// Tool source (default: RustWasm for native/WASM tools).
+    /// MCP adapters should override to return `ToolSource::Mcp`.
+    fn source(&self) -> ToolSource {
+        ToolSource::RustWasm
+    }
 
     /// Required permission level (default: Read)
     fn required_permission(&self) -> PermissionLevel {

@@ -15,7 +15,7 @@ Current configuration modules live under `runtime/config`.
 | `tools.toml` | Built-in, MCP, plugin, workflow, timeout, confirmation, and registry settings. |
 | `permissions.toml` | Filesystem, shell, network, memory, project docs, and remote A2A permissions. |
 | `protocol.toml` | Protocol interface enablement and event/command settings. |
-| `mcp.json` | MCP server declarations. |
+| `~/.alius/mcp/servers.toml` | MCP server declarations (TOML format). Loaded by `McpManager` at runtime startup when the `mcp` feature is enabled. |
 
 ## Main Runtime Views
 

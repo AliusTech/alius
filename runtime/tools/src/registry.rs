@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::AliusTool;
+use protocol_interface::core::ToolInfo;
 use protocol_interface::ToolDef;
 
 /// Tool registry for managing available tools.
@@ -88,6 +89,20 @@ impl ToolRegistry {
             })
             .collect()
     }
+
+    /// Get all tools as `ToolInfo` list with source metadata.
+    /// Each tool's `source()` method determines the `ToolSource` value.
+    pub fn to_tool_infos(&self) -> Vec<ToolInfo> {
+        let tools = self.tools.read().unwrap();
+        tools
+            .values()
+            .map(|tool| ToolInfo {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                source: tool.source(),
+            })
+            .collect()
+    }
 }
 
 impl Default for ToolRegistry {
@@ -101,6 +116,7 @@ mod tests {
     use super::*;
     use crate::native;
     use async_trait::async_trait;
+    use protocol_interface::core::ToolSource;
     use protocol_interface::AliusError;
 
     /// A fake tool for testing name-conflict rejection.
@@ -208,5 +224,28 @@ mod tests {
         assert!(result.is_ok());
         assert!(registry.has("extra_tool"));
         assert!(registry.has("shell")); // native tools still present
+    }
+
+    #[test]
+    fn test_native_tools_have_rustwasm_source() {
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
+
+        let infos = registry.to_tool_infos();
+        let shell_info = infos.iter().find(|i| i.name == "shell").unwrap();
+        assert_eq!(shell_info.source, ToolSource::RustWasm);
+    }
+
+    #[test]
+    fn test_to_tool_infos_includes_source() {
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
+
+        let infos = registry.to_tool_infos();
+        assert!(!infos.is_empty());
+        // All native tools should have RustWasm source.
+        for info in &infos {
+            assert_eq!(info.source, ToolSource::RustWasm);
+        }
     }
 }

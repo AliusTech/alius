@@ -8,7 +8,9 @@ All entries use the format:
 
 ## 2026-06-16
 
-[2026-06-16 01:45] Alius: runtime/tools/src/registry.rs + runtime/tools/src/native/mod.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs - P4-3 fix: ToolRegistry now uses interior RwLock so register() takes &self; MCP tools registered directly into shared ToolRegistry (visible via tool_list/to_tool_defs/LoopEngine); mcp_bridge Box::leak moved to constructor; McpManager::start_background_init takes Arc<ToolRegistry>; HISTORY.md updated.
+[2026-06-16 02:00] Alius: runtime/tools/src/traits.rs + runtime/tools/src/registry.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/runtime.rs + runtime/core/src/manager.rs + .alius/workspace/docs - P4-3 review fixes: added AliusTool::source() trait method (default RustWasm); McpToolAdapter overrides to ToolSource::Mcp; ToolRegistry::to_tool_infos() returns ToolInfo with source metadata; CoreRuntime::tool_list() uses to_tool_infos(); removed misleading mcp_tools() empty stub from CoreRuntimeManager; synced docs (01-current-state.md, implementation-gaps.md, config-schema.md) with actual MCP integration state.
+
+[2026-06-16 01:45] Alius: runtime/tools/src/registry.rs + runtime/tools/src/native/mod.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs - P4-3 fix: ToolRegistry now uses interior RwLock so register() takes &self; MCP tools registered directly into shared ToolRegistry (visible via tool_list/to_tool_defs/LoopEngine); mcp_bridge Box::leak moved to constructor; McpManager::start_background_init takes Arc<ToolRegistry>.
 
 [2026-06-16 01:30] Alius: runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs + .alius/workspace/SPEC.md - P4-3 MCP runtime tool bridge: McpToolAdapter wraps MCP tools as AliusTool; McpManager::register_tools creates adapters and skips duplicate names (native/WASM priority); no-config does not block runtime; SPEC.md F-010 updated.
 
