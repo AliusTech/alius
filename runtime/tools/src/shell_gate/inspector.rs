@@ -46,7 +46,7 @@ const LOW_RISK_COMMANDS: &[&str] = &[
 /// Parse a shell command string into a ShellInspection.
 pub fn parse_command(request: &ShellCommandRequest) -> ShellInspection {
     let raw = &request.command;
-    let tokens = basic_shell_tokenize(raw);
+    let tokens = shell_tokenize(raw);
 
     let base_command = tokens.first().cloned().unwrap_or_default();
     let args: Vec<String> = tokens.iter().skip(1).cloned().collect();
@@ -194,19 +194,35 @@ fn git_subcommand(args: &[String]) -> Option<&str> {
     None
 }
 
-/// Simple shell tokenizer — handles double-quoted strings and basic splitting.
-fn basic_shell_tokenize(input: &str) -> Vec<String> {
+/// Return best-effort command arguments for authorization and scope analysis.
+pub fn command_args(command: &str) -> Vec<String> {
+    shell_tokenize(command).into_iter().skip(1).collect()
+}
+
+/// Simple shell tokenizer — handles quoted strings and basic escaping.
+pub(crate) fn shell_tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut in_quotes = false;
-    let chars = input.chars();
+    let mut quote: Option<char> = None;
+    let mut escape = false;
 
-    for ch in chars {
+    for ch in input.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
         match ch {
-            '"' => {
-                in_quotes = !in_quotes;
+            '\\' => {
+                escape = true;
             }
-            ' ' | '\t' if !in_quotes => {
+            '"' | '\'' if quote == Some(ch) => {
+                quote = None;
+            }
+            '"' | '\'' if quote.is_none() => {
+                quote = Some(ch);
+            }
+            ' ' | '\t' if quote.is_none() => {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
@@ -215,6 +231,9 @@ fn basic_shell_tokenize(input: &str) -> Vec<String> {
                 current.push(ch);
             }
         }
+    }
+    if escape {
+        current.push('\\');
     }
     if !current.is_empty() {
         tokens.push(current);
