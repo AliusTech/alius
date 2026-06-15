@@ -15,9 +15,13 @@ use crate::traits::{AliusTool, ToolContext, ToolResult};
 use crate::PermissionLevel;
 
 /// Wraps an MCP tool as a native `AliusTool` implementation.
+///
+/// Name and description are leaked once at construction to satisfy the
+/// `&'static str` requirement of `AliusTool::name()` / `description()`.
+/// This is acceptable because MCP tools are long-lived and bounded in count.
 pub struct McpToolAdapter {
-    name: String,
-    description: String,
+    name: &'static str,
+    description: &'static str,
     input_schema: JsonValue,
     client: Arc<McpClient>,
 }
@@ -25,12 +29,16 @@ pub struct McpToolAdapter {
 impl McpToolAdapter {
     /// Create an adapter from an `McpTool` descriptor and its owning client.
     pub fn from_mcp_tool(tool: &McpTool, client: Arc<McpClient>) -> Self {
+        let name: &'static str = Box::leak(tool.name.clone().into_boxed_str());
+        let desc = tool
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("MCP tool: {}", tool.name));
+        let description: &'static str = Box::leak(desc.into_boxed_str());
+
         Self {
-            name: tool.name.clone(),
-            description: tool
-                .description
-                .clone()
-                .unwrap_or_else(|| format!("MCP tool: {}", tool.name)),
+            name,
+            description,
             input_schema: tool.input_schema.clone(),
             client,
         }
@@ -40,13 +48,11 @@ impl McpToolAdapter {
 #[async_trait]
 impl AliusTool for McpToolAdapter {
     fn name(&self) -> &'static str {
-        // Leak the string to get a 'static str. This is acceptable because
-        // MCP tool names are bounded and long-lived.
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn description(&self) -> &'static str {
-        Box::leak(self.description.clone().into_boxed_str())
+        self.description
     }
 
     fn input_schema(&self) -> JsonValue {
@@ -61,7 +67,7 @@ impl AliusTool for McpToolAdapter {
     async fn execute(&self, args: JsonValue, _ctx: ToolContext) -> Result<ToolResult, AliusError> {
         let result = self
             .client
-            .call_tool(&self.name, args)
+            .call_tool(self.name.to_string(), args)
             .await
             .map_err(|e| AliusError::Agent(format!("MCP tool '{}' failed: {e}", self.name)))?;
 

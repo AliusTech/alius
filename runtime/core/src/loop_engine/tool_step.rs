@@ -464,7 +464,7 @@ mod tests {
     }
 
     fn setup() -> (ToolRegistry, SessionManager, RunRef, TraceId) {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry
             .register(ConfirmRequiredTool)
             .expect("register confirm_required");

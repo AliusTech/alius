@@ -1130,7 +1130,7 @@ mod tests {
             }
         }
 
-        let mut registry = runtime_tools::ToolRegistry::new();
+        let registry = runtime_tools::ToolRegistry::new();
         registry.register(DenyTool).unwrap();
 
         let session_manager = Arc::new(crate::SessionManager::new(
@@ -1304,7 +1304,7 @@ mod tests {
             }
         }
 
-        let mut registry = runtime_tools::ToolRegistry::new();
+        let registry = runtime_tools::ToolRegistry::new();
         registry.register(DenyTool).unwrap();
         let registry = Arc::new(registry);
 

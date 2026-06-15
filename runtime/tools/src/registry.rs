@@ -1,56 +1,67 @@
 //! Tool registry
+//!
+//! Uses interior `RwLock` so tools can be registered after the registry
+//! is wrapped in `Arc` — required for async MCP tool registration.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::AliusTool;
 use protocol_interface::ToolDef;
 
-/// Tool registry for managing available tools
+/// Tool registry for managing available tools.
+///
+/// Thread-safe via interior `RwLock`. `register()` takes `&self` so MCP
+/// background tasks can add tools after the registry is `Arc`-wrapped.
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn AliusTool>>,
+    tools: RwLock<HashMap<String, Arc<dyn AliusTool>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: HashMap::new(),
+            tools: RwLock::new(HashMap::new()),
         }
     }
 
     /// Register a tool implementation. Returns `Err` if a tool with the same
     /// name is already registered — callers must not silently shadow built-in
     /// tools (e.g. native `shell`) with WASM or external implementations.
-    pub fn register<T>(&mut self, tool: T) -> Result<(), String>
+    pub fn register<T>(&self, tool: T) -> Result<(), String>
     where
         T: AliusTool + 'static,
     {
+        let mut tools = self.tools.write().unwrap();
         let name = tool.name().to_string();
-        if self.tools.contains_key(&name) {
+        if tools.contains_key(&name) {
             return Err(format!("tool '{}' is already registered", name));
         }
-        self.tools.insert(name, Arc::new(tool));
+        tools.insert(name, Arc::new(tool));
         Ok(())
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn AliusTool>> {
-        self.tools.get(name).cloned()
+        let tools = self.tools.read().unwrap();
+        tools.get(name).cloned()
     }
 
     /// Check if a tool exists
     pub fn has(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+        let tools = self.tools.read().unwrap();
+        tools.contains_key(name)
     }
 
     /// List all tool names
     pub fn list_names(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
+        let tools = self.tools.read().unwrap();
+        tools.keys().cloned().collect()
     }
 
     /// Get all tools as OpenAI function definitions
     pub fn to_openai_tools(&self) -> Vec<serde_json::Value> {
-        self.tools
+        let tools = self.tools.read().unwrap();
+        tools
             .values()
             .map(|tool| {
                 serde_json::json!({
@@ -67,7 +78,8 @@ impl ToolRegistry {
 
     /// Get all tools as provider-agnostic ToolDef list
     pub fn to_tool_defs(&self) -> Vec<ToolDef> {
-        self.tools
+        let tools = self.tools.read().unwrap();
+        tools
             .values()
             .map(|tool| ToolDef {
                 name: tool.name().to_string(),
@@ -118,8 +130,8 @@ mod tests {
 
     #[test]
     fn test_native_tools_registered() {
-        let mut registry = ToolRegistry::new();
-        native::register_native_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
 
         assert!(registry.has("shell"));
         assert!(registry.has("read_file"));
@@ -130,8 +142,8 @@ mod tests {
 
     #[test]
     fn test_get_native_tools() {
-        let mut registry = ToolRegistry::new();
-        native::register_native_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
 
         let shell = registry.get("shell");
         assert!(shell.is_some());
@@ -144,8 +156,8 @@ mod tests {
 
     #[test]
     fn test_to_tool_defs_includes_native() {
-        let mut registry = ToolRegistry::new();
-        native::register_native_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
 
         let tool_defs = registry.to_tool_defs();
         let names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
@@ -159,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_duplicate_name_rejected() {
-        let mut registry = ToolRegistry::new();
-        native::register_native_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
 
         // Attempting to register a tool with the same name as a native tool
         // must fail — this prevents WASM plugins from shadowing built-in tools.
@@ -175,12 +187,26 @@ mod tests {
 
     #[test]
     fn test_all_native_names_rejected_on_duplicate() {
-        let mut registry = ToolRegistry::new();
-        native::register_native_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
 
         for name in &["shell", "read_file", "write_file", "list_dir", "edit_file"] {
             let result = registry.register(FakeTool { name });
             assert!(result.is_err(), "duplicate '{}' must be rejected", name);
         }
+    }
+
+    #[test]
+    fn test_register_after_arc_wrap() {
+        // Verify that register works after the registry is wrapped in Arc
+        // (the key requirement for MCP background registration).
+        let registry = Arc::new(ToolRegistry::new());
+        native::register_native_tools(&registry);
+
+        // Register an extra tool via Arc reference.
+        let result = registry.register(FakeTool { name: "extra_tool" });
+        assert!(result.is_ok());
+        assert!(registry.has("extra_tool"));
+        assert!(registry.has("shell")); // native tools still present
     }
 }

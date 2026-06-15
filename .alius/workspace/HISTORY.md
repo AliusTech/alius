@@ -8,7 +8,9 @@ All entries use the format:
 
 ## 2026-06-16
 
-[2026-06-16 01:30] Alius: runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs + .alius/workspace/SPEC.md - P4-3 MCP runtime tool bridge: McpToolAdapter wraps MCP tools as AliusTool; McpManager::register_tools creates adapters and skips duplicate names (native/WASM priority); MCP tools stored separately in mcp_tools list; start_background_init takes existing_tool_names instead of ToolRegistry Arc; no-config does not block runtime; 10 new tests (7 MCP manager + 3 MCP bridge schema); SPEC.md F-010 updated.
+[2026-06-16 01:45] Alius: runtime/tools/src/registry.rs + runtime/tools/src/native/mod.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs - P4-3 fix: ToolRegistry now uses interior RwLock so register() takes &self; MCP tools registered directly into shared ToolRegistry (visible via tool_list/to_tool_defs/LoopEngine); mcp_bridge Box::leak moved to constructor; McpManager::start_background_init takes Arc<ToolRegistry>; HISTORY.md updated.
+
+[2026-06-16 01:30] Alius: runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs + .alius/workspace/SPEC.md - P4-3 MCP runtime tool bridge: McpToolAdapter wraps MCP tools as AliusTool; McpManager::register_tools creates adapters and skips duplicate names (native/WASM priority); no-config does not block runtime; SPEC.md F-010 updated.
 
 [2026-06-16 01:15] Alius: entrypoints/jsonrpc/src/lib.rs - P4-2 review fix: test_run_cancel_observable_via_subscribe now asserts RunCancelled event is present in subscribe snapshot, not just correlation fields; fixed run_start doc comment to match actual return (removed turn_ref).
 

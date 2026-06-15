@@ -12,7 +12,7 @@ use crate::registry::ToolRegistry;
 /// Register the built-in native tools (shell + filesystem group).
 /// Panics if a native tool name is already registered — this should never
 /// happen because native tools are registered first.
-pub fn register_native_tools(registry: &mut ToolRegistry) {
+pub fn register_native_tools(registry: &ToolRegistry) {
     registry
         .register(shell::Shell)
         .expect("native shell tool must not conflict");

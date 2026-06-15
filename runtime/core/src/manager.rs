@@ -256,14 +256,13 @@ impl CoreRuntimeManager {
     }
 
     /// Start MCP background initialization (only available with mcp feature).
-    /// Passes the list of existing native/WASM tool names so MCP tools with
-    /// duplicate names are skipped.
+    /// Passes the shared ToolRegistry so MCP tools are registered directly
+    /// into the runtime tool chain.
     #[cfg(feature = "mcp")]
     pub fn start_mcp_init(&self) {
         if let Some(manager) = &self.mcp_manager {
             if let Some(registry) = self.runtime().tool_registry() {
-                let existing_names = registry.list_names();
-                manager.start_background_init(existing_names);
+                manager.start_background_init(registry);
                 tracing::info!("MCP background initialization started");
             } else {
                 tracing::warn!("MCP initialization skipped: no tool registry available");
