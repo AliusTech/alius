@@ -70,7 +70,9 @@ impl WorkspaceStatus {
     pub fn display(&self, max_width: usize) -> String {
         use super::helpers::truncate_chars;
 
-        let repo = self.repo.as_deref().unwrap_or("none");
+        let Some(repo) = self.repo.as_deref() else {
+            return truncate_chars(&format!("cwd: {}", self.cwd), max_width);
+        };
         let branch = self.branch.as_deref().unwrap_or("-");
         let git_status = if !self.git_available && self.repo.is_some() {
             t!("workspace.status_bar.git_unavailable").to_string()
@@ -157,5 +159,25 @@ mod tests {
         let status = "M  staged.rs\n M modified.rs\nMM both.rs\n?? new.rs\n";
 
         assert_eq!(parse_git_status(status), (2, 2, 1));
+    }
+
+    #[test]
+    fn display_hides_repo_and_branch_outside_git_workspace() {
+        let status = WorkspaceStatus {
+            cwd: "/tmp/project".to_string(),
+            repo: None,
+            branch: None,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
+            clean: false,
+            git_available: true,
+        };
+
+        let display = status.display(120);
+
+        assert_eq!(display, "cwd: /tmp/project");
+        assert!(!display.contains("repo:"));
+        assert!(!display.contains("branch:"));
     }
 }

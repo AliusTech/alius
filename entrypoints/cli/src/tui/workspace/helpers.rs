@@ -25,13 +25,23 @@ pub fn truncate_chars(text: &str, max: usize) -> String {
     if max <= 3 {
         return ".".repeat(max);
     }
-    let mut out: String = text.chars().take(max - 3).collect();
+
+    let mut out = String::new();
+    let target = max - 3;
+    for ch in text.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        if char_len(&candidate) > target {
+            break;
+        }
+        out.push(ch);
+    }
     out.push_str("...");
     out
 }
 
 pub fn char_len(text: &str) -> usize {
-    text.chars().count()
+    Line::from(text.to_string()).width()
 }
 
 pub fn fit_left_right(left: &str, right: &str, width: usize) -> String {
@@ -42,12 +52,11 @@ pub fn fit_left_right(left: &str, right: &str, width: usize) -> String {
     let left_len = char_len(left);
     let right_len = char_len(right);
     if left_len + right_len + 1 >= width {
+        if right_len >= width {
+            return truncate_chars(right, width);
+        }
         let available_left = width.saturating_sub(right_len + 1);
-        return format!(
-            "{} {}",
-            truncate_chars(left, available_left),
-            truncate_chars(right, right_len.min(width))
-        );
+        return format!("{} {}", truncate_chars(left, available_left), right);
     }
 
     format!(

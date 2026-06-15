@@ -20,19 +20,22 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use protocol_interface::core::{CoreEventKind, CoreEventPayload, RuntimeMode};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use runtime_config::ModelAssignmentRole;
 use rust_i18n::t;
 
 use crate::repl::{completion, init_required_message, missing_runtime_requirements, ReplSession};
 use crate::tui::state::{
-    AgentHeader, AgentTeamState, ConversationBlock, InteractionMode, MainTab, PlanNode,
-    PlanNodeStatus, WorkspaceStatus,
+    AgentHeader, AgentTeamState, ConversationBlock, ConversationBlockType, InteractionMode,
+    MainTab, PlanNode, PlanNodeStatus, WorkspaceStatus,
 };
 use crate::tui::TuiApp;
 
-use config_task::{ConfigPrompt, ConfigSaveTarget, ConfigTask, ConfigTaskOutcome};
+use config_task::{
+    ConfigPrompt, ConfigSaveTarget, ConfigSidePanel, ConfigTask, ConfigTaskKind, ConfigTaskOutcome,
+};
 use events::{CommandOutcome, DecisionKind, ExecutionMode, WorkspaceAction};
-use helpers::sanitize_for_tui;
+use helpers::{sanitize_for_tui, truncate_chars};
 use interaction::{
     DecisionState, InputBuffer, InteractionState, InteractionUi, PromptChoice, PromptInputAction,
     PromptInputKind, PromptInputState,
@@ -40,6 +43,7 @@ use interaction::{
 
 const WORKSPACE_POLL_MS: u64 = 100;
 const GIT_REFRESH_SECS: u64 = 2;
+const MAX_COLLAPSED_LINES: usize = 3;
 
 pub async fn run_workspace(mut session: ReplSession, initial_missing: Vec<String>) -> Result<()> {
     let mut app = TuiApp::enter()?;
@@ -51,9 +55,25 @@ pub async fn run_workspace(mut session: ReplSession, initial_missing: Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    struct CwdGuard(std::path::PathBuf);
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    fn enter_temp_cwd() -> (TempDir, CwdGuard) {
+        let original = std::env::current_dir().unwrap();
+        let dir = TempDir::new().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        (dir, CwdGuard(original))
     }
 
     fn type_text(state: &mut WorkspaceState, value: &str) {
@@ -80,6 +100,75 @@ mod tests {
         assert!(matches!(action, WorkspaceAction::None));
         assert_eq!(state.input.value(), "/help");
         assert_eq!(state.focus_zone, FocusZone::Input);
+    }
+
+    #[test]
+    fn startup_uses_welcome_block_without_init_error_spam() {
+        rust_i18n::set_locale("en");
+        let state = WorkspaceState::new(vec!["model".to_string(), "soul".to_string()]);
+
+        assert_eq!(state.blocks.len(), 1);
+        assert_eq!(
+            state.blocks[0].block_type,
+            crate::tui::state::ConversationBlockType::Welcome
+        );
+        assert!(state.blocks[0].content.contains("\"ready\":false"));
+        assert!(state.blocks[0].content.contains("\"version\":\"v"));
+        assert!(!state.blocks[0].content.contains("Alius is not initialized"));
+    }
+
+    #[test]
+    fn conversation_updates_stick_scroll_to_latest() {
+        let mut state = WorkspaceState::new(Vec::new());
+
+        state.conv_scroll.auto_scroll = false;
+        state.push_block(ConversationBlock::result("new output"));
+        assert!(state.conv_scroll.auto_scroll);
+
+        state.push_block(ConversationBlock::execution(""));
+        state.conv_scroll.auto_scroll = false;
+        state.update_streaming_text("delta");
+        assert!(state.conv_scroll.auto_scroll);
+
+        state.conv_scroll.auto_scroll = false;
+        state.update_streaming_text(" more");
+        assert!(state.conv_scroll.auto_scroll);
+    }
+
+    #[test]
+    fn tool_events_are_visible_in_conversation() {
+        rust_i18n::set_locale("en");
+        let mut state = WorkspaceState::new(Vec::new());
+        let started = serde_json::json!({
+            "id": "call-1",
+            "name": "shell",
+            "args": {
+                "command": "git clone https://github.com/lc345/repo.git"
+            }
+        });
+        let completed = serde_json::json!({
+            "id": "call-1",
+            "name": "shell",
+            "args": {
+                "command": "git clone https://github.com/lc345/repo.git"
+            },
+            "success": true,
+            "output": "exit=0\nstdout:\ncloned\nstderr:\n"
+        });
+
+        state.start_execution(ExecutionMode::Bypass);
+        state.conv_scroll.auto_scroll = false;
+        state.record_tool_call_started(&started);
+        assert!(state.conv_scroll.auto_scroll);
+        assert!(state
+            .blocks
+            .iter()
+            .any(|block| block.content.contains("shell: git clone")));
+
+        state.record_tool_call_completed(&completed);
+        let block = state.blocks.last().expect("tool completion block");
+        assert!(block.content.contains("Tool completed"));
+        assert!(block.content.contains("cloned"));
     }
 
     #[test]
@@ -125,18 +214,19 @@ mod tests {
         assert_eq!(state.input.value(), "");
         assert_eq!(state.focus_zone, FocusZone::Input);
         let prompt = state.prompt_input.as_ref().unwrap();
-        assert_ne!(prompt.title, "Provider");
-        assert!(prompt
-            .scope_title
-            .as_deref()
-            .unwrap_or_default()
-            .contains("configuration-language"));
+        // Initial section is Model Assignment (jump-to-first-missing); Tab forward → Language.
+        assert_eq!(prompt.title, "Language");
+        assert_eq!(
+            prompt.scope_title.as_deref(),
+            Some("configuration-language")
+        );
 
         let action = state.handle_key(key(KeyCode::BackTab), &[]);
 
         assert!(matches!(action, WorkspaceAction::None));
         let prompt = state.prompt_input.as_ref().unwrap();
-        assert_eq!(prompt.title, "configuration-models");
+        assert_eq!(prompt.title, "Model Assignment");
+        assert_eq!(prompt.scope_title.as_deref(), Some("configuration-models"));
         assert_eq!(state.focus_zone, FocusZone::Input);
     }
 
@@ -417,6 +507,8 @@ mod tests {
 
     #[test]
     fn init_task_starts_inline_with_project_initialization_title() {
+        rust_i18n::set_locale("en");
+        let (_dir, _guard) = enter_temp_cwd();
         let mut state = WorkspaceState::new(Vec::new());
 
         state.start_init_task(runtime_config::Settings::default());
@@ -424,16 +516,95 @@ mod tests {
         assert!(state.config_task.is_some());
         assert!(matches!(state.interaction, InteractionUi::TextInput));
         let prompt = state.prompt_input.as_ref().unwrap();
-        assert_eq!(prompt.title, "configuration-models");
-        assert!(prompt
-            .scope_title
-            .as_deref()
-            .unwrap_or_default()
-            .contains("configuration-language"));
-        assert!(state
+        // Auto-start skips the Start confirmation and lands on language select.
+        assert_eq!(prompt.title, "Choose interface language");
+        assert_eq!(prompt.scope_title.as_deref(), Some("select-language"));
+        assert!(!state
             .blocks
             .iter()
             .any(|block| block.content.trim() == "/init"));
+        assert!(state
+            .blocks
+            .iter()
+            .any(|block| block.content.contains("Project initialization started")));
+        assert!(state.config_side_panel.is_some());
+        assert!(state
+            .config_side_panel
+            .as_ref()
+            .unwrap()
+            .content
+            .contains("Configuration check"));
+        assert!(!state
+            .blocks
+            .iter()
+            .any(|block| block.content.contains("Configuration check")));
+    }
+
+    #[test]
+    fn config_task_opens_software_configuration_without_echoing_command() {
+        rust_i18n::set_locale("en");
+        let mut state = WorkspaceState::new(Vec::new());
+
+        state.start_config_task(runtime_config::Settings::default());
+
+        assert!(state.config_task.is_some());
+        assert!(matches!(state.interaction, InteractionUi::TextInput));
+        assert!(!state
+            .blocks
+            .iter()
+            .any(|block| block.content.trim() == "/config"));
+        assert!(state
+            .blocks
+            .iter()
+            .any(|block| block.content.contains("Software configuration opened")));
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.title, "Model Assignment");
+        assert_eq!(prompt.scope_title.as_deref(), Some("configuration-models"));
+
+        // Tab cycles Model Assignment -> Language -> Soul -> Model Assignment
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Tab), &[]),
+            WorkspaceAction::None
+        ));
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.title, "Language");
+        assert_eq!(
+            prompt.scope_title.as_deref(),
+            Some("configuration-language")
+        );
+
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Tab), &[]),
+            WorkspaceAction::None
+        ));
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.title, "Role");
+        assert_eq!(prompt.scope_title.as_deref(), Some("configuration-soul"));
+
+        assert!(matches!(
+            state.handle_key(key(KeyCode::Tab), &[]),
+            WorkspaceAction::None
+        ));
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.title, "Model Assignment");
+        assert_eq!(prompt.scope_title.as_deref(), Some("configuration-models"));
+    }
+
+    #[test]
+    fn init_task_clears_stale_plan_draft() {
+        let (_dir, _guard) = enter_temp_cwd();
+        let mut state = WorkspaceState::new(Vec::new());
+        state.begin_plan_draft("build a feature");
+
+        state.start_init_task(runtime_config::Settings::default());
+
+        assert!(state.config_task.is_some());
+        assert!(state.plan_draft.is_none());
+        assert!(state.pending_goal.is_none());
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.title, "Choose interface language");
+        assert_eq!(prompt.scope_title.as_deref(), Some("select-language"));
+        assert!(state.config_side_panel.is_some());
     }
 
     #[test]
@@ -519,7 +690,7 @@ async fn run_loop(
     session: &mut ReplSession,
     initial_missing: Vec<String>,
 ) -> Result<()> {
-    let mut state = WorkspaceState::new(initial_missing);
+    let mut state = WorkspaceState::new_for_session(initial_missing, session);
 
     loop {
         if state.last_workspace_refresh.elapsed() >= Duration::from_secs(GIT_REFRESH_SECS) {
@@ -527,7 +698,7 @@ async fn run_loop(
             state.last_workspace_refresh = Instant::now();
         }
 
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         app.draw(|frame| state.render(frame, &header, &model, &session.models))?;
 
@@ -697,14 +868,11 @@ async fn handle_submit(
         return Ok(());
     }
 
-    if state.plan_draft.is_some() && matches!(state.interaction, InteractionUi::TextInput) {
-        if trimmed.eq_ignore_ascii_case("/cancel") || trimmed.eq_ignore_ascii_case("cancel") {
-            state.cancel_plan_draft();
-        } else {
-            state.record_input_request(trimmed);
-            state.add_plan_detail(trimmed);
-            advance_plan_draft(app, session, state).await?;
-        }
+    if state.plan_draft.is_some()
+        && matches!(state.interaction, InteractionUi::TextInput)
+        && (trimmed.eq_ignore_ascii_case("/cancel") || trimmed.eq_ignore_ascii_case("cancel"))
+    {
+        state.cancel_plan_draft();
         return Ok(());
     }
 
@@ -727,7 +895,6 @@ async fn handle_submit(
     }
 
     if trimmed.starts_with('/') {
-        state.record_input_request(trimmed);
         let outcome = run_workspace_command(app, session, trimmed).await?;
         if outcome.show_init_menu {
             state.interaction = InteractionUi::Decision(DecisionState::init_menu());
@@ -752,11 +919,18 @@ async fn handle_submit(
         state.last_workspace_refresh = Instant::now();
         if state.quit_requested {
             app.draw(|frame| {
-                let header = AgentHeader::standalone(session.soul());
+                let header = AgentHeader::copilot(session.soul());
                 let model = session.model();
                 state.render(frame, &header, &model, &session.models);
             })?;
         }
+        return Ok(());
+    }
+
+    if state.plan_draft.is_some() && matches!(state.interaction, InteractionUi::TextInput) {
+        state.record_input_request(trimmed);
+        state.add_plan_detail(trimmed);
+        advance_plan_draft(app, session, state).await?;
         return Ok(());
     }
 
@@ -779,6 +953,36 @@ async fn handle_submit(
     }
 
     Ok(())
+}
+
+fn config_task_start_message(kind: ConfigTaskKind) -> String {
+    match kind {
+        ConfigTaskKind::Config => t!("workspace.config_task.feedback.start_config").to_string(),
+        ConfigTaskKind::Init => t!("workspace.config_task.feedback.start_init").to_string(),
+        ConfigTaskKind::ModelPool => {
+            t!("workspace.config_task.feedback.start_model_pool").to_string()
+        }
+    }
+}
+
+fn config_task_saved_message(kind: ConfigTaskKind) -> String {
+    match kind {
+        ConfigTaskKind::Config => t!("workspace.config_task.feedback.saved_config").to_string(),
+        ConfigTaskKind::Init => t!("workspace.config_task.feedback.saved_init").to_string(),
+        ConfigTaskKind::ModelPool => {
+            t!("workspace.config_task.feedback.saved_model_pool").to_string()
+        }
+    }
+}
+
+fn config_task_cancelled_message(kind: ConfigTaskKind) -> String {
+    match kind {
+        ConfigTaskKind::Config => t!("workspace.config_task.feedback.cancelled_config").to_string(),
+        ConfigTaskKind::Init => t!("workspace.config_task.feedback.cancelled_init").to_string(),
+        ConfigTaskKind::ModelPool => {
+            t!("workspace.config_task.feedback.cancelled_model_pool").to_string()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,7 +1030,7 @@ async fn execute_goal(
     state.start_execution(mode);
 
     app.draw(|frame| {
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         state.render(frame, &header, &model, &session.models);
     })?;
@@ -849,7 +1053,7 @@ async fn execute_goal(
 
                 while !done {
                     // Render current state (includes streaming text so far)
-                    let header = AgentHeader::standalone(session.soul());
+                    let header = AgentHeader::copilot(session.soul());
                     let model = session.model();
                     app.draw(|frame| state.render(frame, &header, &model, &session.models))?;
 
@@ -866,6 +1070,18 @@ async fn execute_goal(
                                     CoreEventPayload::Error { message, .. },
                                 ) => {
                                     errors.push(message.clone());
+                                }
+                                (
+                                    CoreEventKind::ToolCallStarted,
+                                    CoreEventPayload::Json { value },
+                                ) => {
+                                    state.record_tool_call_started(value);
+                                }
+                                (
+                                    CoreEventKind::ToolCallCompleted,
+                                    CoreEventPayload::Json { value },
+                                ) => {
+                                    state.record_tool_call_completed(value);
                                 }
                                 (CoreEventKind::FinalResult, _) => {
                                     done = true;
@@ -995,7 +1211,7 @@ async fn advance_plan_draft(
 
     state.start_plan_controller_wait();
     app.draw(|frame| {
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         state.render(frame, &header, &model, &session.models);
     })?;
@@ -1048,7 +1264,7 @@ async fn collect_plan_controller_response(
     let mut interrupted = false;
 
     while !done {
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         app.draw(|frame| state.render(frame, &header, &model, &session.models))?;
 
@@ -1060,6 +1276,12 @@ async fn collect_plan_controller_response(
                     }
                     (CoreEventKind::ErrorRaised, CoreEventPayload::Error { message, .. }) => {
                         errors.push(message.clone());
+                    }
+                    (CoreEventKind::ToolCallStarted, CoreEventPayload::Json { value }) => {
+                        state.record_tool_call_started(value);
+                    }
+                    (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
+                        state.record_tool_call_completed(value);
                     }
                     (
                         CoreEventKind::FinalResult,
@@ -1153,7 +1375,7 @@ async fn execute_plan_step(
     state.start_plan_step(index);
 
     app.draw(|frame| {
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         state.render(frame, &header, &model, &session.models);
     })?;
@@ -1177,7 +1399,7 @@ async fn execute_plan_step(
     let mut interrupted = false;
 
     while !done {
-        let header = AgentHeader::standalone(session.soul());
+        let header = AgentHeader::copilot(session.soul());
         let model = session.model();
         app.draw(|frame| state.render(frame, &header, &model, &session.models))?;
 
@@ -1190,6 +1412,12 @@ async fn execute_plan_step(
                     }
                     (CoreEventKind::ErrorRaised, CoreEventPayload::Error { message, .. }) => {
                         errors.push(message.clone());
+                    }
+                    (CoreEventKind::ToolCallStarted, CoreEventPayload::Json { value }) => {
+                        state.record_tool_call_started(value);
+                    }
+                    (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
+                        state.record_tool_call_completed(value);
                     }
                     (CoreEventKind::FinalResult, _) => {
                         done = true;
@@ -1782,12 +2010,44 @@ fn format_history(session: &ReplSession) -> String {
             protocol_interface::MessageRole::System => t!("workspace.history.runtime"),
             protocol_interface::MessageRole::User => t!("workspace.history.request"),
             protocol_interface::MessageRole::Assistant => t!("workspace.history.result"),
+            protocol_interface::MessageRole::Tool => t!("workspace.history.tool"),
             protocol_interface::MessageRole::Summary => t!("workspace.history.summary"),
         };
         let preview = helpers::truncate_chars(message.content.trim(), 96);
         out.push_str(&format!("  {:3}. {:<8} {}\n", index + 1, label, preview));
     }
     out.trim_end().to_string()
+}
+
+fn render_config_side_panel(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &ConfigSidePanel,
+    scroll: &mut PanelScroll,
+    focused: bool,
+    hovered: bool,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", panel.title))
+        .style(crate::tui::theme::base())
+        .border_style(crate::tui::theme::border_state(focused, hovered));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = panel
+        .content
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect::<Vec<_>>();
+    let total_visual = helpers::count_visual_lines(&lines, inner.width);
+    let max_off = total_visual.saturating_sub(inner.height as usize) as u16;
+    scroll.clamp(max_off);
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll.offset, 0));
+    frame.render_widget(paragraph, inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -1799,6 +2059,25 @@ enum FocusZone {
     Input,
     Conversation,
     Plans,
+}
+
+fn tool_display_name(value: &serde_json::Value) -> String {
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tool");
+    if name == "shell" {
+        if let Some(command) = value
+            .get("args")
+            .and_then(|args| args.get("command"))
+            .and_then(serde_json::Value::as_str)
+            .map(sanitize_for_tui)
+            .filter(|command| !command.is_empty())
+        {
+            return format!("shell: {command}");
+        }
+    }
+    name.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1849,6 +2128,67 @@ struct LayoutRects {
     agent_team: Rect,
     plans: Rect,
     interaction: Rect,
+}
+
+fn startup_welcome_state(
+    session: Option<&ReplSession>,
+    initialized: bool,
+) -> conversation::WelcomeState {
+    let version = option_env!("ALIUS_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .trim_start_matches('v');
+    let mut state = conversation::WelcomeState {
+        version: format!("v{version}"),
+        ready: initialized,
+        soul: initialized.then(|| session.map(ReplSession::soul).unwrap_or_default()),
+        model_plan: None,
+        model_execute: initialized.then(|| session.map(ReplSession::model).unwrap_or_default()),
+        model_review: None,
+    };
+
+    if initialized {
+        if let Some(snapshot) = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| runtime_config::load_project_config(&cwd).ok())
+        {
+            state.model_plan = assigned_welcome_model(&snapshot, ModelAssignmentRole::Plan);
+            state.model_execute = assigned_welcome_model(&snapshot, ModelAssignmentRole::Execute)
+                .or(state.model_execute);
+            state.model_review = assigned_welcome_model(&snapshot, ModelAssignmentRole::Review);
+        }
+    }
+
+    state
+}
+
+fn assigned_welcome_model(
+    snapshot: &runtime_config::ProjectConfigSnapshot,
+    role: ModelAssignmentRole,
+) -> Option<String> {
+    let model_id = snapshot.model_assignment.get(role).trim();
+    if model_id.is_empty() {
+        return None;
+    }
+    let entry = snapshot
+        .providers
+        .model_library
+        .models
+        .iter()
+        .find(|entry| entry.enabled && entry.id == model_id)?;
+    Some(format!(
+        "{}({})",
+        welcome_provider_name(&entry.provider),
+        entry.model_name
+    ))
+}
+
+fn welcome_provider_name(provider: &str) -> &'static str {
+    match provider {
+        "bigmodel" => "BigModel",
+        "xiaomi_mimo" => "Xiaomi MiMo",
+        "deepseek" => "DeepSeek",
+        _ => "Provider",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1935,6 +2275,7 @@ struct WorkspaceState {
     input_history_cursor: Option<usize>,
     input_history_draft: String,
     prompt_input: Option<PromptInputState>,
+    config_side_panel: Option<ConfigSidePanel>,
     interaction: InteractionUi,
     config_task: Option<ConfigTask>,
     plan_draft: Option<PlanDraft>,
@@ -1950,17 +2291,32 @@ struct WorkspaceState {
     plans_scroll: PanelScroll,
     agent_team_scroll: PanelScroll,
     layout_rects: LayoutRects,
+    expanded_blocks: std::collections::HashSet<String>,
+    global_expanded: bool,
+    block_row_map: std::collections::HashMap<String, (u16, u16)>,
 }
 
 impl WorkspaceState {
+    #[cfg(test)]
     fn new(initial_missing: Vec<String>) -> Self {
-        let mut blocks = vec![ConversationBlock::result(t!("workspace.ready"))];
+        Self::new_with_welcome(initial_missing, None)
+    }
 
-        if !initial_missing.is_empty() {
-            blocks.push(ConversationBlock::error(sanitize_for_tui(
-                &init_required_message(&initial_missing),
-            )));
-        }
+    fn new_for_session(initial_missing: Vec<String>, session: &ReplSession) -> Self {
+        let welcome = startup_welcome_state(Some(session), initial_missing.is_empty());
+        Self::new_with_welcome(initial_missing, Some(welcome))
+    }
+
+    fn new_with_welcome(
+        initial_missing: Vec<String>,
+        welcome: Option<conversation::WelcomeState>,
+    ) -> Self {
+        let workspace_status = WorkspaceStatus::load();
+        let welcome =
+            welcome.unwrap_or_else(|| startup_welcome_state(None, initial_missing.is_empty()));
+        let blocks = vec![ConversationBlock::welcome_state(welcome)];
+
+        let _ = initial_missing;
 
         Self {
             mode: InteractionMode::Plan,
@@ -1973,11 +2329,12 @@ impl WorkspaceState {
             input_history_cursor: None,
             input_history_draft: String::new(),
             prompt_input: None,
+            config_side_panel: None,
             interaction: InteractionUi::TextInput,
             config_task: None,
             plan_draft: None,
             pending_goal: None,
-            workspace_status: WorkspaceStatus::load(),
+            workspace_status,
             last_workspace_refresh: Instant::now(),
             started_at: Instant::now(),
             quit_requested: false,
@@ -1988,6 +2345,9 @@ impl WorkspaceState {
             plans_scroll: PanelScroll::new(),
             agent_team_scroll: PanelScroll::new(),
             layout_rects: LayoutRects::default(),
+            expanded_blocks: std::collections::HashSet::new(),
+            global_expanded: false,
+            block_row_map: std::collections::HashMap::new(),
         }
     }
 
@@ -2031,6 +2391,14 @@ impl WorkspaceState {
                 prompt_input: self.prompt_input.as_ref(),
                 has_agent_team: self.has_agent_team_tab(),
                 command_hint: self.command_hint(models),
+                config_section: self
+                    .config_task
+                    .as_ref()
+                    .and_then(ConfigTask::current_section),
+                init_nav: self
+                    .config_task
+                    .as_ref()
+                    .and_then(ConfigTask::init_nav_snapshot),
             },
             self.focus_zone == FocusZone::Input,
             self.hover_zone == Some(HoverZone::Interaction),
@@ -2040,7 +2408,9 @@ impl WorkspaceState {
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect, model: &str) {
         let has_plans = !self.plans.is_empty();
-        let constraints = if has_plans {
+        let has_side_panel = self.config_side_panel.is_some();
+        let has_right_panel = has_plans || has_side_panel;
+        let constraints = if has_right_panel {
             [Constraint::Percentage(68), Constraint::Percentage(32)]
         } else {
             [Constraint::Percentage(100), Constraint::Percentage(0)]
@@ -2050,7 +2420,7 @@ impl WorkspaceState {
             .constraints(constraints)
             .split(area);
 
-        self.layout_rects.plans = if has_plans {
+        self.layout_rects.plans = if has_right_panel {
             chunks[1]
         } else {
             Rect::default()
@@ -2062,7 +2432,7 @@ impl WorkspaceState {
         match self.active_tab {
             MainTab::Conversation => {
                 self.layout_rects.conversation = chunks[0];
-                conversation::render(
+                self.block_row_map = conversation::render(
                     frame,
                     chunks[0],
                     &self.blocks,
@@ -2071,6 +2441,8 @@ impl WorkspaceState {
                     &mut self.conv_scroll,
                     conv_focused,
                     conv_hovered,
+                    &self.expanded_blocks,
+                    self.global_expanded,
                 )
             }
             MainTab::AgentTeam => {
@@ -2086,7 +2458,16 @@ impl WorkspaceState {
                 )
             }
         }
-        if has_plans {
+        if let Some(panel) = &self.config_side_panel {
+            render_config_side_panel(
+                frame,
+                chunks[1],
+                panel,
+                &mut self.plans_scroll,
+                self.focus_zone == FocusZone::Plans,
+                self.hover_zone == Some(HoverZone::Plans),
+            );
+        } else if has_plans {
             plans::render(
                 frame,
                 chunks[1],
@@ -2102,6 +2483,10 @@ impl WorkspaceState {
 
     fn has_agent_team_tab(&self) -> bool {
         self.agent_team.is_some()
+    }
+
+    fn has_right_panel(&self) -> bool {
+        !self.plans.is_empty() || self.config_side_panel.is_some()
     }
 
     fn interaction_height(&self, total_height: u16) -> u16 {
@@ -2122,6 +2507,12 @@ impl WorkspaceState {
             return WorkspaceAction::Quit;
         }
 
+        // Ctrl+O: Toggle global expand/collapse
+        if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.toggle_global_expand();
+            return WorkspaceAction::None;
+        }
+
         if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.toggle_tab();
             return WorkspaceAction::None;
@@ -2133,8 +2524,16 @@ impl WorkspaceState {
         {
             let reverse = key.code == KeyCode::BackTab;
             if let Some(task) = self.config_task.as_mut() {
-                let prompt = task.switch_tab(reverse);
-                self.set_config_prompt(prompt);
+                // /init: BackTab steps the wizard back one stage; Tab is a no-op here
+                // (Init kind's switch_tab early-returns). Other kinds use switch_tab.
+                if reverse && task.kind() == ConfigTaskKind::Init {
+                    if let Some(prompt) = task.init_back() {
+                        self.set_config_prompt(prompt);
+                    }
+                } else {
+                    let prompt = task.switch_tab(reverse);
+                    self.set_config_prompt(prompt);
+                }
             }
             return WorkspaceAction::None;
         }
@@ -2165,10 +2564,10 @@ impl WorkspaceState {
             self.focus_zone = match self.focus_zone {
                 FocusZone::Input => FocusZone::Conversation,
                 FocusZone::Conversation => {
-                    if self.plans.is_empty() {
-                        FocusZone::Input
-                    } else {
+                    if self.has_right_panel() {
                         FocusZone::Plans
+                    } else {
+                        FocusZone::Input
                     }
                 }
                 FocusZone::Plans => FocusZone::Input,
@@ -2264,6 +2663,15 @@ impl WorkspaceState {
             }
             MouseEventKind::Moved => {
                 self.hover_zone = self.zone_for_position(mouse.column, mouse.row);
+            }
+            MouseEventKind::Down(_) => {
+                // Handle click on conversation blocks to toggle fold/unfold
+                if self.layout_rects.conversation.contains(Position {
+                    x: mouse.column,
+                    y: mouse.row,
+                }) {
+                    self.handle_conversation_click(mouse.column, mouse.row);
+                }
             }
             _ => {}
         }
@@ -2518,10 +2926,28 @@ impl WorkspaceState {
     }
 
     fn start_config_like_task(&mut self, task: ConfigTask) {
-        let request_label = task.request_label();
+        let task_kind = task.kind();
         let prompt = task.prompt();
+        let overview = if task_kind == ConfigTaskKind::Config {
+            Some(task.overview_snapshot())
+        } else {
+            None
+        };
+        if self.plan_draft.is_some() {
+            self.plan_draft = None;
+            self.pending_goal = None;
+        }
+        // /init is a reset flow — clear the conversation (including welcome).
+        if task_kind == ConfigTaskKind::Init {
+            self.blocks.clear();
+        }
         self.config_task = Some(task);
-        self.record_input_request(request_label);
+        self.push_block(ConversationBlock::status(config_task_start_message(
+            task_kind,
+        )));
+        if let Some(snapshot) = overview {
+            self.push_block(ConversationBlock::config_overview(snapshot));
+        }
         self.apply_config_prompt(prompt);
         self.interaction = InteractionUi::TextInput;
         self.focus_zone = FocusZone::Input;
@@ -2532,33 +2958,32 @@ impl WorkspaceState {
             return Ok(());
         };
 
-        let display = if input.trim().eq_ignore_ascii_case("/cancel")
-            || input.trim().eq_ignore_ascii_case("cancel")
-        {
-            task.cancel_request_label()
-        } else {
-            task.display_answer(&input)
-        };
+        let task_kind = task.kind();
         let save_target = task.save_target();
         let outcome = task.submit(&input);
-        self.record_input_request(display);
 
         match outcome {
             ConfigTaskOutcome::Next { accepted, prompt } => {
-                self.push_block(ConversationBlock::result(accepted));
+                drop(accepted);
+                self.refresh_config_overview();
                 self.apply_config_prompt(prompt);
             }
             ConfigTaskOutcome::Invalid { message, prompt } => {
                 self.push_block(ConversationBlock::error(message));
+                self.refresh_config_overview();
                 self.apply_config_prompt(prompt);
             }
             ConfigTaskOutcome::Cancelled { message } => {
+                drop(message);
                 if let Ok(settings) = session.settings.read() {
                     crate::set_locale(&settings.ui.locale);
                 }
                 self.config_task = None;
+                self.config_side_panel = None;
                 self.restore_text_input();
-                self.push_block(ConversationBlock::decision(message));
+                self.push_block(ConversationBlock::status(config_task_cancelled_message(
+                    task_kind,
+                )));
             }
             ConfigTaskOutcome::Saved {
                 settings,
@@ -2566,38 +2991,89 @@ impl WorkspaceState {
                 assignment,
                 message,
             } => {
-                save_workspace_providers(&providers)?;
-                save_workspace_model_assignment(&assignment)?;
-                session.models = providers
-                    .model_library
-                    .models
-                    .iter()
-                    .filter(|entry| entry.enabled)
-                    .map(|entry| entry.model_name.clone())
-                    .collect();
-                match save_target {
-                    ConfigSaveTarget::Project => settings.save_to_project_config()?,
-                }
-                *session.settings.write().unwrap() = settings;
-                session.rebuild_runtime_bridge();
-                self.workspace_status = WorkspaceStatus::load();
-                self.last_workspace_refresh = Instant::now();
+                drop(message);
+                self.persist_config_apply(
+                    &settings,
+                    &providers,
+                    &assignment,
+                    save_target,
+                    session,
+                )?;
                 self.config_task = None;
+                self.config_side_panel = None;
                 self.restore_text_input();
-                self.push_block(ConversationBlock::result(message));
+                self.push_block(ConversationBlock::status(config_task_saved_message(
+                    task_kind,
+                )));
+            }
+            ConfigTaskOutcome::Applied {
+                settings,
+                providers,
+                assignment,
+                prompt,
+            } => {
+                self.persist_config_apply(
+                    &settings,
+                    &providers,
+                    &assignment,
+                    save_target,
+                    session,
+                )?;
+                self.refresh_config_overview();
+                self.apply_config_prompt(prompt);
             }
         }
 
         Ok(())
     }
 
+    /// Persist a config apply/save: write providers.toml, model.toml, settings,
+    /// update session models + locale + runtime bridge. Shared by `Applied` and `Saved`.
+    fn persist_config_apply(
+        &mut self,
+        settings: &runtime_config::Settings,
+        providers: &runtime_config::ProviderConfig,
+        assignment: &runtime_config::ModelAssignmentConfig,
+        save_target: ConfigSaveTarget,
+        session: &mut ReplSession,
+    ) -> Result<()> {
+        save_workspace_providers(providers)?;
+        save_workspace_model_assignment(assignment)?;
+        session.models = providers
+            .model_library
+            .models
+            .iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.model_name.clone())
+            .collect();
+        match save_target {
+            ConfigSaveTarget::Project => settings.save_to_project_config()?,
+        }
+        let locale = settings.ui.locale.clone();
+        *session.settings.write().unwrap() = settings.clone();
+        crate::set_locale(&locale);
+        session.rebuild_runtime_bridge();
+        self.workspace_status = WorkspaceStatus::load();
+        self.last_workspace_refresh = Instant::now();
+        Ok(())
+    }
+
     fn apply_config_prompt(&mut self, prompt: ConfigPrompt) {
-        self.push_block(ConversationBlock::decision(prompt.message));
-        self.prompt_input = Some(prompt.input);
+        let ConfigPrompt {
+            message,
+            input,
+            side_panel,
+        } = prompt;
+        if side_panel.is_none() {
+            self.push_block(ConversationBlock::decision(message));
+        }
+        self.config_side_panel = side_panel;
+        self.prompt_input = Some(input);
         self.input.clear();
     }
 
     fn set_config_prompt(&mut self, prompt: ConfigPrompt) {
+        self.config_side_panel = prompt.side_panel;
         self.prompt_input = Some(prompt.input);
         self.input.clear();
     }
@@ -2801,6 +3277,7 @@ impl WorkspaceState {
         if let Some(block) = self.blocks.last_mut() {
             if block.is_streaming() || block.is_execution() {
                 block.convert_to(block_type, content);
+                self.stick_conversation_to_latest();
                 return;
             }
         }
@@ -2864,6 +3341,7 @@ impl WorkspaceState {
         } else {
             self.push_block(ConversationBlock::result(content));
         }
+        self.stick_conversation_to_latest();
 
         for node in &mut self.plans {
             if node.status == PlanNodeStatus::Running {
@@ -2884,6 +3362,7 @@ impl WorkspaceState {
         } else {
             self.push_block(ConversationBlock::result(content));
         }
+        self.stick_conversation_to_latest();
 
         if mode == ExecutionMode::Plan {
             if let Some(index) = self
@@ -2919,6 +3398,7 @@ impl WorkspaceState {
         } else {
             self.push_block(ConversationBlock::error(content));
         }
+        self.stick_conversation_to_latest();
         for node in &mut self.plans {
             if node.status == PlanNodeStatus::Running {
                 node.status = PlanNodeStatus::Failed;
@@ -2932,6 +3412,7 @@ impl WorkspaceState {
         if let Some(block) = self.blocks.last_mut() {
             if block.is_streaming() {
                 block.append_content(delta);
+                self.stick_conversation_to_latest();
                 return;
             }
             if block.is_execution() {
@@ -2939,6 +3420,7 @@ impl WorkspaceState {
                     crate::tui::state::ConversationBlockType::Streaming,
                     delta.to_string(),
                 );
+                self.stick_conversation_to_latest();
                 return;
             }
         }
@@ -2955,6 +3437,7 @@ impl WorkspaceState {
                 );
             }
         }
+        self.stick_conversation_to_latest();
         if mode == ExecutionMode::Plan {
             if let Some(index) = self
                 .plans
@@ -3023,7 +3506,12 @@ impl WorkspaceState {
         self.input.clear();
     }
 
+    fn stick_conversation_to_latest(&mut self) {
+        self.conv_scroll.auto_scroll = true;
+    }
+
     fn push_block(&mut self, block: ConversationBlock) {
+        self.stick_conversation_to_latest();
         self.blocks.push(block);
         let excess = self.blocks.len().saturating_sub(32);
         if excess > 0 {
@@ -3031,7 +3519,120 @@ impl WorkspaceState {
         }
     }
 
+    fn record_tool_call_started(&mut self, value: &serde_json::Value) {
+        let tool = truncate_chars(&tool_display_name(value), 160);
+        let content = t!("workspace.tool.started", tool = tool).to_string();
+
+        if let Some(block) = self.blocks.last_mut() {
+            if block.is_execution() && block.content.trim().is_empty() {
+                *block = ConversationBlock::status(content);
+                self.stick_conversation_to_latest();
+                return;
+            }
+        }
+
+        self.push_block(ConversationBlock::status(content));
+    }
+
+    fn record_tool_call_completed(&mut self, value: &serde_json::Value) {
+        let tool = truncate_chars(&tool_display_name(value), 160);
+        let success = value
+            .get("success")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let output = value
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .map(sanitize_for_tui)
+            .filter(|text| !text.is_empty())
+            .map(|text| truncate_chars(&text, 1200));
+
+        let mut content = if success {
+            t!("workspace.tool.completed", tool = tool).to_string()
+        } else {
+            t!("workspace.tool.failed", tool = tool).to_string()
+        };
+        if let Some(output) = output {
+            content.push('\n');
+            content.push_str(&output);
+        }
+
+        if success {
+            self.push_block(ConversationBlock::status(content));
+        } else {
+            self.push_block(ConversationBlock::error(content));
+        }
+    }
+
     fn record_input_request(&mut self, input: impl Into<String>) {
         self.push_block(ConversationBlock::request(input));
+    }
+
+    /// Replace the most recent config-overview block with a fresh snapshot,
+    /// or push a new one if none exists (e.g. evicted past the block cap).
+    fn refresh_config_overview(&mut self) {
+        let snapshot = match self.config_task.as_ref() {
+            Some(task) if task.kind() == ConfigTaskKind::Config => task.overview_snapshot(),
+            _ => return,
+        };
+        let new_block = ConversationBlock::config_overview(snapshot);
+        match self
+            .blocks
+            .iter()
+            .rposition(|b| b.block_type == ConversationBlockType::ConfigOverview)
+        {
+            Some(i) => self.blocks[i].content = new_block.content,
+            None => self.push_block(new_block),
+        }
+    }
+
+    fn toggle_global_expand(&mut self) {
+        if self.global_expanded {
+            // Collapse all: clear expanded blocks and set global_expanded to false
+            self.expanded_blocks.clear();
+            self.global_expanded = false;
+        } else {
+            // Expand all: set global_expanded to true
+            self.global_expanded = true;
+        }
+    }
+
+    fn handle_conversation_click(&mut self, _col: u16, row: u16) {
+        // Map the click row to a block ID
+        // Note: row is relative to the terminal, we need to adjust for the conversation area offset
+        let inner_row = row.saturating_sub(self.layout_rects.conversation.y + 1); // +1 for border
+        let adjusted_row = inner_row.saturating_add(self.conv_scroll.offset);
+
+        // Find which block this row belongs to
+        for (block_id, (start, end)) in &self.block_row_map {
+            if adjusted_row >= *start && adjusted_row < *end {
+                // Check if this block can be folded
+                if let Some(block) = self.blocks.iter().find(|b| &b.id == block_id) {
+                    let is_empty_execution = block.block_type == ConversationBlockType::Execution
+                        && block.content.trim().is_empty();
+                    let is_welcome = block.block_type == ConversationBlockType::Welcome;
+                    let is_config = block.block_type == ConversationBlockType::ConfigOverview;
+
+                    // Don't fold welcome, config overview, or empty execution blocks
+                    if !is_empty_execution && !is_welcome && !is_config {
+                        let content_lines: Vec<&str> = block.content.lines().collect();
+                        let total_lines = 1 + content_lines.len();
+
+                        if total_lines > MAX_COLLAPSED_LINES {
+                            self.toggle_block_expanded(block_id.clone());
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    fn toggle_block_expanded(&mut self, block_id: String) {
+        if self.expanded_blocks.contains(&block_id) {
+            self.expanded_blocks.remove(&block_id);
+        } else {
+            self.expanded_blocks.insert(block_id);
+        }
     }
 }

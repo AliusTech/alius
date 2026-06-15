@@ -18,6 +18,10 @@ use std::path::PathBuf;
 
 use protocol_interface::{ProviderMode, ProviderType, SoulRole};
 
+use crate::views::{
+    ModelAssignmentRole, ModelLibraryEntry, ProjectConfigSnapshot, ProviderSettings,
+};
+
 /// Embedded default configuration file content, compiled into the binary.
 const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
@@ -36,6 +40,9 @@ pub struct Settings {
     /// UI settings (locale).
     #[serde(default)]
     pub ui: UiSettings,
+    /// Auto-update settings.
+    #[serde(default)]
+    pub update: UpdateSettings,
 }
 
 impl Settings {
@@ -88,6 +95,46 @@ impl Settings {
 
         cfg.try_deserialize()
             .map_err(|e| anyhow::anyhow!("Config deserialize error: {}", e))
+    }
+
+    /// Merge project-local model pool and Plan/Execute/Review assignments into
+    /// legacy runtime settings used by chat startup.
+    pub fn hydrate_from_project_config(&mut self, cwd: &std::path::Path) {
+        if let Ok(snapshot) = crate::config_manager::load_project_config(cwd) {
+            self.hydrate_from_project_snapshot(&snapshot);
+        }
+    }
+
+    /// Merge a loaded project config snapshot into runtime settings.
+    pub fn hydrate_from_project_snapshot(&mut self, snapshot: &ProjectConfigSnapshot) {
+        if let Some(execute) = assignment_entry(snapshot, ModelAssignmentRole::Execute) {
+            self.llm.provider = provider_type_for_key(&execute.provider);
+            self.llm.provider_mode = provider_mode_for_entry(
+                execute,
+                snapshot.providers.providers.get(&execute.provider),
+            );
+            self.llm.base_url = Some(execute.base_url.clone());
+            self.llm.model = execute.model_name.clone();
+
+            if self
+                .llm
+                .api_key
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                if let Some(provider) = snapshot.providers.providers.get(&execute.provider) {
+                    if !provider.api_key_env.trim().is_empty() {
+                        self.llm.api_key_env = Some(provider.api_key_env.clone());
+                    }
+                }
+            }
+        }
+
+        if let Some(review) = assignment_entry(snapshot, ModelAssignmentRole::Review) {
+            self.llm.review_model = Some(review.model_name.clone());
+        }
     }
 
     /// Save the current settings to the user configuration file (~/.alius/config.toml).
@@ -185,6 +232,51 @@ impl Settings {
     pub fn is_ready_for_chat(&self) -> bool {
         self.missing_chat_requirements().is_empty()
     }
+}
+
+fn assignment_entry<'a>(
+    snapshot: &'a ProjectConfigSnapshot,
+    role: ModelAssignmentRole,
+) -> Option<&'a ModelLibraryEntry> {
+    let model_id = snapshot.model_assignment.get(role);
+    if model_id.trim().is_empty() {
+        return None;
+    }
+    snapshot
+        .providers
+        .model_library
+        .models
+        .iter()
+        .find(|entry| entry.enabled && entry.id == model_id)
+}
+
+fn provider_type_for_key(provider: &str) -> ProviderType {
+    match provider {
+        "bigmodel" => ProviderType::BigModel,
+        "xiaomi_mimo" => ProviderType::XiaomiMimo,
+        "deepseek" => ProviderType::DeepSeek,
+        "anthropic" => ProviderType::Anthropic,
+        "openai" => ProviderType::Openai,
+        _ => ProviderType::Custom,
+    }
+}
+
+fn provider_mode_for_entry(
+    entry: &ModelLibraryEntry,
+    provider: Option<&ProviderSettings>,
+) -> Option<ProviderMode> {
+    let kind = provider
+        .map(|provider| provider.kind.as_str())
+        .unwrap_or_default();
+    if kind.eq_ignore_ascii_case("anthropic") || is_anthropic_base_url(&entry.base_url) {
+        Some(ProviderMode::Native)
+    } else {
+        Some(ProviderMode::OpenAICompatible)
+    }
+}
+
+fn is_anthropic_base_url(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("anthropic")
 }
 
 /// Get the path to the user configuration file (~/.alius/config.toml).
@@ -435,6 +527,34 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             locale: default_locale(),
+        }
+    }
+}
+
+/// Auto-update configuration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    /// Whether to automatically check for updates on startup.
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    /// Interval in hours between automatic update checks.
+    #[serde(default = "default_check_interval")]
+    pub check_interval_hours: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_check_interval() -> u64 {
+    24
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            auto_check: default_true(),
+            check_interval_hours: default_check_interval(),
         }
     }
 }
@@ -711,10 +831,101 @@ mod tests {
                 role: protocol_interface::SoulRole::new("Backend Developer".to_string()),
             },
             ui: UiSettings::default(),
+            update: UpdateSettings::default(),
         };
         let toml_str = toml::to_string_pretty(&settings).expect("should serialize");
         assert!(toml_str.contains("gpt-4o"));
         assert!(toml_str.contains("test-key"));
+    }
+
+    #[test]
+    fn test_project_model_assignment_hydrates_chat_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join(".alius/config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("providers.toml"),
+            r#"
+[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Plan"
+provider = "deepseek"
+model = ""
+
+[tiers.medium]
+description = "Execute"
+provider = "deepseek"
+model = "deepseek-chat"
+
+[tiers.high]
+description = "Review"
+provider = "deepseek"
+model = "deepseek-review"
+
+[providers.deepseek]
+enabled = true
+kind = "openai-compatible"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[model_library.models]]
+id = "execute-model"
+display_name = "DeepSeek Chat"
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+model_name = "deepseek-chat"
+reasoning_note = "Standard Reasoning"
+enabled = true
+
+[[model_library.models]]
+id = "review-model"
+display_name = "DeepSeek Review"
+provider = "deepseek"
+base_url = "https://api.deepseek.com/anthropic"
+model_name = "deepseek-review"
+reasoning_note = "Deep Reasoning"
+enabled = true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.join("model.toml"),
+            r#"
+schema_version = "0.1"
+
+[assignment]
+plan = "execute-model"
+execute = "execute-model"
+review = "review-model"
+"#,
+        )
+        .unwrap();
+
+        let mut settings = parse_toml_only();
+        settings.hydrate_from_project_config(tmp.path());
+
+        assert_eq!(settings.llm.provider, ProviderType::DeepSeek);
+        assert_eq!(
+            settings.llm.provider_mode,
+            Some(ProviderMode::OpenAICompatible)
+        );
+        assert_eq!(settings.llm.model, "deepseek-chat");
+        assert_eq!(
+            settings.llm.base_url.as_deref(),
+            Some("https://api.deepseek.com")
+        );
+        assert_eq!(
+            settings.llm.api_key_env.as_deref(),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(
+            settings.llm.review_model.as_deref(),
+            Some("deepseek-review")
+        );
     }
 
     #[test]

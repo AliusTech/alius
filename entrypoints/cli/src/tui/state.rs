@@ -11,11 +11,16 @@ pub struct AgentHeader {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentNetworkStatus {
-    Standalone,
-    AgentNetConnected,
-    AgentNetSyncing,
-    AgentNetDegraded,
-    AgentNetOffline,
+    #[serde(alias = "Standalone")]
+    Copilot,
+    #[serde(alias = "AgentNetConnected")]
+    TeamConnected,
+    #[serde(alias = "AgentNetSyncing")]
+    TeamSyncing,
+    #[serde(alias = "AgentNetDegraded")]
+    TeamDegraded,
+    #[serde(alias = "AgentNetOffline")]
+    TeamOffline,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +181,7 @@ pub struct ConversationState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationBlock {
+    pub id: String,
     pub block_type: ConversationBlockType,
     pub title: Option<String>,
     pub content: String,
@@ -183,6 +189,7 @@ pub struct ConversationBlock {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConversationBlockType {
+    Welcome,
     Request,
     Understanding,
     PlanProposal,
@@ -191,6 +198,7 @@ pub enum ConversationBlockType {
     Decision,
     Result,
     Error,
+    ConfigOverview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,14 +210,14 @@ pub struct AgentTeamState {
 impl AgentHeader {
     #[allow(dead_code)]
     pub fn should_show_agent_team_tab(&self) -> bool {
-        !matches!(self.network_status, AgentNetworkStatus::Standalone)
+        !matches!(self.network_status, AgentNetworkStatus::Copilot)
     }
 
     #[allow(dead_code)]
     pub fn network_label(&self, show_node_id: bool) -> String {
         match self.network_status {
-            AgentNetworkStatus::Standalone => t!("workspace.network.standalone").to_string(),
-            AgentNetworkStatus::AgentNetConnected => {
+            AgentNetworkStatus::Copilot => t!("workspace.network.copilot").to_string(),
+            AgentNetworkStatus::TeamConnected => {
                 if show_node_id {
                     self.node_id
                         .as_ref()
@@ -219,8 +227,8 @@ impl AgentHeader {
                     t!("workspace.network.connected").to_string()
                 }
             }
-            AgentNetworkStatus::AgentNetSyncing => t!("workspace.network.syncing").to_string(),
-            AgentNetworkStatus::AgentNetDegraded => {
+            AgentNetworkStatus::TeamSyncing => t!("workspace.network.syncing").to_string(),
+            AgentNetworkStatus::TeamDegraded => {
                 if show_node_id {
                     self.node_id
                         .as_ref()
@@ -230,7 +238,7 @@ impl AgentHeader {
                     t!("workspace.network.degraded").to_string()
                 }
             }
-            AgentNetworkStatus::AgentNetOffline => {
+            AgentNetworkStatus::TeamOffline => {
                 if show_node_id {
                     self.node_id
                         .as_ref()
@@ -273,5 +281,34 @@ impl PlanNodeStatus {
             PlanNodeStatus::Blocked => t!("plan_status.blocked").to_string(),
             PlanNodeStatus::Cancelled => t!("plan_status.cancelled").to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copilot_header_does_not_show_agent_team_tab() {
+        let header = AgentHeader {
+            version: "test".to_string(),
+            soul: "default".to_string(),
+            network_status: AgentNetworkStatus::Copilot,
+            node_id: None,
+        };
+
+        assert!(!header.should_show_agent_team_tab());
+    }
+
+    #[test]
+    fn team_status_shows_agent_team_tab() {
+        let header = AgentHeader {
+            version: "test".to_string(),
+            soul: "default".to_string(),
+            network_status: AgentNetworkStatus::TeamConnected,
+            node_id: Some("node-1".to_string()),
+        };
+
+        assert!(header.should_show_agent_team_tab());
     }
 }

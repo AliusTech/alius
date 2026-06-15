@@ -3,9 +3,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use rust_i18n::t;
 
+use super::config_task::{ConfigSection, InitNavSnapshot};
 use super::events::{DecisionKind, WorkspaceAction};
 use crate::tui::state::{InteractionMode, MainTab};
 use crate::tui::theme;
+use runtime_config::InitStage;
 
 // ---------------------------------------------------------------------------
 // InputBuffer
@@ -635,6 +637,8 @@ pub struct InteractionState<'a> {
     pub prompt_input: Option<&'a PromptInputState>,
     pub has_agent_team: bool,
     pub command_hint: Option<String>,
+    pub config_section: Option<crate::tui::workspace::config_task::ConfigSection>,
+    pub init_nav: Option<InitNavSnapshot>,
 }
 
 pub fn render_interaction(
@@ -705,6 +709,86 @@ fn render_text_input(
     );
 }
 
+/// Build the config-section nav bar as a styled title line:
+/// `配置 · 模型 · 语言 · 灵魂` with the active section highlighted.
+fn config_nav_line(active: ConfigSection) -> Line<'static> {
+    let title_style = Style::default()
+        .fg(theme::SECONDARY_TEXT)
+        .add_modifier(Modifier::BOLD);
+    let normal = theme::text();
+    let highlight = Style::default()
+        .bg(theme::SELECTED_BACKGROUND)
+        .fg(theme::SELECTED_TEXT);
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(
+            format!(" {} ", t!("workspace.config_task.nav_title")),
+            title_style,
+        ),
+        Span::raw("·"),
+    ];
+    for (idx, section) in ConfigSection::all().iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw(" · "));
+        }
+        let label = section.display_label();
+        let style = if *section == active {
+            highlight
+        } else {
+            normal
+        };
+        spans.push(Span::styled(format!(" {} ", label), style));
+    }
+    Line::from(spans)
+}
+
+/// Build the `/init` stage nav bar: `初始化 · ✓语言 · 模型池 · 分配 · 角色`.
+/// Completed stages get a ✓ prefix; the active stage is highlighted.
+fn init_nav_line(snapshot: &InitNavSnapshot) -> Line<'static> {
+    let title_style = Style::default()
+        .fg(theme::SECONDARY_TEXT)
+        .add_modifier(Modifier::BOLD);
+    let normal = theme::text();
+    let highlight = Style::default()
+        .bg(theme::SELECTED_BACKGROUND)
+        .fg(theme::SELECTED_TEXT);
+    let done_style = Style::default().fg(theme::SUCCESS);
+    let stage_label = |stage: InitStage| match stage {
+        InitStage::Language => t!("workspace.init_task.scope.select_language").to_string(),
+        InitStage::ModelPool => t!("workspace.init_task.scope.configure_model_pool").to_string(),
+        InitStage::Assignment => t!("workspace.init_task.scope.configure_assignment").to_string(),
+        InitStage::Soul => t!("workspace.init_task.scope.configure_soul").to_string(),
+    };
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(
+            format!(" {} ", t!("workspace.init_task.nav_title")),
+            title_style,
+        ),
+        Span::raw("·"),
+    ];
+    for (idx, stage) in InitStage::all().iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw(" · "));
+        }
+        let label = stage_label(*stage);
+        let is_current = snapshot.current == Some(*stage);
+        let is_done = snapshot.done.get(idx).copied().unwrap_or(false);
+        let mut cell = String::new();
+        if is_done {
+            cell.push_str("✓ ");
+        }
+        cell.push_str(&label);
+        let style = if is_current {
+            highlight
+        } else if is_done {
+            done_style
+        } else {
+            normal
+        };
+        spans.push(Span::styled(format!(" {} ", cell), style));
+    }
+    Line::from(spans)
+}
+
 fn render_prompt_input(
     frame: &mut Frame,
     area: Rect,
@@ -718,16 +802,22 @@ fn render_prompt_input(
         .as_deref()
         .map(str::to_string)
         .unwrap_or_else(|| state.mode.title());
-    let title = if prompt.title.trim().is_empty() {
-        format!(" {} ", scope_title)
-    } else {
-        format!(" {} - {} ", scope_title, prompt.title)
-    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
         .style(theme::base())
         .border_style(theme::border_state(focused, hovered));
+    let block = if let Some(active) = state.config_section {
+        block.title(config_nav_line(active))
+    } else if let Some(nav) = &state.init_nav {
+        block.title(init_nav_line(nav))
+    } else {
+        let title = if prompt.title.trim().is_empty() {
+            format!(" {} ", scope_title)
+        } else {
+            format!(" {} - {} ", scope_title, prompt.title)
+        };
+        block.title(title)
+    };
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

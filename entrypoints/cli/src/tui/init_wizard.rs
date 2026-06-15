@@ -463,6 +463,7 @@ fn run_wizard_loop(app: &mut TuiApp) -> Result<Option<Settings>> {
                                         agent: runtime_config::AgentSettings::default(),
                                         soul: runtime_config::SoulSettings { role: soul_role },
                                         ui: runtime_config::UiSettings { locale },
+                                        update: runtime_config::UpdateSettings::default(),
                                     };
                                     settings.save_to_project_config()?;
                                     return Ok(Some(settings));
@@ -755,6 +756,7 @@ mod tests {
                 role: SoulRole::new("coder".to_string()),
             },
             ui: runtime_config::UiSettings::default(),
+            update: runtime_config::UpdateSettings::default(),
         };
         assert_eq!(settings.llm.model, "gpt-4o");
         assert!(settings.llm.api_key.is_some());

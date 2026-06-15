@@ -2,9 +2,11 @@ pub mod agent_card;
 pub mod capability;
 pub mod config_manager;
 pub mod error;
+pub mod init_wizard;
 pub mod loaders;
 pub mod merger;
 pub mod migration;
+pub mod project_init;
 pub mod settings;
 pub mod soul;
 pub mod soul_source;
@@ -18,6 +20,13 @@ pub use agent_card::{
 };
 pub use config_manager::{build_runtime_config, find_project_root, load_project_config};
 pub use error::{ConfigError, ConfigResult};
+pub use init_wizard::{
+    ActionOption, ActionPanel, ApiProtocol as InitApiProtocol, CheckItemStatus,
+    ConfigIssue as InitConfigIssue, InitCheckItem, InitCommand, InitConfigSection, InitContext,
+    InitEvent, InitMessage, InitStage, InitState, InitViewModel, InitWizard,
+    ModelInfo as InitModelInfo, MultiChoiceOption, RecoverAction, RenderedCheckItem,
+    RenderedMessage, SoulRef as InitSoulRef, WorkspaceCheckResult,
+};
 pub use loaders::{save_model_assignment, validate_model_assignment};
 pub use merger::{
     load_env_overrides, merge_model, merge_provider, merge_runtime_mode, CliOverrides,
@@ -25,7 +34,9 @@ pub use merger::{
 };
 pub use migration::{cleanup_legacy_files, migrate_legacy_config, MigrationReport};
 pub use protocol_interface::{ProviderMode, ProviderType, SoulRole};
-pub use settings::{AgentSettings, LlmSettings, Settings, SoulSettings, UiSettings};
+pub use settings::{
+    AgentSettings, LlmSettings, Settings, SoulSettings, UiSettings, UpdateSettings,
+};
 pub use soul::system_prompt_for_role;
 pub use views::{
     A2AConfig, AgentCapabilities, AgentCardCapabilities, AgentCardInteraction, AgentCardInterface,
