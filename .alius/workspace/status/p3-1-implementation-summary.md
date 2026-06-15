@@ -160,14 +160,14 @@ fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> Result<PathBuf, AliusErro
 
 ## Review 修复（P0 阻断问题）
 
-### 问题
+### 第一轮 Review 问题
 
 **[P0] workspace 外路径只被检测，没有被拒绝执行**
 - `authorizer.rs:103` 对 `external_paths` 返回 `ApprovalRequired`
 - `shell.rs:96` 只拦截 `Deny`，`ApprovalRequired` 继续执行
 - Chat/Bypass 下 `cat /etc/passwd`、`echo x > /tmp/out` 可能执行
 
-### 修复
+### 第一轮修复
 
 **1. 将外部路径从 ApprovalRequired 改为 Deny**
 
@@ -184,7 +184,80 @@ if !scope.external_paths.is_empty() {
 }
 ```
 
-**2. ApprovalRequired 只保留给 workspace 内高风险命令**
+### 第二轮 Review 问题（P0 - 逻辑顺序错误）
+
+**[P0] 高风险外部路径仍可绕过 hard deny**
+- `authorizer.rs:68` 风险等级检查在 workspace 边界检查之前
+- `RiskLevel::High` 在 `authorizer.rs:85` 直接返回 `ApprovalRequired`
+- 导致后面的 external path hard deny 不会执行
+- 例如：`rm -rf /tmp/foo` 会返回 `ApprovalRequired` 而不是 `Deny`
+- Chat/Bypass 模式下仍可能执行
+
+**[P0] 质量门失败**
+- `shell_gate_integration.rs:31` 的 `make_tool_context` 未使用
+- clippy 检查失败
+
+**[P1] 测试缺少高风险+外部路径组合**
+- 缺少 `rm -rf /tmp/foo` 这类命令的授权层和执行层测试
+
+### 第二轮修复（核心修复）
+
+**1. 调整 authorize() 逻辑顺序 - workspace 边界检查优先**
+
+```rust
+// runtime/tools/src/shell_gate/authorizer.rs:60-114
+// Symlink escape — always deny.
+if scope.symlink_escape { return Deny; }
+
+// ============================================================================
+// WORKSPACE BOUNDARY CHECKS - MUST COME BEFORE RISK LEVEL CHECKS
+// ============================================================================
+// Hard boundaries that apply regardless of risk level.
+// rm -rf /tmp/foo must be denied, not approved.
+
+// Outside workspace - cwd check
+if !scope.cwd_inside_workspace && config.deny_outside_workspace {
+    return Deny;
+}
+
+// Outside workspace - external paths (hard boundary)
+if !scope.external_paths.is_empty() {
+    return Deny;
+}
+
+// ============================================================================
+// RISK LEVEL CHECKS - ONLY FOR WORKSPACE-INTERNAL COMMANDS
+// ============================================================================
+// At this point, we know the command operates within workspace boundaries.
+
+match inspection.risk_level {
+    RiskLevel::Critical => { ... ApprovalRequired }
+    RiskLevel::High => { ... ApprovalRequired }
+    _ => {}
+}
+```
+
+**关键变更：**
+- workspace 边界检查（cwd、external_paths）移到风险等级检查之前
+- 确保所有外部路径命令（无论风险等级）都返回 `Deny`
+- ApprovalRequired 只用于已确认在 workspace 内的高风险命令
+
+**2. 删除未使用的函数**
+- 删除 `make_tool_context` 函数（shell_gate_integration.rs:31）
+
+**3. 新增高风险外部路径测试**
+
+授权层（authorizer.rs）：
+- `test_high_risk_external_path_denied` - `rm -rf /tmp/foo` → Deny
+- `test_critical_risk_external_path_denied` - `sudo rm -rf /etc` → Deny
+
+集成测试（shell_gate_integration.rs）：
+- `test_authorize_high_risk_external_denied` - 授权层验证
+- `test_authorize_critical_risk_external_denied` - 授权层验证
+- `test_execute_high_risk_external_rejected_in_chat` - 执行层验证
+- `test_execute_critical_risk_external_rejected_in_plan` - 执行层验证
+
+**4. 更新文档**
 - `rm -rf ./build` → `ApprovalRequired`（workspace 内）
 - `cat /etc/passwd` → `Deny`（workspace 外）
 - `echo x > /tmp/out` → `Deny`（workspace 外）
@@ -225,25 +298,25 @@ runtime/tools/tests/shell_gate_integration.rs:
 ✓ cargo fmt --all -- --check
 ✓ cargo check --workspace --all-targets --all-features
 ✓ cargo clippy --workspace --all-targets --all-features -- -D warnings
-✓ cargo test -p runtime-tools shell_gate -- --test-threads=1 (54 tests)
-✓ cargo test -p runtime-tools --test shell_gate_integration -- --test-threads=1 (21 tests)
-✓ cargo test --workspace -- --test-threads=1 (457 tests passed)
+✓ cargo test -p runtime-tools shell_gate -- --test-threads=1 (64 tests)
+✓ cargo test -p runtime-tools --test shell_gate_integration -- --test-threads=1 (25 tests)
+✓ cargo test --workspace -- --test-threads=1 (463 tests passed)
 ```
 
 **测试统计：**
-- authorizer: 15 个测试（新增 7 个）
+- authorizer: 17 个测试（新增 9 个，含高风险外部路径）
 - scope: 16 个测试（新增 8 个）
 - shell: 5 个测试（新增 5 个）
-- 集成测试: 21 个测试（新增 21 个）
-- 完整测试套件: 457 个测试全部通过
+- 集成测试: 25 个测试（新增 25 个，含高风险外部路径）
+- 完整测试套件: 463 个测试全部通过
 
 ---
 
 ## 修改文件
 
 1. **runtime/tools/src/shell_gate/authorizer.rs** ⭐ 核心修复
-   - **修改 `authorize()` 将 external_paths 从 ApprovalRequired 改为 Deny**
-   - 新增 7 个测试用例验证外部路径拒绝
+   - **调整逻辑顺序：workspace 边界检查优先于风险等级检查**
+   - 新增 9 个测试用例（含高风险外部路径）
 
 2. **runtime/tools/src/shell_gate/scope.rs**
    - 新增 `extract_redirections_from_command()` 函数

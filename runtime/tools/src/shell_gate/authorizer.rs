@@ -64,6 +64,36 @@ pub fn authorize(request: &ShellCommandRequest, config: &ShellGateConfig) -> She
         };
     }
 
+    // ============================================================================
+    // WORKSPACE BOUNDARY CHECKS - MUST COME BEFORE RISK LEVEL CHECKS
+    // ============================================================================
+    // These are hard boundaries that apply regardless of risk level.
+    // A high-risk command targeting external paths (e.g., rm -rf /tmp/foo)
+    // must be denied, not approved.
+
+    // Outside workspace - cwd check
+    if !scope.cwd_inside_workspace && config.deny_outside_workspace {
+        return ShellGateDecision::Deny {
+            reason: "command targets paths outside workspace and deny_outside_workspace is enabled"
+                .into(),
+        };
+    }
+
+    // Outside workspace - external paths (hard boundary)
+    if !scope.external_paths.is_empty() {
+        return ShellGateDecision::Deny {
+            reason: format!(
+                "command references paths outside workspace: {:?}",
+                scope.external_paths
+            ),
+        };
+    }
+
+    // ============================================================================
+    // RISK LEVEL CHECKS - ONLY FOR WORKSPACE-INTERNAL COMMANDS
+    // ============================================================================
+    // At this point, we know the command operates within workspace boundaries.
+
     // Critical risk level.
     match inspection.risk_level {
         RiskLevel::Critical => {
@@ -91,24 +121,6 @@ pub fn authorize(request: &ShellCommandRequest, config: &ShellGateConfig) -> She
             };
         }
         _ => {}
-    }
-
-    // Outside workspace.
-    if !scope.cwd_inside_workspace && config.deny_outside_workspace {
-        return ShellGateDecision::Deny {
-            reason: "command targets paths outside workspace and deny_outside_workspace is enabled"
-                .into(),
-        };
-    }
-
-    // Hard boundary: external paths are always denied
-    if !scope.external_paths.is_empty() {
-        return ShellGateDecision::Deny {
-            reason: format!(
-                "command references paths outside workspace: {:?}",
-                scope.external_paths
-            ),
-        };
     }
 
     ShellGateDecision::Allow
@@ -279,6 +291,30 @@ mod tests {
         assert!(
             matches!(decision, ShellGateDecision::ApprovalRequired { .. }),
             "Expected ApprovalRequired for high-risk workspace-internal command, got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_high_risk_external_path_denied() {
+        let mut req = make_request("rm -rf /tmp/foo");
+        req.args = vec!["-rf".to_string(), "/tmp/foo".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for high-risk external path (rm -rf /tmp/foo), got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_critical_risk_external_path_denied() {
+        let mut req = make_request("sudo rm -rf /etc");
+        req.args = vec!["rm".to_string(), "-rf".to_string(), "/etc".to_string()];
+        let decision = authorize(&req, &ShellGateConfig::default());
+        assert!(
+            matches!(decision, ShellGateDecision::Deny { .. }),
+            "Expected Deny for critical-risk external path (sudo rm -rf /etc), got {:?}",
             decision
         );
     }

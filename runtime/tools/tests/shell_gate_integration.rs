@@ -28,15 +28,6 @@ fn make_request(cwd: &str, workspace: &str, command: &str) -> ShellCommandReques
     }
 }
 
-fn make_tool_context(workspace: &str, mode: RuntimeMode) -> ToolContext {
-    ToolContext {
-        workspace: PathBuf::from(workspace),
-        session_id: "test-session".to_string(),
-        working_directory: PathBuf::from(workspace),
-        mode,
-    }
-}
-
 // ============================================================================
 // Scope Analysis Tests (detection layer)
 // ============================================================================
@@ -262,6 +253,30 @@ fn test_authorize_high_risk_internal_requires_approval() {
     );
 }
 
+#[test]
+fn test_authorize_high_risk_external_denied() {
+    let mut req = make_request("/workspace", "/workspace", "rm -rf /tmp/foo");
+    req.args = vec!["-rf".to_string(), "/tmp/foo".to_string()];
+    let decision = authorize(&req, &ShellGateConfig::default());
+    assert!(
+        matches!(decision, ShellGateDecision::Deny { .. }),
+        "Expected Deny for high-risk external path (rm -rf /tmp/foo), got {:?}",
+        decision
+    );
+}
+
+#[test]
+fn test_authorize_critical_risk_external_denied() {
+    let mut req = make_request("/workspace", "/workspace", "sudo rm -rf /etc");
+    req.args = vec!["rm".to_string(), "-rf".to_string(), "/etc".to_string()];
+    let decision = authorize(&req, &ShellGateConfig::default());
+    assert!(
+        matches!(decision, ShellGateDecision::Deny { .. }),
+        "Expected Deny for critical-risk external path (sudo rm -rf /etc), got {:?}",
+        decision
+    );
+}
+
 // ============================================================================
 // Execution Tests (Shell::execute layer)
 // ============================================================================
@@ -355,6 +370,52 @@ async fn test_execute_output_flag_rejected_in_chat() {
     assert!(
         tool_result.output.contains("denied by Shell Gate"),
         "Expected denial message, got: {}",
+        tool_result.output
+    );
+}
+
+#[tokio::test]
+async fn test_execute_high_risk_external_rejected_in_chat() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Chat,
+    };
+    let args = json!({"command": "rm -rf /tmp/foo"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(!tool_result.success, "Expected execution to fail");
+    assert!(
+        tool_result.output.contains("denied by Shell Gate"),
+        "Expected denial message for high-risk external path, got: {}",
+        tool_result.output
+    );
+}
+
+#[tokio::test]
+async fn test_execute_critical_risk_external_rejected_in_plan() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Plan,
+    };
+    let args = json!({"command": "sudo rm -rf /etc"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(!tool_result.success, "Expected execution to fail");
+    assert!(
+        tool_result.output.contains("denied by Shell Gate"),
+        "Expected denial message for critical-risk external path, got: {}",
         tool_result.output
     );
 }
