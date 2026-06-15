@@ -48,18 +48,23 @@ pub async fn execute_tools(
         ));
 
         // Stage B: if this call needs confirmation, pause for user yes/no.
-        let denied = if let Some(tool) = registry.get(&call.name) {
+        let (denied, denial_reason) = if let Some(tool) = registry.get(&call.name) {
             if tool.preview_confirmation(&call.args, mode) {
-                !confirm_and_await(
+                let approved = confirm_and_await(
                     &call.name, &call.id, &call.args, session, run_ref, trace_id, sequence,
                     event_sink,
                 )
-                .await?
+                .await?;
+                if approved {
+                    (false, None)
+                } else {
+                    (true, Some("denied_by_user"))
+                }
             } else {
-                false
+                (false, None)
             }
         } else {
-            false
+            (false, None)
         };
 
         let output = if denied {
@@ -73,20 +78,23 @@ pub async fn execute_tools(
 
         // Emit ToolCallCompleted
         *sequence += 1;
+        let mut payload = serde_json::json!({
+            "id": call.id,
+            "name": call.name,
+            "args": call.args,
+            "success": !output.starts_with("error:"),
+            "output": output,
+        });
+        if let Some(reason) = denial_reason {
+            payload["denied"] = serde_json::json!(true);
+            payload["denial_reason"] = serde_json::json!(reason);
+        }
         event_sink(CoreEvent::new(
             run_ref.clone(),
             trace_id.clone(),
             *sequence,
             CoreEventKind::ToolCallCompleted,
-            CoreEventPayload::Json {
-                value: serde_json::json!({
-                    "id": call.id,
-                    "name": call.name,
-                    "args": call.args,
-                    "success": !output.starts_with("error:"),
-                    "output": output,
-                }),
-            },
+            CoreEventPayload::Json { value: payload },
         ));
 
         results.push((call.id.clone(), call.name.clone(), output));
@@ -96,8 +104,12 @@ pub async fn execute_tools(
 }
 
 /// Emit `ToolConfirmationRequired`, register an oneshot on the session, and
-/// await the user's response. Returns `true` if approved. On cancel (sender
-/// dropped) the await returns Err → `false` (denied).
+/// await the user's response. Returns `true` if approved, `false` if denied,
+/// cancelled, or no session is available (fail-closed).
+///
+/// On cancel the SessionManager drops the sender → `rx.await` returns `Err`.
+/// The status is NOT restored to `Running` if the run already reached a
+/// terminal state (`Cancelled`, `Failed`, `Completed`).
 #[allow(clippy::too_many_arguments)]
 async fn confirm_and_await(
     tool_name: &str,
@@ -111,7 +123,10 @@ async fn confirm_and_await(
 ) -> Result<bool, ProtocolError> {
     let session = match session {
         Some(s) => s,
-        None => return Ok(false),
+        None => {
+            // Fail-closed: no session → cannot confirm → deny.
+            return Ok(false);
+        }
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
@@ -131,9 +146,18 @@ async fn confirm_and_await(
     ));
 
     let _ = session.update_run_status(run_ref, RunStatus::WaitingForApproval);
-    // On cancel, SessionManager drops the sender → rx.await returns Err → false.
+
+    // Await the user's response. On cancel the sender is dropped → Err.
     let approved = rx.await.unwrap_or(false);
-    let _ = session.update_run_status(run_ref, RunStatus::Running);
+
+    // Only restore to Running if the run is still in WaitingForApproval.
+    // If it was cancelled or otherwise terminal, do NOT overwrite.
+    if let Ok(current) = session.get_run_status(run_ref) {
+        if current == RunStatus::WaitingForApproval {
+            let _ = session.update_run_status(run_ref, RunStatus::Running);
+        }
+    }
+
     Ok(approved)
 }
 

@@ -64,6 +64,29 @@ pub fn log_shell_gate_decision(
     writer.append_event(entry)
 }
 
+/// Log a confirmation event (requested, approved, denied, cancelled).
+/// Uses tool name + call id only — no raw args or sensitive content.
+pub fn log_confirmation(
+    writer: &mut LogWriter,
+    action: &str,
+    tool_name: &str,
+    tool_call_id: &str,
+    run_ref: &str,
+    trace_id: &str,
+) -> Result<(), LoggingError> {
+    let entry = EventLogEntry::new(
+        "tool_confirmation",
+        trace_id,
+        serde_json::json!({
+            "action": action,
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "run_ref": run_ref,
+        }),
+    );
+    writer.append_event(entry)
+}
+
 /// Summarize tool input to avoid logging excessive data.
 fn summarize_input(input: &serde_json::Value) -> String {
     if let Some(obj) = input.as_object() {
@@ -159,5 +182,63 @@ mod tests {
             .len();
 
         assert!(size2 > size1);
+    }
+
+    #[test]
+    fn test_confirmation_requested_logged() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = make_writer(dir.path());
+        log_confirmation(
+            &mut writer,
+            "requested",
+            "shell",
+            "tc-1",
+            "run-1",
+            "trace-1",
+        )
+        .unwrap();
+        writer.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("event-log.jsonl")).unwrap();
+        assert!(content.contains("tool_confirmation"));
+        assert!(content.contains("requested"));
+        assert!(content.contains("shell"));
+        assert!(content.contains("tc-1"));
+        assert!(content.contains("run-1"));
+        assert!(content.contains("trace-1"));
+        // Must NOT contain sensitive args.
+        assert!(!content.contains("rm -rf"));
+    }
+
+    #[test]
+    fn test_confirmation_denied_logged() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = make_writer(dir.path());
+        log_confirmation(&mut writer, "denied", "shell", "tc-2", "run-2", "trace-2").unwrap();
+        writer.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("event-log.jsonl")).unwrap();
+        assert!(content.contains("denied"));
+        assert!(content.contains("tc-2"));
+    }
+
+    #[test]
+    fn test_confirmation_cancelled_logged() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = make_writer(dir.path());
+        log_confirmation(
+            &mut writer,
+            "cancelled",
+            "write_file",
+            "tc-3",
+            "run-3",
+            "trace-3",
+        )
+        .unwrap();
+        writer.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("event-log.jsonl")).unwrap();
+        assert!(content.contains("cancelled"));
+        assert!(content.contains("write_file"));
     }
 }

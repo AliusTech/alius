@@ -99,4 +99,19 @@ Built-in tools under `runtime/tools/src/native/`. Each implements `AliusTool` di
 
 ### ToolContext
 
-`ToolContext` carries `workspace`, `session_id`, `working_directory`, and `mode: RuntimeMode` (Plan/Chat). Tools consult `mode` to decide whether a risky operation needs confirmation (Plan) or executes directly (Chat/Bypass). The `AliusTool::preview_confirmation(args, mode)` hook (default `false`) is the future integration point for the Stage B confirmation pause/resume flow.
+`ToolContext` carries `workspace`, `session_id`, `working_directory`, and `mode: RuntimeMode` (Plan/Chat). Tools consult `mode` to decide whether a risky operation needs confirmation (Plan) or executes directly (Chat/Bypass).
+
+### Confirmation Chain (Stage B)
+
+When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step follows this chain:
+
+1. **Request**: emit `ToolConfirmationRequired` event, store a oneshot sender in `SessionManager`, transition run status to `WaitingForApproval`.
+2. **Await**: the loop blocks on the oneshot receiver.
+3. **Approved** (`rx.await` returns `Ok(true)`): restore status to `Running` only if still in `WaitingForApproval`; execute the tool; emit `ToolCallCompleted`.
+4. **Denied** (`rx.await` returns `Ok(false)`): tool is NOT executed; emit `ToolCallCompleted` with `success: false`, `denied: true`, `denial_reason: "denied_by_user"`.
+5. **Cancelled** (sender dropped, `rx.await` returns `Err`): status is NOT restored from `Cancelled`; no tool execution; the loop exits via cancel token.
+6. **No session**: fail-closed — tool is NOT executed, returns `denied` result.
+
+**Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` when the current status is `WaitingForApproval`. If the run was cancelled or otherwise terminal, the status is preserved.
+
+**Audit logging**: confirmation events (`requested`, `approved`, `denied`, `cancelled`) are logged via `audit::log_confirmation` with `tool_name`, `tool_call_id`, `run_ref`, `trace_id`. Raw args and sensitive content are NOT logged.

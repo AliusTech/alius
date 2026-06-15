@@ -200,6 +200,14 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Get the current run status.
+    pub fn get_run_status(&self, run_ref: &RunRef) -> Result<RunStatus, ProtocolError> {
+        let runs = self.runs.read().unwrap();
+        runs.get(run_ref.as_str())
+            .map(|s| s.status.clone())
+            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))
+    }
+
     /// Store a oneshot sender for a pending tool confirmation (Stage B).
     /// The loop engine awaits the matching receiver; the TUI delivers the
     /// user's response via `deliver_confirmation`.
@@ -219,6 +227,8 @@ impl SessionManager {
 
     /// Deliver the user's yes/no to a pending tool confirmation (Stage B).
     /// Sends on the stored oneshot and removes it; the awaiting loop resumes.
+    /// Only restores status to `Running` if the run is still in
+    /// `WaitingForApproval` — cancelled or terminal states are preserved.
     pub fn deliver_confirmation(
         &self,
         run_ref: &RunRef,
@@ -232,10 +242,13 @@ impl SessionManager {
         match state.confirmation.remove(tool_call_id) {
             Some(sender) => {
                 let _ = sender.send(approved);
+                let current_status = state.status.clone();
                 drop(runs);
 
-                // Reset status back to Running after confirmation
-                self.update_run_status(run_ref, RunStatus::Running)?;
+                // Only restore to Running if still in WaitingForApproval.
+                if current_status == RunStatus::WaitingForApproval {
+                    let _ = self.update_run_status(run_ref, RunStatus::Running);
+                }
                 Ok(())
             }
             None => Err(ProtocolError::Internal(format!(
@@ -405,14 +418,19 @@ mod tests {
     async fn confirmation_store_deliver_roundtrip() {
         let (mgr, run_ref) = mgr_with_run();
 
+        // Simulate entering WaitingForApproval state.
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
         mgr.store_confirmation_sender(&run_ref, "call-1", tx)
             .unwrap();
 
-        // Deliver the user's approval.
+        // Deliver the user's approval → status restored to Running.
         mgr.deliver_confirmation(&run_ref, "call-1", true).unwrap();
         let approved = rx.await.unwrap();
         assert!(approved);
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Running);
 
         // A second deliver for the same id fails (sender already consumed).
         assert!(mgr.deliver_confirmation(&run_ref, "call-1", true).is_err());
@@ -430,5 +448,73 @@ mod tests {
         mgr.cancel_pending_confirmations(&run_ref);
         let res = rx.await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn deliver_confirmation_does_not_restore_cancelled() {
+        let (mgr, run_ref) = mgr_with_run();
+
+        // Simulate the full cancel flow: store sender → cancel run.
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "call-3", tx)
+            .unwrap();
+        mgr.cancel_run(&run_ref).unwrap();
+
+        // Sender was dropped by cancel → rx returns Err.
+        assert!(rx.await.is_err());
+
+        // Status must remain Cancelled, not restored to Running.
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn deliver_confirmation_does_not_restore_after_user_deny_via_cancel() {
+        let (mgr, run_ref) = mgr_with_run();
+
+        // Enter WaitingForApproval.
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "call-4", tx)
+            .unwrap();
+
+        // Simulate cancel while waiting.
+        mgr.cancel_run(&run_ref).unwrap();
+
+        // Sender dropped → rx Err.
+        assert!(rx.await.is_err());
+
+        // Status must be Cancelled.
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_run_clears_all_pending_confirmations() {
+        let (mgr, run_ref) = mgr_with_run();
+
+        let (tx1, _rx1) = tokio::sync::oneshot::channel::<bool>();
+        let (tx2, _rx2) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "c1", tx1).unwrap();
+        mgr.store_confirmation_sender(&run_ref, "c2", tx2).unwrap();
+
+        mgr.cancel_run(&run_ref).unwrap();
+
+        // Both senders dropped → receivers get Err.
+        assert!(_rx1.await.is_err());
+        assert!(_rx2.await.is_err());
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn get_run_status_returns_current() {
+        let (mgr, run_ref) = mgr_with_run();
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Started);
+
+        mgr.update_run_status(&run_ref, RunStatus::Running).unwrap();
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Running);
+
+        mgr.update_run_status(&run_ref, RunStatus::Failed).unwrap();
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Failed);
     }
 }
