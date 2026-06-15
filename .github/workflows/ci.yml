@@ -35,6 +35,9 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Check compilation
+        run: cargo check --locked --workspace --all-targets --all-features
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
