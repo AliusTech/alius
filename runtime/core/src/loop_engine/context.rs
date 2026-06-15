@@ -1,11 +1,13 @@
 //! Loop engine execution context.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use runtime_config::LlmSettings;
 use runtime_model::{Conversation, LlmClient};
 use runtime_tools::ToolRegistry;
+
+use crate::logging::LogWriter;
 
 /// Context needed by the loop engine for a single run.
 pub struct LoopContext {
@@ -21,6 +23,8 @@ pub struct LoopContext {
     pub max_context_tokens: usize,
     /// Cancellation token for stopping the run mid-execution.
     pub cancel_token: Option<tokio_util::sync::CancellationToken>,
+    /// Audit log writer for confirmation and tool events.
+    pub log_writer: Option<Arc<Mutex<LogWriter>>>,
 }
 
 impl LoopContext {

@@ -1,13 +1,14 @@
 //! Core Runtime — implements CoreRuntimeApi.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 
 use protocol_interface::core::*;
 use runtime_config::Settings;
 use runtime_model::{Conversation, LlmClient};
 
+use crate::logging::LogWriter;
 use crate::loop_engine::{LoopContext, LoopEngine};
 use crate::session::SessionManager;
 use crate::EventAdapter;
@@ -24,6 +25,7 @@ pub struct CoreRuntime {
     memory_project: Arc<RwLock<Option<runtime_store::MemoryStore>>>,
     tool_registry: Option<Arc<runtime_tools::ToolRegistry>>,
     conversation_store: Arc<runtime_store::ConversationStore>,
+    log_writer: Option<Arc<Mutex<LogWriter>>>,
 }
 
 struct ActiveRun {
@@ -94,6 +96,21 @@ impl CoreRuntimeBuilder {
                 .map_err(|e| ProtocolError::Internal(format!("conversation store: {}", e)))?,
         );
 
+        // Create audit log writer in the workspace's .alius/logs directory.
+        let log_writer = {
+            let log_dir = std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".alius")
+                .join("logs");
+            match LogWriter::new(&log_dir) {
+                Ok(writer) => Some(Arc::new(Mutex::new(writer))),
+                Err(e) => {
+                    eprintln!("[warn] Failed to create audit log writer: {e}");
+                    None
+                }
+            }
+        };
+
         Ok(CoreRuntime {
             session_manager: Arc::new(SessionManager::new(workspace_ref)),
             settings: Arc::new(RwLock::new(settings)),
@@ -103,6 +120,7 @@ impl CoreRuntimeBuilder {
             memory_project: Arc::new(RwLock::new(memory_project)),
             tool_registry: self.tool_registry,
             conversation_store,
+            log_writer,
         })
     }
 }
@@ -142,6 +160,7 @@ impl CoreRuntime {
             memory_project: Arc::new(RwLock::new(None)),
             tool_registry: None,
             conversation_store,
+            log_writer: None,
         }
     }
 
@@ -263,6 +282,7 @@ impl CoreRuntimeApi for CoreRuntime {
             session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             cancel_token: None,
+            log_writer: self.log_writer.clone(),
         };
 
         let sr = session_ref.clone();
@@ -423,6 +443,7 @@ impl CoreRuntimeApi for CoreRuntime {
             session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             cancel_token,
+            log_writer: self.log_writer.clone(),
         };
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -862,6 +883,7 @@ impl CoreRuntimeApi for CoreRuntime {
             session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             cancel_token: None,
+            log_writer: self.log_writer.clone(),
         };
 
         let loop_input = LoopEngine::input_from_request(&RequestInput::Text {

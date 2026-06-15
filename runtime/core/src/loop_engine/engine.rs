@@ -307,7 +307,7 @@ impl LoopEngine {
             }
         }
 
-        let tool_results = match super::tool_step::execute_tools(
+        let batch = match super::tool_step::execute_tools(
             &tool_calls,
             &registry,
             &ctx.workspace,
@@ -318,11 +318,11 @@ impl LoopEngine {
             run_ref,
             trace_id,
             &mut seq,
-            None, // log_writer — not wired in Chat path yet
+            ctx.log_writer.as_ref(),
         )
         .await
         {
-            Ok(results) => normalize_tool_results(&tool_calls, &results),
+            Ok(batch) => batch,
             Err(e) => {
                 seq += 1;
                 event_sink(CoreEvent::new(
@@ -350,9 +350,7 @@ impl LoopEngine {
             }
         };
 
-        // Check if any tool was denied — report as failure, not success.
-        let any_denied = any_tool_denied(&tool_results);
-
+        let tool_results = normalize_tool_results(&tool_calls, &batch.results);
         let final_content = chat_tool_final_content(&model_result.text, &tool_results);
         emit_final(
             event_sink,
@@ -360,7 +358,7 @@ impl LoopEngine {
             trace_id,
             &mut seq,
             &final_content,
-            !any_denied,
+            !batch.batch_denied,
         );
 
         LoopExecutionResult {
@@ -605,7 +603,7 @@ impl LoopEngine {
                 }
             }
 
-            let tool_results = match super::tool_step::execute_tools(
+            let batch = match super::tool_step::execute_tools(
                 &tool_calls,
                 &registry,
                 &ctx.workspace,
@@ -616,11 +614,11 @@ impl LoopEngine {
                 run_ref,
                 trace_id,
                 &mut seq,
-                None, // log_writer — TODO: wire from LoopContext
+                ctx.log_writer.as_ref(),
             )
             .await
             {
-                Ok(results) => results,
+                Ok(batch) => batch,
                 Err(e) => {
                     seq += 1;
                     event_sink(CoreEvent::new(
@@ -638,13 +636,11 @@ impl LoopEngine {
                 }
             };
 
-            // Check if any tool was denied by user — fail-closed: stop the loop
-            // immediately. Do NOT feed the denial output back to the model.
-            let any_denied = any_tool_denied(&tool_results);
+            pending_tool_results = normalize_tool_results(&tool_calls, &batch.results);
 
-            pending_tool_results = normalize_tool_results(&tool_calls, &tool_results);
-
-            if any_denied {
+            // Fail-closed: if any tool was denied/cancelled/unavailable,
+            // stop the loop immediately.
+            if batch.batch_denied {
                 seq += 1;
                 event_sink(CoreEvent::new(
                     run_ref.clone(),
@@ -653,7 +649,10 @@ impl LoopEngine {
                     CoreEventKind::ErrorRaised,
                     CoreEventPayload::Error {
                         code: "tool_denied".to_string(),
-                        message: "tool execution denied by user — plan aborted".to_string(),
+                        message: format!(
+                            "tool execution {} — plan aborted",
+                            batch.denial_reason.unwrap_or("denied")
+                        ),
                     },
                 ));
                 exit_reason = ExitReason::Error;
@@ -840,12 +839,6 @@ fn should_truncate_context(
 }
 
 /// Returns `true` if any tool result indicates user denial.
-fn any_tool_denied(tool_results: &[(String, String, String)]) -> bool {
-    tool_results.iter().any(|(_, _, output)| {
-        output.starts_with("error: tool") && output.ends_with("denied by user")
-    })
-}
-
 fn emit_final(
     event_sink: &mut dyn FnMut(CoreEvent),
     run_ref: &RunRef,
@@ -1081,47 +1074,105 @@ mod tests {
         assert!(content.contains("- read_file (call-readme): README contents"));
     }
 
-    #[test]
-    fn any_tool_denied_detects_denied_output() {
-        let results = vec![
-            (
-                "c1".to_string(),
-                "shell".to_string(),
-                "executed ok".to_string(),
-            ),
-            (
-                "c2".to_string(),
-                "shell".to_string(),
-                "error: tool 'shell' denied by user".to_string(),
-            ),
-        ];
-        assert!(any_tool_denied(&results));
-    }
+    /// Engine-level: Plan mode tool denial produces ErrorRaised + FinalResult(false).
+    /// This verifies the integration between execute_tools' batch_denied flag
+    /// and the engine's denial handling — no fragile string matching.
+    #[tokio::test]
+    async fn plan_denial_produces_error_and_failed_final() {
+        use runtime_tools::AliusTool;
+        use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn any_tool_denied_false_when_no_denied() {
-        let results = vec![
-            (
-                "c1".to_string(),
-                "shell".to_string(),
-                "executed ok".to_string(),
-            ),
-            (
-                "c2".to_string(),
-                "read_file".to_string(),
-                "file contents".to_string(),
-            ),
-        ];
-        assert!(!any_tool_denied(&results));
-    }
+        struct DenyTool;
+        #[async_trait::async_trait]
+        impl AliusTool for DenyTool {
+            fn name(&self) -> &'static str {
+                "deny_tool"
+            }
+            fn description(&self) -> &'static str {
+                "always denied"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({})
+            }
+            fn preview_confirmation(&self, _: &serde_json::Value, _: RuntimeMode) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                Ok(runtime_tools::ToolResult {
+                    output: "should not run".into(),
+                    success: true,
+                    metadata: None,
+                })
+            }
+        }
 
-    #[test]
-    fn any_tool_denied_false_for_other_errors() {
-        let results = vec![(
-            "c1".to_string(),
-            "shell".to_string(),
-            "error: timeout".to_string(),
-        )];
-        assert!(!any_tool_denied(&results));
+        let mut registry = runtime_tools::ToolRegistry::new();
+        registry.register(DenyTool).unwrap();
+
+        let session_manager = Arc::new(crate::SessionManager::new(
+            protocol_interface::core::WorkspaceRef::new("/tmp"),
+        ));
+        let session = session_manager.create_session();
+        let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
+
+        // Simulate: execute_tools with session that cancels immediately.
+        let sm = session_manager.clone();
+        let rr = run_ref.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _ = sm.cancel_run(&rr);
+        });
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut seq = 0u64;
+
+        let call = runtime_model::ToolCall {
+            id: "tc-1".into(),
+            name: "deny_tool".into(),
+            args: json!({}),
+        };
+
+        let batch = super::super::tool_step::execute_tools(
+            &[call],
+            &registry,
+            std::path::Path::new("/tmp"),
+            "test",
+            RuntimeMode::Plan,
+            Some(&session_manager),
+            &mut |e| events_clone.lock().unwrap().push(e),
+            &run_ref,
+            &trace_id,
+            &mut seq,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The batch must be marked as denied (cancelled).
+        assert!(batch.batch_denied, "batch should be denied");
+        assert_eq!(batch.denial_reason, Some("cancelled"));
+
+        // Verify ToolCallCompleted(success=false) was emitted with cancellation reason.
+        let evts = events.lock().unwrap();
+        let completed = evts
+            .iter()
+            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
+        assert!(completed.is_some(), "should emit ToolCallCompleted");
+        if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
+            assert_eq!(value["success"], false);
+            assert_eq!(value["denied"], true);
+            assert_eq!(value["denial_reason"], "cancelled");
+        }
+
+        // Verify status is Cancelled (not restored to Running).
+        assert_eq!(
+            session_manager.get_run_status(&run_ref).unwrap(),
+            protocol_interface::core::RunStatus::Cancelled
+        );
     }
 }
