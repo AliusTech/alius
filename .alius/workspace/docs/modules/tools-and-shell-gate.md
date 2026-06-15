@@ -112,6 +112,8 @@ When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step
 5. **Cancelled** (sender dropped, `rx.await` returns `Err`): status is NOT restored from `Cancelled`; no tool execution; the loop exits via cancel token.
 6. **No session**: fail-closed — tool is NOT executed, returns `denied` result.
 
-**Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` when the current status is `WaitingForApproval`. If the run was cancelled or otherwise terminal, the status is preserved.
+**Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` when the current status is `WaitingForApproval`. The status check + update in `deliver_confirmation` is atomic (under the same write lock) to prevent a race with `cancel_run`.
+
+**Loop termination on denial**: after tool execution, `run_plan` and `run_chat_with_tools` check if any tool result indicates user denial (output starts with `"error: tool"` and ends with `"denied by user"`). If so, the loop immediately emits `ErrorRaised(code: "tool_denied")` and `FinalResult(success: false)`, preventing the model from being fed the denial output and continuing to request more dangerous operations.
 
 **Audit logging**: confirmation events (`requested`, `approved`, `denied`, `cancelled`) are logged via `audit::log_confirmation` with `tool_name`, `tool_call_id`, `run_ref`, `trace_id`. Raw args and sensitive content are NOT logged.

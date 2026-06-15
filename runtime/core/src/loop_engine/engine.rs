@@ -349,6 +349,9 @@ impl LoopEngine {
             }
         };
 
+        // Check if any tool was denied — report as failure, not success.
+        let any_denied = any_tool_denied(&tool_results);
+
         let final_content = chat_tool_final_content(&model_result.text, &tool_results);
         emit_final(
             event_sink,
@@ -356,7 +359,7 @@ impl LoopEngine {
             trace_id,
             &mut seq,
             &final_content,
-            true,
+            !any_denied,
         );
 
         LoopExecutionResult {
@@ -633,7 +636,27 @@ impl LoopEngine {
                 }
             };
 
+            // Check if any tool was denied by user — fail-closed: stop the loop
+            // immediately. Do NOT feed the denial output back to the model.
+            let any_denied = any_tool_denied(&tool_results);
+
             pending_tool_results = normalize_tool_results(&tool_calls, &tool_results);
+
+            if any_denied {
+                seq += 1;
+                event_sink(CoreEvent::new(
+                    run_ref.clone(),
+                    trace_id.clone(),
+                    seq,
+                    CoreEventKind::ErrorRaised,
+                    CoreEventPayload::Error {
+                        code: "tool_denied".to_string(),
+                        message: "tool execution denied by user — plan aborted".to_string(),
+                    },
+                ));
+                exit_reason = ExitReason::Error;
+                break;
+            }
         }
 
         // Only emit FinalResult if loop didn't already emit one (e.g., on cancel)
@@ -812,6 +835,13 @@ fn should_truncate_context(
     pending_tool_results: &[(String, String, String)],
 ) -> bool {
     pending_tool_results.is_empty() && context_mgr.needs_truncation(conversation)
+}
+
+/// Returns `true` if any tool result indicates user denial.
+fn any_tool_denied(tool_results: &[(String, String, String)]) -> bool {
+    tool_results.iter().any(|(_, _, output)| {
+        output.starts_with("error: tool") && output.ends_with("denied by user")
+    })
 }
 
 fn emit_final(
@@ -1047,5 +1077,49 @@ mod tests {
         assert!(content.contains("I will inspect the file."));
         assert!(content.contains("Tool results:"));
         assert!(content.contains("- read_file (call-readme): README contents"));
+    }
+
+    #[test]
+    fn any_tool_denied_detects_denied_output() {
+        let results = vec![
+            (
+                "c1".to_string(),
+                "shell".to_string(),
+                "executed ok".to_string(),
+            ),
+            (
+                "c2".to_string(),
+                "shell".to_string(),
+                "error: tool 'shell' denied by user".to_string(),
+            ),
+        ];
+        assert!(any_tool_denied(&results));
+    }
+
+    #[test]
+    fn any_tool_denied_false_when_no_denied() {
+        let results = vec![
+            (
+                "c1".to_string(),
+                "shell".to_string(),
+                "executed ok".to_string(),
+            ),
+            (
+                "c2".to_string(),
+                "read_file".to_string(),
+                "file contents".to_string(),
+            ),
+        ];
+        assert!(!any_tool_denied(&results));
+    }
+
+    #[test]
+    fn any_tool_denied_false_for_other_errors() {
+        let results = vec![(
+            "c1".to_string(),
+            "shell".to_string(),
+            "error: timeout".to_string(),
+        )];
+        assert!(!any_tool_denied(&results));
     }
 }
