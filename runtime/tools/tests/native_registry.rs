@@ -8,7 +8,6 @@
 
 use protocol_interface::RuntimeMode;
 use runtime_tools::package::ToolPackageResolver;
-use runtime_tools::traits::AliusTool;
 use serde_json::json;
 
 #[test]
@@ -85,7 +84,7 @@ fn test_native_tools_have_valid_schemas() {
     for name in &["shell", "read_file", "write_file", "list_dir", "edit_file"] {
         let tool = registry
             .get(name)
-            .expect(&format!("{} should be present", name));
+            .unwrap_or_else(|| panic!("{} should be present", name));
         let schema = tool.input_schema();
         assert!(schema.is_object(), "{} should have object schema", name);
     }
@@ -133,7 +132,6 @@ fn test_shell_preview_confirmation_in_chat_mode() {
 #[tokio::test]
 async fn test_chat_mode_workspace_internal_executes() {
     use runtime_tools::traits::ToolContext;
-    use std::path::PathBuf;
 
     let workspace = std::env::current_dir().unwrap();
     let resolver = ToolPackageResolver::new(workspace.clone());
@@ -163,7 +161,6 @@ async fn test_chat_mode_workspace_internal_executes() {
 #[tokio::test]
 async fn test_chat_mode_external_path_denied() {
     use runtime_tools::traits::ToolContext;
-    use std::path::PathBuf;
 
     let workspace = std::env::current_dir().unwrap();
     let resolver = ToolPackageResolver::new(workspace.clone());
