@@ -8,7 +8,7 @@ All entries use the format:
 
 ## 2026-06-16
 
-[2026-06-16 01:00] Alius: entrypoints/jsonrpc/src/lib.rs + .alius/workspace/SPEC.md - P4-2 JSON-RPC run control: added run_start (starts streaming run, returns run_ref), run_subscribe (returns event snapshot), run_cancel (cancels run) methods; all through CoreRuntimeManager, no legacy stub path; param validation returns -32602 for missing/invalid text, mode, run_ref; TCP integration test for run_start+run_subscribe flow; 31 jsonrpc tests total.
+[2026-06-16 01:00] Alius: entrypoints/jsonrpc/src/lib.rs + .alius/workspace/SPEC.md + .alius/workspace/docs/products/jsonrpc.md - P4-2 JSON-RPC run control: run_start returns run_ref + trace_id + session_ref; run_subscribe returns full event fields (trace_id, run_ref, session_ref, turn_ref, kind, payload, sequence, created_at); run_cancel returns success; cancel observable via subscribe test; product docs updated with complete method table and error codes; 32 jsonrpc tests total.
 
 ## 2026-06-15
 

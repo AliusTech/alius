@@ -140,7 +140,7 @@ pub fn dispatch_with_runtime(
 
 /// `run_start`: Start a streaming run.
 /// Params: `{"text": "...", "mode": "Chat"|"Plan"}`
-/// Returns: `{"run_ref": "...", "trace_id": "..."}`
+/// Returns: `{"run_ref": "...", "trace_id": "...", "session_ref": "...", "turn_ref": "..."}`
 fn handle_run_start(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
     let text = match request.params.get("text").and_then(|v| v.as_str()) {
         Some(t) if !t.trim().is_empty() => t,
@@ -162,12 +162,26 @@ fn handle_run_start(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> J
         Ok((run_ref, _rx)) => {
             // _rx is the event receiver — we don't stream it over this TCP line.
             // The caller uses run_subscribe to poll events.
-            success(
-                request,
-                serde_json::json!({
-                    "run_ref": run_ref.as_str(),
-                }),
-            )
+            // We extract trace_id/session_ref/turn_ref from the first event
+            // by subscribing to the run immediately.
+            let mut result = serde_json::json!({
+                "run_ref": run_ref.as_str(),
+            });
+
+            // Extract correlation IDs from the first event snapshot.
+            if let Ok(envelopes) = manager.subscribe(&run_ref) {
+                if let Some(first) = envelopes.first() {
+                    result["trace_id"] = serde_json::json!(first.trace_id.as_str());
+                    if let Some(sr) = &first.session_ref {
+                        result["session_ref"] = serde_json::json!(sr.as_str());
+                    }
+                    if let Some(rr) = &first.run_ref {
+                        result["run_ref"] = serde_json::json!(rr.as_str());
+                    }
+                }
+            }
+
+            success(request, result)
         }
         Err(e) => runtime_error(request, e.to_string()),
     }
@@ -190,9 +204,14 @@ fn handle_run_subscribe(request: &JsonRpcRequest, manager: &CoreRuntimeManager) 
                 .map(|env| {
                     serde_json::json!({
                         "event_id": env.payload.event_id.as_str(),
+                        "trace_id": env.trace_id.as_str(),
+                        "run_ref": env.run_ref.as_ref().map(|r| r.as_str()),
+                        "session_ref": env.session_ref.as_ref().map(|s| s.as_str()),
+                        "turn_ref": env.payload.turn_ref.as_ref().map(|t| t.as_str()),
                         "kind": serde_json::to_value(&env.payload.kind).unwrap_or_default(),
                         "payload": serde_json::to_value(&env.payload.payload).unwrap_or_default(),
                         "sequence": env.payload.sequence,
+                        "created_at": env.payload.created_at.to_rfc3339(),
                     })
                 })
                 .collect();
@@ -669,6 +688,8 @@ mod tests {
         let result = resp.result.unwrap();
         assert!(result["run_ref"].is_string(), "should return run_ref");
         assert!(!result["run_ref"].as_str().unwrap().is_empty());
+        assert!(result["trace_id"].is_string(), "should return trace_id");
+        assert!(!result["trace_id"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -792,6 +813,71 @@ mod tests {
             cancel_resp.error
         );
         assert_eq!(cancel_resp.result.unwrap()["success"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_cancel_observable_via_subscribe() {
+        let manager = test_manager();
+
+        // Start a Plan run.
+        let start_params = serde_json::json!({"text": "test long task", "mode": "Plan"});
+        let start_resp = dispatch_with_runtime(
+            &make_request_with_params("run_start", start_params),
+            &manager,
+        );
+        let run_ref = start_resp.result.unwrap()["run_ref"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Give the run a moment to start.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Cancel it.
+        let cancel_params = serde_json::json!({"run_ref": run_ref, "reason": "user abort"});
+        let cancel_resp = dispatch_with_runtime(
+            &make_request_with_params("run_cancel", cancel_params),
+            &manager,
+        );
+        assert!(cancel_resp.error.is_none());
+
+        // Give cancellation time to propagate.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Subscribe and verify we can see the cancellation result.
+        let sub_params = serde_json::json!({"run_ref": run_ref});
+        let sub_resp = dispatch_with_runtime(
+            &make_request_with_params("run_subscribe", sub_params),
+            &manager,
+        );
+        assert!(sub_resp.error.is_none());
+        let result = sub_resp.result.unwrap();
+        let events = result["events"].as_array().unwrap();
+        assert!(!events.is_empty(), "should have events after cancel");
+
+        // Verify at least one event has the run_ref correlation field.
+        let has_run_ref = events.iter().any(|e| {
+            e.get("run_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        });
+        assert!(
+            has_run_ref,
+            "events should include run_ref correlation field"
+        );
+
+        // Verify trace_id is present in events.
+        let has_trace_id = events.iter().any(|e| {
+            e.get("trace_id")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        });
+        assert!(
+            has_trace_id,
+            "events should include trace_id correlation field"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
