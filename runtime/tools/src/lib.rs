@@ -41,7 +41,9 @@ pub fn register_installed_rust_wasm_tools(registry: &mut ToolRegistry, _workspac
         match WasmPluginTool::from_wasm_bytes(&wasm_bytes) {
             Ok(tools) => {
                 for tool in tools {
-                    registry.register(tool);
+                    if let Err(conflict) = registry.register(tool) {
+                        eprintln!("[warn] {conflict} — skipping WASM tool");
+                    }
                 }
             }
             Err(err) => eprintln!(

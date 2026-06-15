@@ -18,13 +18,19 @@ impl ToolRegistry {
         }
     }
 
-    /// Register a tool implementation.
-    pub fn register<T>(&mut self, tool: T)
+    /// Register a tool implementation. Returns `Err` if a tool with the same
+    /// name is already registered — callers must not silently shadow built-in
+    /// tools (e.g. native `shell`) with WASM or external implementations.
+    pub fn register<T>(&mut self, tool: T) -> Result<(), String>
     where
         T: AliusTool + 'static,
     {
-        let name = tool.name();
-        self.tools.insert(name.to_string(), Arc::new(tool));
+        let name = tool.name().to_string();
+        if self.tools.contains_key(&name) {
+            return Err(format!("tool '{}' is already registered", name));
+        }
+        self.tools.insert(name, Arc::new(tool));
+        Ok(())
     }
 
     /// Get a tool by name
@@ -82,13 +88,39 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use crate::native;
+    use async_trait::async_trait;
+    use protocol_interface::AliusError;
+
+    /// A fake tool for testing name-conflict rejection.
+    struct FakeTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl crate::traits::AliusTool for FakeTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn description(&self) -> &'static str {
+            "fake"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: crate::traits::ToolContext,
+        ) -> Result<crate::traits::ToolResult, AliusError> {
+            unimplemented!()
+        }
+    }
 
     #[test]
     fn test_native_tools_registered() {
         let mut registry = ToolRegistry::new();
         native::register_native_tools(&mut registry);
 
-        // Check that all native tools are registered
         assert!(registry.has("shell"));
         assert!(registry.has("read_file"));
         assert!(registry.has("write_file"));
@@ -101,7 +133,6 @@ mod tests {
         let mut registry = ToolRegistry::new();
         native::register_native_tools(&mut registry);
 
-        // Test get() for native tools
         let shell = registry.get("shell");
         assert!(shell.is_some());
         assert_eq!(shell.unwrap().name(), "shell");
@@ -124,5 +155,32 @@ mod tests {
         assert!(names.contains(&"write_file".to_string()));
         assert!(names.contains(&"list_dir".to_string()));
         assert!(names.contains(&"edit_file".to_string()));
+    }
+
+    #[test]
+    fn test_duplicate_name_rejected() {
+        let mut registry = ToolRegistry::new();
+        native::register_native_tools(&mut registry);
+
+        // Attempting to register a tool with the same name as a native tool
+        // must fail — this prevents WASM plugins from shadowing built-in tools.
+        let result = registry.register(FakeTool { name: "shell" });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already registered"));
+
+        // The original native tool must still be present.
+        let shell = registry.get("shell").expect("native shell must survive");
+        assert_eq!(shell.name(), "shell");
+    }
+
+    #[test]
+    fn test_all_native_names_rejected_on_duplicate() {
+        let mut registry = ToolRegistry::new();
+        native::register_native_tools(&mut registry);
+
+        for name in &["shell", "read_file", "write_file", "list_dir", "edit_file"] {
+            let result = registry.register(FakeTool { name });
+            assert!(result.is_err(), "duplicate '{}' must be rejected", name);
+        }
     }
 }

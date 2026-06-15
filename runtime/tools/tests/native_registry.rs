@@ -189,3 +189,75 @@ async fn test_chat_mode_external_path_denied() {
         "Should contain denial message"
     );
 }
+
+#[test]
+fn test_write_file_preview_confirmation_in_plan_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let write_file = registry
+        .get("write_file")
+        .expect("write_file tool should be present");
+
+    // write_file always requires confirmation in Plan mode
+    let args = json!({"path": "test.txt", "content": "hello"});
+    assert!(
+        write_file.preview_confirmation(&args, RuntimeMode::Plan),
+        "write_file should require confirmation in Plan mode"
+    );
+}
+
+#[test]
+fn test_write_file_no_confirmation_in_chat_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let write_file = registry
+        .get("write_file")
+        .expect("write_file tool should be present");
+
+    // write_file does not require confirmation in Chat mode
+    let args = json!({"path": "test.txt", "content": "hello"});
+    assert!(
+        !write_file.preview_confirmation(&args, RuntimeMode::Chat),
+        "write_file should not require confirmation in Chat mode"
+    );
+}
+
+#[test]
+fn test_edit_file_preview_confirmation_in_plan_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let edit_file = registry
+        .get("edit_file")
+        .expect("edit_file tool should be present");
+
+    // edit_file always requires confirmation in Plan mode
+    let args = json!({"path": "test.txt", "find": "old", "replace": "new"});
+    assert!(
+        edit_file.preview_confirmation(&args, RuntimeMode::Plan),
+        "edit_file should require confirmation in Plan mode"
+    );
+}
+
+#[test]
+fn test_edit_file_no_confirmation_in_chat_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let edit_file = registry
+        .get("edit_file")
+        .expect("edit_file tool should be present");
+
+    // edit_file does not require confirmation in Chat mode
+    let args = json!({"path": "test.txt", "find": "old", "replace": "new"});
+    assert!(
+        !edit_file.preview_confirmation(&args, RuntimeMode::Chat),
+        "edit_file should not require confirmation in Chat mode"
+    );
+}

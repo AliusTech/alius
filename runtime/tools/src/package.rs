@@ -99,13 +99,17 @@ impl ToolPackageResolver {
 
     pub fn build_registry(&self) -> Result<ToolRegistry> {
         let mut registry = ToolRegistry::new();
-        // Always register native tools first
+        // Always register native tools first — they own the built-in names
         crate::native::register_native_tools(&mut registry);
         for package in self.list_installed_packages()? {
             let wasm_bytes = std::fs::read(&package.wasm_path)?;
             let tools = WasmPluginTool::from_wasm_bytes(&wasm_bytes)?;
             for tool in tools {
-                registry.register(tool);
+                if let Err(conflict) = registry.register(tool) {
+                    // WASM tool name conflicts with an already-registered tool
+                    // (typically a native built-in). Log and skip.
+                    eprintln!("[warn] {conflict} — skipping WASM tool");
+                }
             }
         }
         Ok(registry)
