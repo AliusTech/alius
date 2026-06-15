@@ -1924,6 +1924,7 @@ dependencies = [
  "anyhow",
  "core-runtime",
  "protocol-interface",
+ "runtime-config",
  "serde",
  "serde_json",
  "tokio",

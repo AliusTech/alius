@@ -439,16 +439,117 @@ mod tests {
         assert_eq!(resp.id, Some(JsonValue::Number(1.into())));
     }
 
-    // ── Server wiring ──────────────────────────────────────────────────
+    // ── Server wiring / integration ───────────────────────────────────
 
-    /// Verify that `serve_with_runtime` accepts an Arc<CoreRuntimeManager>
-    /// and can be constructed (does not panic).
+    /// Verify `serve_with_runtime` accepts an Arc<CoreRuntimeManager).
     #[test]
     fn test_serve_with_runtime_accepts_arc_manager() {
         let manager = Arc::new(test_manager());
-        // Just verify the function signature compiles — we don't actually bind.
         let _addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let _mgr = manager;
-        // If we got here, the types are correct.
+    }
+
+    /// End-to-end: TCP client sends a JSON line to handle_connection backed
+    /// by a real CoreRuntimeManager, and verifies the response comes from
+    /// the runtime path (not the legacy hardcoded stub).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_handle_connection_uses_runtime_backed_dispatch() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let manager = test_manager();
+
+        // Bind a one-shot listener on a random port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server side: accept one connection and handle it.
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, &manager).await.unwrap();
+        });
+
+        // Client side: connect, send config_read request, read response.
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            // Send a config_read JSON-RPC request.
+            let request = r#"{"jsonrpc":"2.0","id":1,"method":"config_read"}"#;
+            writer
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+
+            // Read the response line.
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            line
+        });
+
+        server.await.unwrap();
+        let response_line = client.await.unwrap();
+
+        // Parse the response.
+        let resp: JsonRpcResponse = serde_json::from_str(response_line.trim()).unwrap();
+        assert!(
+            resp.error.is_none(),
+            "config_read should succeed: {:?}",
+            resp.error
+        );
+
+        let result = resp.result.unwrap();
+        // Must NOT be the legacy hardcoded values.
+        assert_ne!(
+            result["provider"], "anthropic",
+            "response must come from runtime, not legacy stub"
+        );
+        assert_ne!(
+            result["model"], "glm-4.7",
+            "response must come from runtime, not legacy stub"
+        );
+        // Must contain real config fields.
+        assert!(result["provider"].is_string(), "should have provider field");
+        assert!(result["model"].is_string(), "should have model field");
+    }
+
+    /// End-to-end: verify unknown method returns -32601 through the TCP path.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_handle_connection_unknown_method_returns_error() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let manager = test_manager();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, &manager).await.unwrap();
+        });
+
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            let request = r#"{"jsonrpc":"2.0","id":2,"method":"nonexistent"}"#;
+            writer
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            line
+        });
+
+        server.await.unwrap();
+        let response_line = client.await.unwrap();
+
+        let resp: JsonRpcResponse = serde_json::from_str(response_line.trim()).unwrap();
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, ERR_METHOD_NOT_FOUND);
+        assert!(err.message.contains("nonexistent"));
     }
 }
