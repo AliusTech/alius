@@ -229,6 +229,8 @@ impl SessionManager {
     /// Sends on the stored oneshot and removes it; the awaiting loop resumes.
     /// Only restores status to `Running` if the run is still in
     /// `WaitingForApproval` — cancelled or terminal states are preserved.
+    /// The status check + update is atomic (under the same write lock) to
+    /// prevent a race with `cancel_run`.
     pub fn deliver_confirmation(
         &self,
         run_ref: &RunRef,
@@ -242,12 +244,21 @@ impl SessionManager {
         match state.confirmation.remove(tool_call_id) {
             Some(sender) => {
                 let _ = sender.send(approved);
-                let current_status = state.status.clone();
-                drop(runs);
 
+                // Atomic: check + update under the same lock.
                 // Only restore to Running if still in WaitingForApproval.
-                if current_status == RunStatus::WaitingForApproval {
-                    let _ = self.update_run_status(run_ref, RunStatus::Running);
+                if approved && state.status == RunStatus::WaitingForApproval {
+                    state.status = RunStatus::Running;
+                    // Propagate to session snapshot while still holding lock.
+                    let mut sessions = self.sessions.write().unwrap();
+                    for snapshot in sessions.values_mut() {
+                        for run in &mut snapshot.runs {
+                            if run.run_ref == *run_ref {
+                                run.status = RunStatus::Running;
+                                break;
+                            }
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -515,6 +526,51 @@ mod tests {
         assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Running);
 
         mgr.update_run_status(&run_ref, RunStatus::Failed).unwrap();
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn deliver_approved_does_not_overwrite_cancelled() {
+        // Simulate: cancel sets Cancelled, then deliver_confirmation is called
+        // with approved=true. The sender was dropped by cancel, so deliver
+        // returns Err. Status must remain Cancelled.
+        let (mgr, run_ref) = mgr_with_run();
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let (tx, _rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "tc-1", tx).unwrap();
+
+        // Cancel clears senders and sets Cancelled.
+        mgr.cancel_run(&run_ref).unwrap();
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Cancelled);
+
+        // deliver_confirmation with approved=true: sender gone → Err.
+        assert!(mgr.deliver_confirmation(&run_ref, "tc-1", true).is_err());
+        // Status must still be Cancelled.
+        assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn deliver_approved_does_not_overwrite_failed() {
+        // Simulate: an error sets Failed while confirmation is pending,
+        // then deliver_confirmation is called with approved=true.
+        // Status must remain Failed (not restored to Running).
+        let (mgr, run_ref) = mgr_with_run();
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "tc-2", tx).unwrap();
+
+        // An error sets Failed.
+        mgr.update_run_status(&run_ref, RunStatus::Failed).unwrap();
+
+        // Sender is still in the map (not cleared by cancel).
+        // deliver_confirmation with approved=true: sender consumed, status
+        // is Failed (not WaitingForApproval) → must NOT restore to Running.
+        mgr.deliver_confirmation(&run_ref, "tc-2", true).unwrap();
+        assert!(rx.await.unwrap()); // approved signal received
         assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Failed);
     }
 }
