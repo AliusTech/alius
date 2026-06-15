@@ -6,6 +6,10 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-16
+
+[2026-06-16 01:00] Alius: entrypoints/jsonrpc/src/lib.rs + .alius/workspace/SPEC.md - P4-2 JSON-RPC run control: added run_start (starts streaming run, returns run_ref), run_subscribe (returns event snapshot), run_cancel (cancels run) methods; all through CoreRuntimeManager, no legacy stub path; param validation returns -32602 for missing/invalid text, mode, run_ref; TCP integration test for run_start+run_subscribe flow; 31 jsonrpc tests total.
+
 ## 2026-06-15
 
 [2026-06-15 23:59] Alius: entrypoints/jsonrpc/src/lib.rs + entrypoints/jsonrpc/Cargo.toml + .alius/workspace/SPEC.md - P4-1 JSON-RPC runtime-backed protocol surface: serve() now creates CoreRuntimeManager with RuntimeManagerContext::json_rpc() and passes it to serve_with_runtime(); dispatch_with_runtime() expanded with model_list and tool_list methods; config_read returns real runtime config, not hardcoded; invalid_params helper added with -32602 error code; SPEC.md F-011 updated; 18 jsonrpc tests passing.

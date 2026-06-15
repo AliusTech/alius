@@ -123,12 +123,15 @@ Alius must document the current JSON-RPC entrypoint accurately.
 Acceptance criteria:
 
 - Documentation covers `dispatch`, `dispatch_with_runtime`, `serve`, and `serve_with_runtime`.
-- Documentation lists implemented methods: `health_check`, `config_read`, `model_list`, `tool_list`, `version`.
+- Documentation lists implemented methods: `health_check`, `config_read`, `model_list`, `tool_list`, `version`, `run_start`, `run_subscribe`, `run_cancel`.
 - `config_read` in the server path returns real runtime configuration through `CoreRuntimeManager::config_read()`, not hardcoded values.
 - `model_list` returns the model library via `CoreRuntimeManager::model_list()`.
 - `tool_list` returns registered tools via `CoreRuntimeManager::tool_list()`.
+- `run_start` starts a streaming run via `CoreRuntimeManager::start_streaming()` and returns a `run_ref`. Default mode is `Chat`.
+- `run_subscribe` returns a snapshot of events for a run via `CoreRuntimeManager::subscribe()`. Does not support push or long-polling.
+- `run_cancel` cancels a run via `CoreRuntimeManager::cancel()`.
 - JSON-RPC error codes follow the standard: `-32601` (method not found), `-32602` (invalid params), `-32000` (runtime error).
-- Documentation states that the current implementation does not support streaming, event subscription, or long-lived connections.
+- The implementation does not support server push, continuous subscription, or long-lived connections.
 
 ## F-012 Documentation Maintenance
 

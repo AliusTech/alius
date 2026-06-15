@@ -13,6 +13,7 @@
 
 use anyhow::Result;
 use core_runtime::{CoreRuntimeManager, RuntimeManagerContext};
+use protocol_interface::core::{RunRef, RuntimeMode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::net::SocketAddr;
@@ -102,6 +103,9 @@ pub fn dispatch(request: &JsonRpcRequest) -> JsonRpcResponse {
 /// - `model_list`   → `CoreRuntimeManager::model_list()`
 /// - `tool_list`    → `CoreRuntimeManager::tool_list()`
 /// - `version`      → local crate version (no runtime)
+/// - `run_start`    → `CoreRuntimeManager::start_streaming()`
+/// - `run_subscribe`→ `CoreRuntimeManager::subscribe()` (snapshot)
+/// - `run_cancel`   → `CoreRuntimeManager::cancel()`
 pub fn dispatch_with_runtime(
     request: &JsonRpcRequest,
     manager: &CoreRuntimeManager,
@@ -127,7 +131,95 @@ pub fn dispatch_with_runtime(
             request,
             serde_json::json!({"version": env!("CARGO_PKG_VERSION")}),
         ),
+        "run_start" => handle_run_start(request, manager),
+        "run_subscribe" => handle_run_subscribe(request, manager),
+        "run_cancel" => handle_run_cancel(request, manager),
         _ => method_not_found(request),
+    }
+}
+
+/// `run_start`: Start a streaming run.
+/// Params: `{"text": "...", "mode": "Chat"|"Plan"}`
+/// Returns: `{"run_ref": "...", "trace_id": "..."}`
+fn handle_run_start(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
+    let text = match request.params.get("text").and_then(|v| v.as_str()) {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return invalid_params(request, "params.text is required and must be non-empty"),
+    };
+    let mode = match request.params.get("mode").and_then(|v| v.as_str()) {
+        Some("Chat") => RuntimeMode::Chat,
+        Some("Plan") => RuntimeMode::Plan,
+        Some(other) => {
+            return invalid_params(
+                request,
+                format!("params.mode must be 'Chat' or 'Plan', got '{other}'"),
+            )
+        }
+        None => RuntimeMode::Chat, // default
+    };
+
+    match manager.start_streaming(text, mode) {
+        Ok((run_ref, _rx)) => {
+            // _rx is the event receiver — we don't stream it over this TCP line.
+            // The caller uses run_subscribe to poll events.
+            success(
+                request,
+                serde_json::json!({
+                    "run_ref": run_ref.as_str(),
+                }),
+            )
+        }
+        Err(e) => runtime_error(request, e.to_string()),
+    }
+}
+
+/// `run_subscribe`: Return a snapshot of events for a run.
+/// Params: `{"run_ref": "..."}`
+/// Returns: `{"events": [...]}`
+fn handle_run_subscribe(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
+    let run_ref_str = match request.params.get("run_ref").and_then(|v| v.as_str()) {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return invalid_params(request, "params.run_ref is required"),
+    };
+    let run_ref = RunRef::from_existing(run_ref_str.to_string());
+
+    match manager.subscribe(&run_ref) {
+        Ok(envelopes) => {
+            let events: Vec<JsonValue> = envelopes
+                .into_iter()
+                .map(|env| {
+                    serde_json::json!({
+                        "event_id": env.payload.event_id.as_str(),
+                        "kind": serde_json::to_value(&env.payload.kind).unwrap_or_default(),
+                        "payload": serde_json::to_value(&env.payload.payload).unwrap_or_default(),
+                        "sequence": env.payload.sequence,
+                    })
+                })
+                .collect();
+            success(request, serde_json::json!({ "events": events }))
+        }
+        Err(e) => runtime_error(request, e.to_string()),
+    }
+}
+
+/// `run_cancel`: Cancel a running execution.
+/// Params: `{"run_ref": "...", "reason": "optional"}`
+/// Returns: `{"success": true}`
+fn handle_run_cancel(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
+    let run_ref_str = match request.params.get("run_ref").and_then(|v| v.as_str()) {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return invalid_params(request, "params.run_ref is required"),
+    };
+    let run_ref = RunRef::from_existing(run_ref_str.to_string());
+    let reason = request
+        .params
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    match manager.cancel(&run_ref, reason) {
+        Ok(()) => success(request, serde_json::json!({"success": true})),
+        Err(e) => runtime_error(request, e.to_string()),
     }
 }
 
@@ -551,5 +643,241 @@ mod tests {
         let err = resp.error.unwrap();
         assert_eq!(err.code, ERR_METHOD_NOT_FOUND);
         assert!(err.message.contains("nonexistent"));
+    }
+
+    // ── run_start / run_subscribe / run_cancel ───────────────────────
+
+    fn make_request_with_params(method: &str, params: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonValue::Number(1.into())),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_returns_run_ref() {
+        let manager = test_manager();
+        let params = serde_json::json!({"text": "hello", "mode": "Chat"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(
+            resp.error.is_none(),
+            "run_start should succeed: {:?}",
+            resp.error
+        );
+        let result = resp.result.unwrap();
+        assert!(result["run_ref"].is_string(), "should return run_ref");
+        assert!(!result["run_ref"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_default_mode_is_chat() {
+        let manager = test_manager();
+        let params = serde_json::json!({"text": "hello"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(resp.error.is_none());
+        assert!(resp.result.unwrap()["run_ref"].is_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_plan_mode() {
+        let manager = test_manager();
+        let params = serde_json::json!({"text": "hello", "mode": "Plan"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(resp.error.is_none());
+        assert!(resp.result.unwrap()["run_ref"].is_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_missing_text_returns_invalid_params() {
+        let manager = test_manager();
+        let params = serde_json::json!({"mode": "Chat"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, ERR_INVALID_PARAMS);
+        assert!(err.message.contains("text"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_empty_text_returns_invalid_params() {
+        let manager = test_manager();
+        let params = serde_json::json!({"text": "  ", "mode": "Chat"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_start_invalid_mode_returns_invalid_params() {
+        let manager = test_manager();
+        let params = serde_json::json!({"text": "hello", "mode": "Bogus"});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_start", params), &manager);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_subscribe_returns_events() {
+        let manager = test_manager();
+
+        // Start a run first to get a valid run_ref.
+        let start_params = serde_json::json!({"text": "test", "mode": "Chat"});
+        let start_resp = dispatch_with_runtime(
+            &make_request_with_params("run_start", start_params),
+            &manager,
+        );
+        let run_ref = start_resp.result.unwrap()["run_ref"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Give the streaming run a moment to produce events.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Subscribe to get the snapshot.
+        let sub_params = serde_json::json!({"run_ref": run_ref});
+        let sub_resp = dispatch_with_runtime(
+            &make_request_with_params("run_subscribe", sub_params),
+            &manager,
+        );
+        assert!(
+            sub_resp.error.is_none(),
+            "run_subscribe should succeed: {:?}",
+            sub_resp.error
+        );
+        let sub_result = sub_resp.result.unwrap();
+        let events = sub_result["events"].as_array().unwrap();
+        assert!(
+            !events.is_empty(),
+            "should have at least one event (RunStarted)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_subscribe_missing_run_ref_returns_invalid_params() {
+        let manager = test_manager();
+        let params = serde_json::json!({});
+        let resp =
+            dispatch_with_runtime(&make_request_with_params("run_subscribe", params), &manager);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_cancel_returns_success() {
+        let manager = test_manager();
+
+        // Start a run.
+        let start_params = serde_json::json!({"text": "test", "mode": "Plan"});
+        let start_resp = dispatch_with_runtime(
+            &make_request_with_params("run_start", start_params),
+            &manager,
+        );
+        let run_ref = start_resp.result.unwrap()["run_ref"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Cancel it.
+        let cancel_params = serde_json::json!({"run_ref": run_ref, "reason": "test"});
+        let cancel_resp = dispatch_with_runtime(
+            &make_request_with_params("run_cancel", cancel_params),
+            &manager,
+        );
+        assert!(
+            cancel_resp.error.is_none(),
+            "run_cancel should succeed: {:?}",
+            cancel_resp.error
+        );
+        assert_eq!(cancel_resp.result.unwrap()["success"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_run_cancel_missing_run_ref_returns_invalid_params() {
+        let manager = test_manager();
+        let params = serde_json::json!({});
+        let resp = dispatch_with_runtime(&make_request_with_params("run_cancel", params), &manager);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    /// End-to-end TCP: run_start returns a run_ref, run_subscribe returns events.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_tcp_run_start_subscribe_flow() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let manager = Arc::new(test_manager());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn server that handles 2 connections.
+        let mgr = manager.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let m = mgr.clone();
+                handle_connection(stream, &m).await.unwrap();
+            }
+        });
+
+        // Client: run_start
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            let req = r#"{"jsonrpc":"2.0","id":1,"method":"run_start","params":{"text":"hello"}}"#;
+            writer
+                .write_all(format!("{req}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let resp: JsonRpcResponse = serde_json::from_str(line.trim()).unwrap();
+            assert!(resp.error.is_none(), "run_start failed: {:?}", resp.error);
+            resp.result.unwrap()["run_ref"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        });
+
+        let run_ref = client.await.unwrap();
+
+        // Give the run a moment to produce events.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Client: run_subscribe
+        let client2 = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"run_subscribe","params":{{"run_ref":"{}"}}}}"#,
+                run_ref
+            );
+            writer
+                .write_all(format!("{req}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            line
+        });
+
+        let response_line = client2.await.unwrap();
+        server.await.unwrap();
+
+        let resp: JsonRpcResponse = serde_json::from_str(response_line.trim()).unwrap();
+        assert!(
+            resp.error.is_none(),
+            "run_subscribe failed: {:?}",
+            resp.error
+        );
+        let result = resp.result.unwrap();
+        let events = result["events"].as_array().unwrap();
+        assert!(!events.is_empty(), "should have events from the run");
     }
 }
