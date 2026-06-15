@@ -24,12 +24,12 @@ Primary paths:
 
 Chat mode uses `LoopPolicy::chat()`:
 
-- one iteration
-- tools disabled
+- up to 10 bounded tool-call continuations within one user turn
+- tools enabled
 - planning disabled
 - convergence check enabled
 
-It performs a single streaming model call and emits model delta plus final result events.
+It does not perform Plan-style goal decomposition or approved plan-node execution. Tool calls are allowed inside the same user turn so tool results can be returned to the model before the final answer.
 
 ## Plan Mode
 
@@ -53,4 +53,3 @@ The tool step emits:
 - `ToolCallCompleted`
 
 Do not assume complete user approval UI integration on every product path.
-

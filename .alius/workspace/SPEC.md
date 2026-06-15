@@ -60,7 +60,7 @@ Acceptance criteria:
 
 - Documentation covers `CoreRuntime`, `CoreRuntimeBuilder`, `SessionManager`, `LoopEngine`, and `EventAdapter`.
 - Documentation describes the current chain from `ProtocolBridge` to `ProtocolInterface` to `CoreRuntime` to `LoopEngine`.
-- Documentation states that Chat mode is a single-pass model call and Plan mode can use multiple tool-enabled iterations when a tool registry is present.
+- Documentation states that Chat/Bypass mode is one user turn with bounded tool-call continuations, tools enabled, and planning disabled; Plan mode is goal-oriented and may use multiple tool-enabled iterations after an executable plan is approved.
 
 ## F-006 Configuration System
 

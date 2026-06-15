@@ -34,6 +34,8 @@ All entries use the format:
 
 [2026-06-15 14:00] Alius: runtime/mcp + runtime/tools - Implemented MCP v2024-11-05 protocol client, tool bridge adapter, and CLI command scaffolds for server management. Core runtime integration pending.
 
+[2026-06-15 17:14] Codex: .alius/workspace/SPEC.md, .alius/workspace/docs/modules/loop-engine.md - Clarified Chat/Bypass as a single user turn with bounded tool-call continuations, tools enabled, and planning disabled.
+
 ## 2026-06-13
 
 [2026-06-13 23:41] Alius: entrypoints/cli + runtime/config - Added /config overview list as the landing section (status-marked entries for Models/Language/Soul + Save/Cancel) and made /init auto-create .alius on fresh workspaces without a project-structure prompt; existing .alius now offers only Reinitialize/Exit.

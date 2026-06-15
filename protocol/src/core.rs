@@ -408,7 +408,7 @@ pub struct LoopPolicy {
 impl LoopPolicy {
     pub fn chat() -> Self {
         Self {
-            max_iterations: 1,
+            max_iterations: 10,
             tools_enabled: true,
             planning_enabled: false,
             require_convergence_check: true,
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn loop_policy_presets_match_runtime_modes() {
         let chat = LoopPolicy::chat();
-        assert_eq!(chat.max_iterations, 1);
+        assert_eq!(chat.max_iterations, 10);
         assert!(chat.tools_enabled);
         assert!(!chat.planning_enabled);
         assert!(chat.require_convergence_check);
