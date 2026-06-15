@@ -1145,40 +1145,51 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn streaming_run_marks_completed() {
         let rt = test_runtime();
-        let request = CoreRequest::run_loop("test", RuntimeMode::Chat, LoopPolicy::chat()).unwrap();
+        // Use stub mode to avoid dependency on real API
+        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
         let envelope =
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
 
         let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
 
-        // Wait for FinalResult and check if success
-        let mut found_success_final = false;
+        // Collect all events and check for FinalResult
+        let mut final_success: Option<bool> = None;
         while let Ok(Some(event)) =
             tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
         {
             if event.kind == CoreEventKind::FinalResult {
-                if let CoreEventPayload::Final { success: true, .. } = event.payload {
-                    found_success_final = true;
+                if let CoreEventPayload::Final { success, .. } = event.payload {
+                    final_success = Some(success);
                 }
                 break;
             }
         }
 
-        // Check that FinalResult(success=true) maps to Completed status
-        if found_success_final {
-            let sessions = rt
-                .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
-                .unwrap();
-            if let Some(session) = sessions.first() {
-                let snapshot = rt.inspect(&session.session_ref).unwrap();
-                let run = snapshot.runs.iter().find(|r| r.run_ref == run_ref).unwrap();
-                assert_eq!(
-                    run.status,
-                    RunStatus::Completed,
-                    "FinalResult(success=true) should map to Completed"
-                );
-                assert!(run.finished_at.is_some(), "finished_at should be set");
-            }
+        // Verify we received a FinalResult
+        assert!(final_success.is_some(), "Should receive FinalResult event");
+
+        // Verify status matches the FinalResult success value
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        if let Some(session) = sessions.first() {
+            let snapshot = rt.inspect(&session.session_ref).unwrap();
+            let run = snapshot.runs.iter().find(|r| r.run_ref == run_ref).unwrap();
+
+            let expected_status = if final_success.unwrap() {
+                RunStatus::Completed
+            } else {
+                RunStatus::Failed
+            };
+
+            assert_eq!(
+                run.status,
+                expected_status,
+                "Status should match FinalResult: success={} should map to {:?}",
+                final_success.unwrap(),
+                expected_status
+            );
+            assert!(run.finished_at.is_some(), "finished_at should be set");
         }
     }
 

@@ -54,9 +54,10 @@ pub async fn execute_chat(
                     CoreEventKind::ErrorRaised,
                     CoreEventPayload::Error {
                         code: "chat_error".to_string(),
-                        message,
+                        message: message.clone(),
                     },
                 ));
+                return Err(ProtocolError::Internal(message));
             }
             Err(e) => {
                 *sequence += 1;
@@ -70,6 +71,7 @@ pub async fn execute_chat(
                         message: e.to_string(),
                     },
                 ));
+                return Err(ProtocolError::Internal(e.to_string()));
             }
         }
     }
@@ -105,6 +107,7 @@ pub async fn continue_with_tool_results(
     client: &LlmClient,
     conversation: &Conversation,
     tool_results: &[(String, String, String)],
+    assistant_tool_calls: Vec<runtime_model::ToolCall>,
     tools: Vec<ToolDef>,
     event_sink: &mut dyn FnMut(CoreEvent),
     run_ref: &RunRef,
@@ -112,7 +115,12 @@ pub async fn continue_with_tool_results(
     sequence: &mut u64,
 ) -> Result<ModelStepResult, ProtocolError> {
     let (stream, tool_calls) = client
-        .continue_with_tool_results(conversation, tool_results.to_vec(), tools)
+        .continue_with_tool_results(
+            conversation,
+            tool_results.to_vec(),
+            assistant_tool_calls,
+            tools,
+        )
         .await
         .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 
@@ -158,9 +166,10 @@ async fn collect_stream(
                     CoreEventKind::ErrorRaised,
                     CoreEventPayload::Error {
                         code: "chat_error".to_string(),
-                        message,
+                        message: message.clone(),
                     },
                 ));
+                return Err(ProtocolError::Internal(message));
             }
             Err(e) => {
                 *sequence += 1;
@@ -174,6 +183,7 @@ async fn collect_stream(
                         message: e.to_string(),
                     },
                 ));
+                return Err(ProtocolError::Internal(e.to_string()));
             }
         }
     }
