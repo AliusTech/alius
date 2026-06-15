@@ -99,6 +99,8 @@ impl ToolPackageResolver {
 
     pub fn build_registry(&self) -> Result<ToolRegistry> {
         let mut registry = ToolRegistry::new();
+        // Always register native tools first
+        crate::native::register_native_tools(&mut registry);
         for package in self.list_installed_packages()? {
             let wasm_bytes = std::fs::read(&package.wasm_path)?;
             let tools = WasmPluginTool::from_wasm_bytes(&wasm_bytes)?;
@@ -114,7 +116,10 @@ impl ToolPackageResolver {
             Ok(registry) => registry,
             Err(err) => {
                 eprintln!("[warn] Failed to load Rust WASM tools: {err}");
-                ToolRegistry::new()
+                // Still register native tools even if WASM loading fails
+                let mut registry = ToolRegistry::new();
+                crate::native::register_native_tools(&mut registry);
+                registry
             }
         }
     }

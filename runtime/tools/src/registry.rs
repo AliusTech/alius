@@ -77,3 +77,52 @@ impl Default for ToolRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native;
+
+    #[test]
+    fn test_native_tools_registered() {
+        let mut registry = ToolRegistry::new();
+        native::register_native_tools(&mut registry);
+
+        // Check that all native tools are registered
+        assert!(registry.has("shell"));
+        assert!(registry.has("read_file"));
+        assert!(registry.has("write_file"));
+        assert!(registry.has("list_dir"));
+        assert!(registry.has("edit_file"));
+    }
+
+    #[test]
+    fn test_get_native_tools() {
+        let mut registry = ToolRegistry::new();
+        native::register_native_tools(&mut registry);
+
+        // Test get() for native tools
+        let shell = registry.get("shell");
+        assert!(shell.is_some());
+        assert_eq!(shell.unwrap().name(), "shell");
+
+        let read_file = registry.get("read_file");
+        assert!(read_file.is_some());
+        assert_eq!(read_file.unwrap().name(), "read_file");
+    }
+
+    #[test]
+    fn test_to_tool_defs_includes_native() {
+        let mut registry = ToolRegistry::new();
+        native::register_native_tools(&mut registry);
+
+        let tool_defs = registry.to_tool_defs();
+        let names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
+
+        assert!(names.contains(&"shell".to_string()));
+        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"write_file".to_string()));
+        assert!(names.contains(&"list_dir".to_string()));
+        assert!(names.contains(&"edit_file".to_string()));
+    }
+}

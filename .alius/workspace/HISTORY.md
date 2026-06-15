@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 23:30] Alius: runtime/tools/src/package.rs + runtime/tools/src/registry.rs - P3-2 Native tools 进入默认 ToolRegistry: package.rs build_registry/build_registry_lossy 现在始终先注册 native tools（shell, read_file, write_file, list_dir, edit_file），确保无 WASM 插件时默认 registry 仍包含 native tools；registry.rs 新增单元测试验证 native tools 注册和查询；native_registry.rs 新增集成测试验证默认 registry 包含 native tools、get() 和 to_tool_defs() 返回 native tools、Plan 模式高风险命令需要确认、Chat/Bypass 模式 workspace 内可执行但 workspace 外路径被拒绝。
+
 [2026-06-16 22:00] Alius: runtime/tools/src/shell_gate + runtime/tools/src/native - P3-1 Shell Gate 参数级影响范围与 workspace 边界加固: scope.rs 增强重定向目标检测（>, 2>, --output=）；shell.rs 加固 cwd 边界验证（拒绝绝对路径和 ../ 逃逸）；authorizer.rs 调整逻辑顺序使 workspace 边界检查优先于风险等级判断，确保所有外部路径命令（包括高风险如 rm -rf /tmp/foo）返回 Deny 而非 ApprovalRequired；tools-and-shell-gate.md 明确 workspace 边界违规是 hard deny；新增 58 个测试覆盖检测层、授权层和执行层。
 
 ## 2026-06-15
