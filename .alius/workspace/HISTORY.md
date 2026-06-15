@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-15
 
+[2026-06-15 18:45] Alius: .alius/workspace/docs/modules/tools-and-shell-gate.md - P3-3 doc fix: corrected audit failure event from ErrorRaised to LogRecordEmitted to match implementation; clarified these are non-status-changing diagnostic events with monotonic sequences.
+
 [2026-06-15 18:30] Alius: runtime/core/src/loop_engine/tool_step.rs + runtime/core/src/loop_engine/engine.rs + runtime/core/src/loop_engine/context.rs + runtime/core/src/runtime.rs - P3-3 structured denial, fail-fast, audit wiring: ToolBatchResult replaces Vec return — engine uses batch_denied field instead of fragile string matching; ConfirmationDecision enum (Approved/Denied/Cancelled/Unavailable); execute_tools aborts batch on first denial; LogWriter wired through LoopContext from CoreRuntime (workspace_ref.root/.alius/logs) into real Plan/Chat paths; audit_confirmation uses LogRecordEmitted (non-status-changing) on failure with monotonic sequence; engine-level plan_denial_produces_error_and_failed_final test; audit_failure_uses_log_record_emitted test verifies no ErrorRaised and no sequence=0; 30 engine+tool_step tests total.
 
 [2026-06-15 18:00] Alius: runtime/core/src/session.rs + runtime/core/src/logging/audit.rs - P3-3 session terminal-state and audit: deliver_confirmation atomic check+update prevents cancel_run race; ConfirmationDecision reason preserved; get_run_status accessor; audit::log_confirmation; 11 session tests + 7 audit tests.
