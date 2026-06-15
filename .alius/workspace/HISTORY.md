@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-15
 
+[2026-06-15 23:59] Alius: entrypoints/jsonrpc/src/lib.rs + entrypoints/jsonrpc/Cargo.toml + .alius/workspace/SPEC.md - P4-1 JSON-RPC runtime-backed protocol surface: serve() now creates CoreRuntimeManager with RuntimeManagerContext::json_rpc() and passes it to serve_with_runtime(); dispatch_with_runtime() expanded with model_list and tool_list methods; config_read returns real runtime config, not hardcoded; invalid_params helper added with -32602 error code; SPEC.md F-011 updated; 18 jsonrpc tests passing.
+
 [2026-06-15 23:56] Codex: runtime/core/src/loop_engine/engine.rs + runtime/model/src/client.rs - P3-3 test hardening: upgraded Chat denial test to run LoopEngine::run and assert ToolConfirmationRequired -> ToolCallCompleted -> ErrorRaised(tool_denied) -> FinalResult(success=false); added hidden provider injection constructor for engine tests.
 
 [2026-06-15 18:50] Alius: runtime/core/src/loop_engine/engine.rs - P3-3 Chat path denial parity: run_chat_with_tools now emits ErrorRaised(code: "tool_denied") before FinalResult(success: false) on batch denial, matching Plan path semantics; added chat_denial_batch_returns_denied test; 31 engine+tool_step tests total.

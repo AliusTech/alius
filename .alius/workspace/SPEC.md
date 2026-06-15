@@ -122,9 +122,13 @@ Alius must document the current JSON-RPC entrypoint accurately.
 
 Acceptance criteria:
 
-- Documentation covers `dispatch` and `serve`.
-- Documentation lists implemented methods such as `health_check`, `config_read`, and `version`.
-- Documentation states that the current implementation is lightweight and does not expose the full Core Runtime protocol surface.
+- Documentation covers `dispatch`, `dispatch_with_runtime`, `serve`, and `serve_with_runtime`.
+- Documentation lists implemented methods: `health_check`, `config_read`, `model_list`, `tool_list`, `version`.
+- `config_read` in the server path returns real runtime configuration through `CoreRuntimeManager::config_read()`, not hardcoded values.
+- `model_list` returns the model library via `CoreRuntimeManager::model_list()`.
+- `tool_list` returns registered tools via `CoreRuntimeManager::tool_list()`.
+- JSON-RPC error codes follow the standard: `-32601` (method not found), `-32602` (invalid params), `-32000` (runtime error).
+- Documentation states that the current implementation does not support streaming, event subscription, or long-lived connections.
 
 ## F-012 Documentation Maintenance
 
