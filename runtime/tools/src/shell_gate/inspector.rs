@@ -40,7 +40,7 @@ const ELEVATION_COMMANDS: &[&str] = &["sudo", "su", "doas", "pkexec"];
 /// Commands that are always Low risk.
 const LOW_RISK_COMMANDS: &[&str] = &[
     "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", "diff", "echo", "pwd",
-    "whoami", "which", "type", "stat", "file", "git", "tree", "rg", "ag", "fd", "bat",
+    "whoami", "which", "type", "stat", "file", "tree", "rg", "ag", "fd", "bat",
 ];
 
 /// Parse a shell command string into a ShellInspection.
@@ -134,6 +134,10 @@ pub fn classify_risk(base_command: &str, args: &[String], raw: &str) -> RiskLeve
         return RiskLevel::Medium;
     }
 
+    if cmd_lower == "git" {
+        return classify_git_risk(args);
+    }
+
     // Known low-risk commands
     if LOW_RISK_COMMANDS.contains(&cmd_lower.as_str()) {
         return RiskLevel::Low;
@@ -153,6 +157,41 @@ pub fn classify_risk(base_command: &str, args: &[String], raw: &str) -> RiskLeve
 
     // Default to Medium for unrecognized commands
     RiskLevel::Medium
+}
+
+fn classify_git_risk(args: &[String]) -> RiskLevel {
+    let Some(subcommand) = git_subcommand(args) else {
+        return RiskLevel::Low;
+    };
+
+    match subcommand {
+        "status" | "log" | "diff" | "show" | "branch" => RiskLevel::Low,
+        "clean" => RiskLevel::High,
+        "reset" if args.iter().any(|arg| arg == "--hard") => RiskLevel::High,
+        "clone" | "fetch" | "pull" | "submodule" => RiskLevel::Medium,
+        "push" | "checkout" | "switch" | "merge" | "rebase" | "reset" | "restore" | "add"
+        | "commit" => RiskLevel::Medium,
+        _ => RiskLevel::Medium,
+    }
+}
+
+fn git_subcommand(args: &[String]) -> Option<&str> {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-C" | "--git-dir" | "--work-tree" => {
+                index += 2;
+            }
+            arg if arg.starts_with("--git-dir=") || arg.starts_with("--work-tree=") => {
+                index += 1;
+            }
+            arg if arg.starts_with('-') => {
+                index += 1;
+            }
+            arg => return Some(arg),
+        }
+    }
+    None
 }
 
 /// Simple shell tokenizer — handles double-quoted strings and basic splitting.
@@ -238,6 +277,27 @@ mod tests {
         let req = make_request("git status");
         let inspection = parse_command(&req);
         assert_eq!(inspection.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_git_clone_is_medium_risk() {
+        let req = make_request("git clone https://github.com/lc345/repo.git");
+        let inspection = parse_command(&req);
+        assert_eq!(inspection.risk_level, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn test_git_global_option_then_status_is_low_risk() {
+        let req = make_request("git -C repo status");
+        let inspection = parse_command(&req);
+        assert_eq!(inspection.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_git_reset_hard_is_high_risk() {
+        let req = make_request("git reset --hard HEAD");
+        let inspection = parse_command(&req);
+        assert_eq!(inspection.risk_level, RiskLevel::High);
     }
 
     #[test]

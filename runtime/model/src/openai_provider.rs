@@ -1,13 +1,16 @@
 //! OpenAI-compatible provider implementation.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use async_openai::{
     config::OpenAIConfig,
     types::{
-        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionToolArgs, ChatCompletionToolType,
-        CreateChatCompletionRequestArgs, FunctionObjectArgs,
+        ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionToolArgs, ChatCompletionToolType, CreateChatCompletionRequestArgs,
+        FunctionCall, FunctionObjectArgs,
     },
     Client,
 };
@@ -38,7 +41,10 @@ impl OpenAiProvider {
             .with_api_key(api_key)
             .with_api_base(normalize_openai_api_base(&config.get_base_url()));
 
-        let client = Client::with_config(openai_config);
+        let http_client = reqwest::Client::builder()
+            .user_agent(crate::http::user_agent())
+            .build()?;
+        let client = Client::with_config(openai_config).with_http_client(http_client);
 
         Ok(Self {
             inner: client,
@@ -81,13 +87,42 @@ impl OpenAiProvider {
                     );
                 }
                 MessageRole::Assistant => {
-                    messages.push(
-                        ChatCompletionRequestAssistantMessageArgs::default()
-                            .content(&msg.content)
-                            .build()
-                            .expect("Failed to build assistant message")
-                            .into(),
-                    );
+                    if let Some(calls) = &msg.tool_calls {
+                        let tool_calls = calls
+                            .iter()
+                            .map(|c| {
+                                openai_tool_call(c.id.clone(), c.name.clone(), c.arguments.clone())
+                            })
+                            .collect::<Vec<_>>();
+                        messages.push(
+                            ChatCompletionRequestAssistantMessageArgs::default()
+                                .content(&msg.content)
+                                .tool_calls(tool_calls)
+                                .build()
+                                .expect("Failed to build assistant tool_calls message")
+                                .into(),
+                        );
+                    } else {
+                        messages.push(
+                            ChatCompletionRequestAssistantMessageArgs::default()
+                                .content(&msg.content)
+                                .build()
+                                .expect("Failed to build assistant message")
+                                .into(),
+                        );
+                    }
+                }
+                MessageRole::Tool => {
+                    if let Some(tool_call_id) = msg.tool_call_id.as_deref() {
+                        messages.push(
+                            ChatCompletionRequestToolMessageArgs::default()
+                                .tool_call_id(tool_call_id)
+                                .content(msg.content.as_str())
+                                .build()
+                                .expect("Failed to build tool message")
+                                .into(),
+                        );
+                    }
                 }
                 MessageRole::Summary => {
                     messages.push(
@@ -102,6 +137,33 @@ impl OpenAiProvider {
         }
 
         messages
+    }
+
+    fn build_continue_messages(
+        &self,
+        conversation: &Conversation,
+        tool_results: &[(String, String, String)],
+        assistant_tool_calls: &[ToolCall],
+    ) -> Result<Vec<ChatCompletionRequestMessage>> {
+        let normalized_tool_results =
+            normalize_provider_tool_results(assistant_tool_calls, tool_results)?;
+        let mut messages = self.build_messages(conversation);
+
+        if !conversation_ends_with_tool_calls(conversation, assistant_tool_calls) {
+            messages.push(assistant_tool_calls_message(assistant_tool_calls)?);
+        }
+
+        for (call_id, _tool_name, result) in normalized_tool_results {
+            messages.push(
+                ChatCompletionRequestToolMessageArgs::default()
+                    .tool_call_id(call_id)
+                    .content(result.as_str())
+                    .build()?
+                    .into(),
+            );
+        }
+
+        Ok(messages)
     }
 
     /// Convert ToolDef list to OpenAI tool format.
@@ -376,6 +438,7 @@ impl LlmProvider for OpenAiProvider {
         &'a self,
         conversation: &'a Conversation,
         tool_results: &'a [(String, String, String)],
+        assistant_tool_calls: &'a [ToolCall],
         tools: &'a [ToolDef],
     ) -> std::pin::Pin<
         Box<
@@ -385,27 +448,107 @@ impl LlmProvider for OpenAiProvider {
         >,
     > {
         Box::pin(async move {
-            let mut messages = self.build_messages(conversation);
-
-            for (call_id, _tool_name, result) in tool_results {
-                messages.push(
-                    ChatCompletionRequestToolMessageArgs::default()
-                        .tool_call_id(call_id)
-                        .content(result.as_str())
-                        .build()?
-                        .into(),
-                );
-            }
-
+            let messages =
+                self.build_continue_messages(conversation, tool_results, assistant_tool_calls)?;
             self.do_tool_request(messages, tools).await
         })
     }
 }
 
+fn openai_tool_call(id: String, name: String, arguments: String) -> ChatCompletionMessageToolCall {
+    ChatCompletionMessageToolCall {
+        id,
+        r#type: ChatCompletionToolType::Function,
+        function: FunctionCall { name, arguments },
+    }
+}
+
+fn assistant_tool_calls_message(
+    assistant_tool_calls: &[ToolCall],
+) -> Result<ChatCompletionRequestMessage> {
+    validate_assistant_tool_calls(assistant_tool_calls)?;
+    let tool_calls = assistant_tool_calls
+        .iter()
+        .map(|call| openai_tool_call(call.id.clone(), call.name.clone(), call.args.to_string()))
+        .collect::<Vec<_>>();
+
+    Ok(ChatCompletionRequestAssistantMessageArgs::default()
+        .content("")
+        .tool_calls(tool_calls)
+        .build()?
+        .into())
+}
+
+fn conversation_ends_with_tool_calls(
+    conversation: &Conversation,
+    assistant_tool_calls: &[ToolCall],
+) -> bool {
+    let Some(last) = conversation.messages().last() else {
+        return false;
+    };
+    if last.role != MessageRole::Assistant {
+        return false;
+    }
+    let Some(message_tool_calls) = &last.tool_calls else {
+        return false;
+    };
+    if message_tool_calls.len() != assistant_tool_calls.len() {
+        return false;
+    }
+    message_tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .eq(assistant_tool_calls.iter().map(|call| call.id.as_str()))
+}
+
+fn validate_assistant_tool_calls(assistant_tool_calls: &[ToolCall]) -> Result<()> {
+    if assistant_tool_calls.is_empty() {
+        anyhow::bail!("missing assistant tool_calls for tool result continuation");
+    }
+
+    let mut seen = HashSet::new();
+    for call in assistant_tool_calls {
+        if call.id.trim().is_empty() {
+            anyhow::bail!(
+                "model returned an empty tool_call_id for tool '{}'",
+                call.name
+            );
+        }
+        if !seen.insert(call.id.as_str()) {
+            anyhow::bail!("model returned duplicate tool_call_id '{}'", call.id);
+        }
+    }
+    Ok(())
+}
+
+fn normalize_provider_tool_results(
+    assistant_tool_calls: &[ToolCall],
+    tool_results: &[(String, String, String)],
+) -> Result<Vec<(String, String, String)>> {
+    validate_assistant_tool_calls(assistant_tool_calls)?;
+
+    let by_id = tool_results
+        .iter()
+        .map(|(call_id, name, result)| (call_id.as_str(), (name.as_str(), result.as_str())))
+        .collect::<HashMap<_, _>>();
+
+    assistant_tool_calls
+        .iter()
+        .map(|call| {
+            by_id
+                .get(call.id.as_str())
+                .map(|(name, result)| (call.id.clone(), (*name).to_string(), (*result).to_string()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing tool result for tool_call_id '{}'", call.id)
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol_interface::ProviderType;
+    use protocol_interface::{MessageToolCall, ProviderType};
     use runtime_config::LlmSettings;
 
     fn test_settings() -> LlmSettings {
@@ -472,5 +615,154 @@ mod tests {
         let result = provider.build_tools(&tools);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn test_openai_tool_result_follows_tool_call_message() {
+        let settings = test_settings();
+        let provider = OpenAiProvider::new(&settings).unwrap();
+        let mut conversation = Conversation::new(None);
+        conversation.add_user_message("读取 README.md 并总结".to_string());
+        conversation.add_assistant_with_tools(
+            String::new(),
+            vec![MessageToolCall {
+                id: "call-readme".to_string(),
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"README.md"}"#.to_string(),
+            }],
+        );
+
+        let mut messages = provider.build_messages(&conversation);
+        messages.push(
+            ChatCompletionRequestToolMessageArgs::default()
+                .tool_call_id("call-readme")
+                .content("# README\n")
+                .build()
+                .unwrap()
+                .into(),
+        );
+        let values = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0]["role"], "user");
+        assert_eq!(values[1]["role"], "assistant");
+        assert!(values[1]["tool_calls"].is_array());
+        assert_eq!(values[1]["tool_calls"][0]["id"], "call-readme");
+        assert_eq!(values[2]["role"], "tool");
+        assert_eq!(values[2]["tool_call_id"], "call-readme");
+    }
+
+    #[test]
+    fn test_openai_rebuilds_missing_assistant_tool_call_frame() {
+        let settings = test_settings();
+        let provider = OpenAiProvider::new(&settings).unwrap();
+        let mut conversation = Conversation::new(None);
+        conversation.add_user_message("执行 git clone".to_string());
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            serde_json::json!({"command": "git clone https://github.com/lc345/repo.git"}),
+        )];
+        let tool_results = vec![(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            "[exit:0]\n".to_string(),
+        )];
+
+        let messages = provider
+            .build_continue_messages(&conversation, &tool_results, &assistant_tool_calls)
+            .unwrap();
+        let values = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[1]["role"], "assistant");
+        assert_eq!(values[1]["tool_calls"][0]["id"], "call-shell");
+        assert_eq!(values[2]["role"], "tool");
+        assert_eq!(values[2]["tool_call_id"], "call-shell");
+    }
+
+    #[test]
+    fn test_openai_preserves_previous_tool_result_frames() {
+        let settings = test_settings();
+        let provider = OpenAiProvider::new(&settings).unwrap();
+        let mut conversation = Conversation::new(None);
+        conversation.add_user_message("clone and inspect".to_string());
+        conversation.add_assistant_with_tools(
+            String::new(),
+            vec![MessageToolCall {
+                id: "call-clone".to_string(),
+                name: "shell".to_string(),
+                arguments: r#"{"command":"git clone https://github.com/AliusTech/alius.git"}"#
+                    .to_string(),
+            }],
+        );
+        conversation.add_tool_result(
+            "call-clone".to_string(),
+            "shell".to_string(),
+            "[exit:0]\nCloning into 'alius'".to_string(),
+        );
+        conversation.add_assistant_with_tools(
+            String::new(),
+            vec![MessageToolCall {
+                id: "call-list".to_string(),
+                name: "list_dir".to_string(),
+                arguments: r#"{"path":"alius"}"#.to_string(),
+            }],
+        );
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-list".to_string(),
+            "list_dir".to_string(),
+            serde_json::json!({"path": "alius"}),
+        )];
+        let tool_results = vec![(
+            "call-list".to_string(),
+            "list_dir".to_string(),
+            "dir .git\nfile README.md".to_string(),
+        )];
+
+        let messages = provider
+            .build_continue_messages(&conversation, &tool_results, &assistant_tool_calls)
+            .unwrap();
+        let values = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values.len(), 5);
+        assert_eq!(values[0]["role"], "user");
+        assert_eq!(values[1]["role"], "assistant");
+        assert_eq!(values[1]["tool_calls"][0]["id"], "call-clone");
+        assert_eq!(values[2]["role"], "tool");
+        assert_eq!(values[2]["tool_call_id"], "call-clone");
+        assert_eq!(values[3]["role"], "assistant");
+        assert_eq!(values[3]["tool_calls"][0]["id"], "call-list");
+        assert_eq!(values[4]["role"], "tool");
+        assert_eq!(values[4]["tool_call_id"], "call-list");
+    }
+
+    #[test]
+    fn test_openai_rejects_missing_tool_result_before_request() {
+        let settings = test_settings();
+        let provider = OpenAiProvider::new(&settings).unwrap();
+        let conversation = Conversation::new(None);
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            serde_json::json!({"command": "git status"}),
+        )];
+
+        let err = provider
+            .build_continue_messages(&conversation, &[], &assistant_tool_calls)
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("missing tool result for tool_call_id 'call-shell'"));
     }
 }

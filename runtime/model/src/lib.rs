@@ -13,6 +13,7 @@
 pub mod client;
 
 mod endpoint;
+mod http;
 
 /// Conversation history management.
 pub mod conversation;

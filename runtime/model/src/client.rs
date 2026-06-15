@@ -253,7 +253,10 @@ impl LlmClient {
             }
         }
 
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(crate::http::user_agent())
+            .build()
+            .expect("failed to build model list HTTP client");
 
         let models = if uses_anthropic_protocol(&self.provider_type, &self.provider_mode) {
             let base_url = normalize_anthropic_api_base(base_url);
@@ -354,10 +357,11 @@ impl LlmClient {
         &self,
         conversation: &Conversation,
         tool_results: Vec<(String, String, String)>,
+        assistant_tool_calls: Vec<ToolCall>,
         tools: Vec<ToolDef>,
     ) -> Result<(ChatStream, Option<Vec<ToolCall>>)> {
         self.provider
-            .continue_with_tool_results(conversation, &tool_results, &tools)
+            .continue_with_tool_results(conversation, &tool_results, &assistant_tool_calls, &tools)
             .await
     }
 }

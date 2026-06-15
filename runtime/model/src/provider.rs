@@ -43,10 +43,14 @@ pub trait LlmProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>>;
 
     /// Continue with tool results — multi-round tool calling.
+    /// `assistant_tool_calls` is the previous assistant turn's tool calls (used to
+    /// reconstruct the assistant message that precedes the tool-result messages,
+    /// which OpenAI-compatible APIs require).
     fn continue_with_tool_results<'a>(
         &'a self,
         conversation: &'a Conversation,
         tool_results: &'a [(String, String, String)],
+        assistant_tool_calls: &'a [ToolCall],
         tools: &'a [ToolDef],
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>>;
 }

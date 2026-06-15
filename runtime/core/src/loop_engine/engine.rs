@@ -1,5 +1,7 @@
 //! Loop engine orchestration.
 
+use std::collections::{HashMap, HashSet};
+
 use protocol_interface::core::{
     CoreEvent, CoreEventKind, CoreEventPayload, LoopPolicy, RequestInput, RunLoopInput, RunRef,
     RuntimeMode, TraceId,
@@ -55,7 +57,7 @@ impl LoopEngine {
             },
         ));
 
-        if input.mode == RuntimeMode::Chat || !input.policy.tools_enabled {
+        if !input.policy.tools_enabled {
             Self::run_chat(run_ref, trace_id, ctx, event_sink).await
         } else {
             Self::run_plan(run_ref, trace_id, input, ctx, event_sink).await
@@ -179,6 +181,7 @@ impl LoopEngine {
         let mut final_content = String::new();
         let context_mgr = ContextManager::new(ctx.max_context_tokens);
 
+        let mut last_assistant_tool_calls: Option<Vec<runtime_model::ToolCall>> = None;
         loop {
             iteration_index += 1;
 
@@ -197,8 +200,9 @@ impl LoopEngine {
                 break;
             }
 
-            // Context window management
-            if context_mgr.needs_truncation(&conversation) {
+            // Context window management. Do not truncate between an
+            // assistant(tool_calls) turn and the tool results that must answer it.
+            if should_truncate_context(&context_mgr, &conversation, &pending_tool_results) {
                 context_mgr.truncate(&mut conversation);
             }
 
@@ -218,6 +222,7 @@ impl LoopEngine {
             ));
 
             // Model call
+            let mut consumed_tool_results: Option<Vec<(String, String, String)>> = None;
             let model_result = if pending_tool_results.is_empty() {
                 super::model_step::execute_with_tools(
                     &ctx.client,
@@ -230,17 +235,25 @@ impl LoopEngine {
                 )
                 .await
             } else {
-                super::model_step::continue_with_tool_results(
+                let assistant_tool_calls = last_assistant_tool_calls.clone().unwrap_or_default();
+                let normalized_tool_results =
+                    normalize_tool_results(&assistant_tool_calls, &pending_tool_results);
+                let result = super::model_step::continue_with_tool_results(
                     &ctx.client,
                     &conversation,
-                    &pending_tool_results,
+                    &normalized_tool_results,
+                    assistant_tool_calls,
                     tools.clone(),
                     event_sink,
                     run_ref,
                     trace_id,
                     &mut seq,
                 )
-                .await
+                .await;
+                if result.is_ok() {
+                    consumed_tool_results = Some(normalized_tool_results);
+                }
+                result
             };
 
             let model_result = match model_result {
@@ -261,17 +274,20 @@ impl LoopEngine {
                 }
             };
 
-            // Add assistant text to conversation
-            if !model_result.text.is_empty() {
-                conversation.add_assistant_message(model_result.text.clone());
-                final_content = model_result.text.clone();
+            if let Some(tool_results) = consumed_tool_results.take() {
+                append_tool_results_to_conversation(&mut conversation, &tool_results);
+                pending_tool_results.clear();
             }
 
-            // Check if model wants to call tools
-            let has_tool_calls = model_result
-                .tool_calls
-                .as_ref()
-                .is_some_and(|tc| !tc.is_empty());
+            let has_tool_calls = append_model_result_to_conversation(
+                &mut conversation,
+                &model_result,
+                &mut final_content,
+            );
+
+            // Remember this turn's tool calls so the next iteration can rebuild
+            // the assistant tool_calls message that must precede tool results.
+            last_assistant_tool_calls = model_result.tool_calls.clone();
 
             if !has_tool_calls {
                 // Model finished — no more tool calls
@@ -293,13 +309,20 @@ impl LoopEngine {
             }
 
             // Execute tool calls
-            let tool_calls = model_result.tool_calls.unwrap();
-
-            // Add assistant message with tool call intent to conversation
-            let tool_names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-            let tool_call_text = format!("Calling tools: {}", tool_names.join(", "));
-            if model_result.text.is_empty() {
-                conversation.add_assistant_message(tool_call_text);
+            let tool_calls = model_result.tool_calls.unwrap_or_default();
+            if let Err(message) = validate_assistant_tool_calls(&tool_calls) {
+                seq += 1;
+                event_sink(CoreEvent::new(
+                    run_ref.clone(),
+                    trace_id.clone(),
+                    seq,
+                    CoreEventKind::ErrorRaised,
+                    CoreEventPayload::Error {
+                        code: "invalid_tool_calls".to_string(),
+                        message,
+                    },
+                ));
+                break;
             }
 
             let tool_results = match super::tool_step::execute_tools(
@@ -307,6 +330,8 @@ impl LoopEngine {
                 &registry,
                 &ctx.workspace,
                 &format!("plan-run-{}", run_ref.as_str()),
+                input.mode,
+                ctx.session.as_ref().map(|a| a.as_ref()),
                 event_sink,
                 run_ref,
                 trace_id,
@@ -331,7 +356,7 @@ impl LoopEngine {
                 }
             };
 
-            pending_tool_results = tool_results;
+            pending_tool_results = normalize_tool_results(&tool_calls, &tool_results);
         }
 
         emit_final(
@@ -408,6 +433,106 @@ impl LoopEngine {
     }
 }
 
+fn append_model_result_to_conversation(
+    conversation: &mut runtime_model::Conversation,
+    model_result: &super::model_step::ModelStepResult,
+    final_content: &mut String,
+) -> bool {
+    let tool_calls_msg: Vec<protocol_interface::MessageToolCall> = model_result
+        .tool_calls
+        .as_ref()
+        .map(|calls| {
+            calls
+                .iter()
+                .map(|c| protocol_interface::MessageToolCall {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    arguments: c.args.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !tool_calls_msg.is_empty() {
+        // OpenAI-compatible APIs require the following tool-result messages to
+        // directly follow the assistant message carrying `tool_calls`.
+        conversation.add_assistant_with_tools(model_result.text.clone(), tool_calls_msg);
+        if !model_result.text.is_empty() {
+            *final_content = model_result.text.clone();
+        }
+        return true;
+    }
+
+    if !model_result.text.is_empty() {
+        conversation.add_assistant_message(model_result.text.clone());
+        *final_content = model_result.text.clone();
+    }
+
+    false
+}
+
+fn append_tool_results_to_conversation(
+    conversation: &mut runtime_model::Conversation,
+    tool_results: &[(String, String, String)],
+) {
+    for (tool_call_id, tool_name, result) in tool_results {
+        conversation.add_tool_result(tool_call_id.clone(), tool_name.clone(), result.clone());
+    }
+}
+
+fn validate_assistant_tool_calls(tool_calls: &[runtime_model::ToolCall]) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for call in tool_calls {
+        if call.id.trim().is_empty() {
+            return Err(format!(
+                "model returned an empty tool_call_id for tool '{}'",
+                call.name
+            ));
+        }
+        if !seen.insert(call.id.as_str()) {
+            return Err(format!(
+                "model returned duplicate tool_call_id '{}'",
+                call.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_tool_results(
+    assistant_tool_calls: &[runtime_model::ToolCall],
+    tool_results: &[(String, String, String)],
+) -> Vec<(String, String, String)> {
+    let mut by_id: HashMap<&str, (&str, &str)> = HashMap::new();
+    for (call_id, name, result) in tool_results {
+        by_id.entry(call_id.as_str()).or_insert((name, result));
+    }
+
+    assistant_tool_calls
+        .iter()
+        .map(|call| {
+            by_id
+                .get(call.id.as_str())
+                .map(|(name, result)| (call.id.clone(), (*name).to_string(), (*result).to_string()))
+                .unwrap_or_else(|| {
+                    (
+                        call.id.clone(),
+                        call.name.clone(),
+                        format!("error: missing tool result for tool_call_id '{}'", call.id),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn should_truncate_context(
+    context_mgr: &ContextManager,
+    conversation: &runtime_model::Conversation,
+    pending_tool_results: &[(String, String, String)],
+) -> bool {
+    pending_tool_results.is_empty() && context_mgr.needs_truncation(conversation)
+}
+
 fn emit_final(
     event_sink: &mut dyn FnMut(CoreEvent),
     run_ref: &RunRef,
@@ -427,4 +552,168 @@ fn emit_final(
             success,
         },
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_interface::MessageRole;
+    use serde_json::json;
+
+    #[test]
+    fn tool_call_only_result_stores_single_assistant_tool_call_message() {
+        let mut conversation = runtime_model::Conversation::new(None);
+        let result = super::super::model_step::ModelStepResult {
+            text: String::new(),
+            tool_calls: Some(vec![runtime_model::ToolCall::new(
+                "call-readme".to_string(),
+                "read_file".to_string(),
+                json!({ "path": "README.md" }),
+            )]),
+        };
+        let mut final_content = String::new();
+
+        let has_tool_calls =
+            append_model_result_to_conversation(&mut conversation, &result, &mut final_content);
+
+        assert!(has_tool_calls);
+        assert!(final_content.is_empty());
+        let messages = conversation.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::Assistant);
+        assert!(messages[0].content.is_empty());
+        let tool_calls = messages[0].tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call-readme");
+        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(tool_calls[0].arguments, r#"{"path":"README.md"}"#);
+    }
+
+    #[test]
+    fn text_only_result_stores_normal_assistant_message() {
+        let mut conversation = runtime_model::Conversation::new(None);
+        let result = super::super::model_step::ModelStepResult {
+            text: "summary".to_string(),
+            tool_calls: None,
+        };
+        let mut final_content = String::new();
+
+        let has_tool_calls =
+            append_model_result_to_conversation(&mut conversation, &result, &mut final_content);
+
+        assert!(!has_tool_calls);
+        assert_eq!(final_content, "summary");
+        let messages = conversation.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::Assistant);
+        assert_eq!(messages[0].content, "summary");
+        assert!(messages[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn tool_results_are_persisted_between_tool_call_turns() {
+        let mut conversation = runtime_model::Conversation::new(None);
+        let first = super::super::model_step::ModelStepResult {
+            text: String::new(),
+            tool_calls: Some(vec![runtime_model::ToolCall::new(
+                "call-clone".to_string(),
+                "shell".to_string(),
+                json!({ "command": "git clone https://github.com/AliusTech/alius.git" }),
+            )]),
+        };
+        let second = super::super::model_step::ModelStepResult {
+            text: String::new(),
+            tool_calls: Some(vec![runtime_model::ToolCall::new(
+                "call-list".to_string(),
+                "list_dir".to_string(),
+                json!({ "path": "alius" }),
+            )]),
+        };
+        let mut final_content = String::new();
+
+        append_model_result_to_conversation(&mut conversation, &first, &mut final_content);
+        append_tool_results_to_conversation(
+            &mut conversation,
+            &[(
+                "call-clone".to_string(),
+                "shell".to_string(),
+                "[exit:0]\nCloning into 'alius'".to_string(),
+            )],
+        );
+        append_model_result_to_conversation(&mut conversation, &second, &mut final_content);
+
+        let messages = conversation.messages();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, MessageRole::Assistant);
+        assert_eq!(messages[0].tool_calls.as_ref().unwrap()[0].id, "call-clone");
+        assert_eq!(messages[1].role, MessageRole::Tool);
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call-clone"));
+        assert_eq!(messages[2].role, MessageRole::Assistant);
+        assert_eq!(messages[2].tool_calls.as_ref().unwrap()[0].id, "call-list");
+    }
+
+    #[test]
+    fn normalize_tool_results_orders_by_assistant_tool_calls_and_synthesizes_missing() {
+        let assistant_tool_calls = vec![
+            runtime_model::ToolCall::new("call-a".to_string(), "shell".to_string(), json!({})),
+            runtime_model::ToolCall::new("call-b".to_string(), "read_file".to_string(), json!({})),
+        ];
+        let raw_results = vec![(
+            "call-b".to_string(),
+            "read_file".to_string(),
+            "README".to_string(),
+        )];
+
+        let normalized = normalize_tool_results(&assistant_tool_calls, &raw_results);
+
+        assert_eq!(normalized.len(), 2);
+        assert_eq!(normalized[0].0, "call-a");
+        assert_eq!(normalized[0].1, "shell");
+        assert_eq!(
+            normalized[0].2,
+            "error: missing tool result for tool_call_id 'call-a'"
+        );
+        assert_eq!(normalized[1].0, "call-b");
+        assert_eq!(normalized[1].2, "README");
+    }
+
+    #[test]
+    fn validate_assistant_tool_calls_rejects_empty_and_duplicate_ids() {
+        let empty = vec![runtime_model::ToolCall::new(
+            String::new(),
+            "shell".to_string(),
+            json!({}),
+        )];
+        assert!(validate_assistant_tool_calls(&empty)
+            .unwrap_err()
+            .contains("empty tool_call_id"));
+
+        let duplicate = vec![
+            runtime_model::ToolCall::new("call-a".to_string(), "shell".to_string(), json!({})),
+            runtime_model::ToolCall::new("call-a".to_string(), "read_file".to_string(), json!({})),
+        ];
+        assert!(validate_assistant_tool_calls(&duplicate)
+            .unwrap_err()
+            .contains("duplicate tool_call_id"));
+    }
+
+    #[test]
+    fn pending_tool_results_prevent_context_truncation() {
+        let mut conversation = runtime_model::Conversation::new(None);
+        conversation.add_user_message("long ".repeat(100));
+        let context_mgr = ContextManager::new(8);
+        let pending = vec![(
+            "call-a".to_string(),
+            "shell".to_string(),
+            "output".to_string(),
+        )];
+
+        assert!(context_mgr.needs_truncation(&conversation));
+        assert!(!should_truncate_context(
+            &context_mgr,
+            &conversation,
+            &pending
+        ));
+        assert!(should_truncate_context(&context_mgr, &conversation, &[]));
+    }
 }

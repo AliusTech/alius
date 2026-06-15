@@ -1,6 +1,6 @@
 //! Conversation management
 
-use protocol_interface::Message;
+use protocol_interface::{Message, MessageToolCall};
 
 /// Conversation with context window management
 pub struct Conversation {
@@ -39,6 +39,20 @@ impl Conversation {
     /// Add an assistant message
     pub fn add_assistant_message(&mut self, text: String) {
         self.messages.push(Message::new_assistant(text));
+    }
+
+    /// Add an assistant message that carries tool calls (function calling).
+    /// The next round's tool-result messages will correctly follow this
+    /// tool_calls-bearing assistant message.
+    pub fn add_assistant_with_tools(&mut self, text: String, tool_calls: Vec<MessageToolCall>) {
+        self.messages
+            .push(Message::new_assistant_with_tools(text, tool_calls));
+    }
+
+    /// Add a tool result message that answers an assistant tool call.
+    pub fn add_tool_result(&mut self, tool_call_id: String, tool_name: String, result: String) {
+        self.messages
+            .push(Message::new_tool_result(tool_call_id, tool_name, result));
     }
 
     /// Get all messages

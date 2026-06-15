@@ -3,6 +3,8 @@
 //! Implements the Anthropic Messages API (`/v1/messages`) with SSE streaming
 //! and tool calling support. Uses `reqwest` for HTTP communication.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use futures::Stream;
 use serde_json::Value as JsonValue;
@@ -30,9 +32,12 @@ impl AnthropicProvider {
         let api_key = config.get_api_key().ok_or_else(|| {
             anyhow::anyhow!("API key not found. Set it in config or environment variable.")
         })?;
+        let client = reqwest::Client::builder()
+            .user_agent(crate::http::user_agent())
+            .build()?;
 
         Ok(Self {
-            client: reqwest::Client::new(),
+            client,
             api_key,
             base_url: normalize_anthropic_api_base(&config.get_base_url()),
             model: config.model.clone(),
@@ -47,7 +52,10 @@ impl AnthropicProvider {
         let system = conversation.system_prompt().map(|s| s.to_string());
         let mut messages = Vec::new();
 
-        for msg in conversation.messages() {
+        let history = conversation.messages();
+        let mut index = 0;
+        while index < history.len() {
+            let msg = &history[index];
             match msg.role {
                 MessageRole::System | MessageRole::Summary => {
                     // Anthropic doesn't have system messages in the messages array.
@@ -62,12 +70,58 @@ impl AnthropicProvider {
                     }));
                 }
                 MessageRole::Assistant => {
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": msg.content,
-                    }));
+                    if let Some(calls) = &msg.tool_calls {
+                        // Assistant turn that requested tools: content is a list
+                        // of blocks — optional text + tool_use blocks.
+                        let mut blocks: Vec<JsonValue> = Vec::new();
+                        if !msg.content.is_empty() {
+                            blocks.push(serde_json::json!({
+                                "type": "text",
+                                "text": msg.content,
+                            }));
+                        }
+                        for c in calls {
+                            blocks.push(serde_json::json!({
+                                "type": "tool_use",
+                                "id": c.id,
+                                "name": c.name,
+                                "input": serde_json::from_str::<JsonValue>(&c.arguments)
+                                    .unwrap_or(serde_json::Value::Object(Default::default())),
+                            }));
+                        }
+                        messages.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": blocks,
+                        }));
+                    } else {
+                        messages.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": msg.content,
+                        }));
+                    }
+                }
+                MessageRole::Tool => {
+                    let mut blocks: Vec<JsonValue> = Vec::new();
+                    while index < history.len() && history[index].role == MessageRole::Tool {
+                        if let Some(tool_call_id) = history[index].tool_call_id.as_deref() {
+                            blocks.push(serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_call_id,
+                                "content": history[index].content.as_str(),
+                            }));
+                        }
+                        index += 1;
+                    }
+                    if !blocks.is_empty() {
+                        messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": blocks,
+                        }));
+                    }
+                    continue;
                 }
             }
+            index += 1;
         }
 
         // Merge any system/summary messages that were skipped into the system prompt
@@ -604,6 +658,7 @@ impl LlmProvider for AnthropicProvider {
         &'a self,
         conversation: &'a Conversation,
         tool_results: &'a [(String, String, String)],
+        assistant_tool_calls: &'a [ToolCall],
         tools: &'a [ToolDef],
     ) -> std::pin::Pin<
         Box<
@@ -613,34 +668,138 @@ impl LlmProvider for AnthropicProvider {
         >,
     > {
         Box::pin(async move {
-            let (system, mut messages) = self.build_messages(conversation);
-
-            // Add tool results as a user message with tool_result content blocks
-            let tool_result_blocks: Vec<JsonValue> = tool_results
-                .iter()
-                .map(|(call_id, _name, result)| {
-                    serde_json::json!({
-                        "type": "tool_result",
-                        "tool_use_id": call_id,
-                        "content": result,
-                    })
-                })
-                .collect();
-
-            messages.push(serde_json::json!({
-                "role": "user",
-                "content": tool_result_blocks,
-            }));
-
+            let (system, messages) =
+                self.build_continue_messages(conversation, tool_results, assistant_tool_calls)?;
             self.do_tool_request(system, messages, tools).await
         })
     }
 }
 
+impl AnthropicProvider {
+    fn build_continue_messages(
+        &self,
+        conversation: &Conversation,
+        tool_results: &[(String, String, String)],
+        assistant_tool_calls: &[ToolCall],
+    ) -> Result<(Option<String>, Vec<JsonValue>)> {
+        let normalized_tool_results =
+            normalize_provider_tool_results(assistant_tool_calls, tool_results)?;
+        let (system, mut messages) = self.build_messages(conversation);
+
+        if !conversation_ends_with_tool_calls(conversation, assistant_tool_calls) {
+            messages.push(assistant_tool_use_message(assistant_tool_calls)?);
+        }
+
+        let tool_result_blocks: Vec<JsonValue> = normalized_tool_results
+            .iter()
+            .map(|(call_id, _name, result)| {
+                serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "content": result,
+                })
+            })
+            .collect();
+
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": tool_result_blocks,
+        }));
+
+        Ok((system, messages))
+    }
+}
+
+fn assistant_tool_use_message(assistant_tool_calls: &[ToolCall]) -> Result<JsonValue> {
+    validate_assistant_tool_calls(assistant_tool_calls)?;
+    let blocks = assistant_tool_calls
+        .iter()
+        .map(|call| {
+            serde_json::json!({
+                "type": "tool_use",
+                "id": call.id,
+                "name": call.name,
+                "input": call.args.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "role": "assistant",
+        "content": blocks,
+    }))
+}
+
+fn conversation_ends_with_tool_calls(
+    conversation: &Conversation,
+    assistant_tool_calls: &[ToolCall],
+) -> bool {
+    let Some(last) = conversation.messages().last() else {
+        return false;
+    };
+    if last.role != MessageRole::Assistant {
+        return false;
+    }
+    let Some(message_tool_calls) = &last.tool_calls else {
+        return false;
+    };
+    if message_tool_calls.len() != assistant_tool_calls.len() {
+        return false;
+    }
+    message_tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .eq(assistant_tool_calls.iter().map(|call| call.id.as_str()))
+}
+
+fn validate_assistant_tool_calls(assistant_tool_calls: &[ToolCall]) -> Result<()> {
+    if assistant_tool_calls.is_empty() {
+        anyhow::bail!("missing assistant tool_calls for tool result continuation");
+    }
+
+    let mut seen = HashSet::new();
+    for call in assistant_tool_calls {
+        if call.id.trim().is_empty() {
+            anyhow::bail!(
+                "model returned an empty tool_call_id for tool '{}'",
+                call.name
+            );
+        }
+        if !seen.insert(call.id.as_str()) {
+            anyhow::bail!("model returned duplicate tool_call_id '{}'", call.id);
+        }
+    }
+    Ok(())
+}
+
+fn normalize_provider_tool_results(
+    assistant_tool_calls: &[ToolCall],
+    tool_results: &[(String, String, String)],
+) -> Result<Vec<(String, String, String)>> {
+    validate_assistant_tool_calls(assistant_tool_calls)?;
+
+    let by_id = tool_results
+        .iter()
+        .map(|(call_id, name, result)| (call_id.as_str(), (name.as_str(), result.as_str())))
+        .collect::<HashMap<_, _>>();
+
+    assistant_tool_calls
+        .iter()
+        .map(|call| {
+            by_id
+                .get(call.id.as_str())
+                .map(|(name, result)| (call.id.clone(), (*name).to_string(), (*result).to_string()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing tool result for tool_call_id '{}'", call.id)
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol_interface::ProviderType;
+    use protocol_interface::{MessageToolCall, ProviderType};
     use runtime_config::LlmSettings;
 
     fn test_settings() -> LlmSettings {
@@ -653,6 +812,112 @@ mod tests {
             base_url: None,
             review_model: None,
         }
+    }
+
+    #[test]
+    fn test_anthropic_rebuilds_missing_assistant_tool_use_frame() {
+        let settings = test_settings();
+        let provider = AnthropicProvider::new(&settings).unwrap();
+        let mut conversation = Conversation::new(None);
+        conversation.add_user_message("执行 git clone".to_string());
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            serde_json::json!({"command": "git clone https://github.com/lc345/repo.git"}),
+        )];
+        let tool_results = vec![(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            "[exit:0]\n".to_string(),
+        )];
+
+        let (_system, messages) = provider
+            .build_continue_messages(&conversation, &tool_results, &assistant_tool_calls)
+            .unwrap();
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["type"], "tool_use");
+        assert_eq!(messages[1]["content"][0]["id"], "call-shell");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "call-shell");
+    }
+
+    #[test]
+    fn test_anthropic_preserves_previous_tool_result_frames() {
+        let settings = test_settings();
+        let provider = AnthropicProvider::new(&settings).unwrap();
+        let mut conversation = Conversation::new(None);
+        conversation.add_user_message("clone and inspect".to_string());
+        conversation.add_assistant_with_tools(
+            String::new(),
+            vec![MessageToolCall {
+                id: "call-clone".to_string(),
+                name: "shell".to_string(),
+                arguments: r#"{"command":"git clone https://github.com/AliusTech/alius.git"}"#
+                    .to_string(),
+            }],
+        );
+        conversation.add_tool_result(
+            "call-clone".to_string(),
+            "shell".to_string(),
+            "[exit:0]\nCloning into 'alius'".to_string(),
+        );
+        conversation.add_assistant_with_tools(
+            String::new(),
+            vec![MessageToolCall {
+                id: "call-list".to_string(),
+                name: "list_dir".to_string(),
+                arguments: r#"{"path":"alius"}"#.to_string(),
+            }],
+        );
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-list".to_string(),
+            "list_dir".to_string(),
+            serde_json::json!({"path": "alius"}),
+        )];
+        let tool_results = vec![(
+            "call-list".to_string(),
+            "list_dir".to_string(),
+            "dir .git\nfile README.md".to_string(),
+        )];
+
+        let (_system, messages) = provider
+            .build_continue_messages(&conversation, &tool_results, &assistant_tool_calls)
+            .unwrap();
+
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["id"], "call-clone");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "call-clone");
+        assert_eq!(messages[3]["role"], "assistant");
+        assert_eq!(messages[3]["content"][0]["id"], "call-list");
+        assert_eq!(messages[4]["role"], "user");
+        assert_eq!(messages[4]["content"][0]["tool_use_id"], "call-list");
+    }
+
+    #[test]
+    fn test_anthropic_rejects_missing_tool_result_before_request() {
+        let settings = test_settings();
+        let provider = AnthropicProvider::new(&settings).unwrap();
+        let conversation = Conversation::new(None);
+        let assistant_tool_calls = vec![ToolCall::new(
+            "call-shell".to_string(),
+            "shell".to_string(),
+            serde_json::json!({"command": "git status"}),
+        )];
+
+        let err = provider
+            .build_continue_messages(&conversation, &[], &assistant_tool_calls)
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("missing tool result for tool_call_id 'call-shell'"));
     }
 
     #[tokio::test]

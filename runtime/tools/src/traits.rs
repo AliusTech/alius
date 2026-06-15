@@ -4,21 +4,24 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 
 use crate::PermissionLevel;
-use protocol_interface::AliusError;
+use protocol_interface::{AliusError, RuntimeMode};
 
 /// Context for tool execution
 pub struct ToolContext {
     pub workspace: std::path::PathBuf,
     pub session_id: String,
     pub working_directory: std::path::PathBuf,
+    /// Plan → high-risk operations need confirmation; Chat → execute directly.
+    pub mode: RuntimeMode,
 }
 
 impl ToolContext {
-    pub fn new(workspace: std::path::PathBuf, session_id: String) -> Self {
+    pub fn new(workspace: std::path::PathBuf, session_id: String, mode: RuntimeMode) -> Self {
         Self {
             working_directory: workspace.clone(),
             workspace,
             session_id,
+            mode,
         }
     }
 }
@@ -81,6 +84,14 @@ pub trait AliusTool: Send + Sync {
 
     /// Whether this operation requires user confirmation
     fn requires_confirmation(&self, _args: &JsonValue) -> bool {
+        false
+    }
+
+    /// Whether this invocation needs the user's approval before executing,
+    /// given the current runtime mode. Default: never. Tools like `shell`
+    /// (high-risk per Shell Gate) and `write_file` override this to return
+    /// true when `mode == RuntimeMode::Plan`.
+    fn preview_confirmation(&self, _args: &JsonValue, _mode: RuntimeMode) -> bool {
         false
     }
 

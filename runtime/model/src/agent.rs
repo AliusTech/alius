@@ -133,6 +133,10 @@ impl AliusAgent {
                 self.get_model_response_with_results(
                     conversation,
                     pending_tool_results.clone(),
+                    // TODO: thread the previous turn's tool_calls here so the
+                    // assistant tool_calls message precedes tool results (the
+                    // loop_engine path already does this; agent path pending).
+                    Vec::new(),
                     tools.clone(),
                 )
                 .await
@@ -276,11 +280,12 @@ impl AliusAgent {
         &self,
         conversation: &Conversation,
         tool_results: Vec<(String, String, String)>,
+        assistant_tool_calls: Vec<ToolCall>,
         tools: Vec<protocol_interface::ToolDef>,
     ) -> anyhow::Result<ModelResponse> {
         let (stream, tool_calls) = self
             .client
-            .continue_with_tool_results(conversation, tool_results, tools)
+            .continue_with_tool_results(conversation, tool_results, assistant_tool_calls, tools)
             .await?;
 
         let mut text = String::new();
@@ -316,7 +321,7 @@ impl AliusAgent {
         workspace: std::path::PathBuf,
         session_id: String,
     ) -> ToolResult {
-        let ctx = ToolContext::new(workspace, session_id);
+        let ctx = ToolContext::new(workspace, session_id, protocol_interface::RuntimeMode::Chat);
 
         if let Some(tool) = self.registry.get(&tool_call.name) {
             tool.execute(tool_call.args.clone(), ctx)

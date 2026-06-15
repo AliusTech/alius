@@ -86,6 +86,7 @@ impl LlmProvider for GoogleProvider {
         &'a self,
         _conversation: &'a Conversation,
         _tool_results: &'a [(String, String, String)],
+        _assistant_tool_calls: &'a [ToolCall],
         _tools: &'a [ToolDef],
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
         Box::pin(async { bail!("Google provider tool results not yet implemented") })
