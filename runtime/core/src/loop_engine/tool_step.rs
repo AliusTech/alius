@@ -199,6 +199,7 @@ async fn confirm_and_await(
                 tool_call_id,
                 run_ref,
                 trace_id,
+                sequence,
                 event_sink,
             );
             return Ok(ConfirmationDecision::Unavailable);
@@ -229,6 +230,7 @@ async fn confirm_and_await(
         tool_call_id,
         run_ref,
         trace_id,
+        sequence,
         event_sink,
     );
 
@@ -247,6 +249,7 @@ async fn confirm_and_await(
         tool_call_id,
         run_ref,
         trace_id,
+        sequence,
         event_sink,
     );
 
@@ -294,7 +297,9 @@ fn emit_tool_completed(
 }
 
 /// Write a confirmation audit event if a log writer is available.
-/// On failure, emits an `ErrorRaised` event so audit gaps are observable.
+/// On failure, emits a `LogRecordEmitted` diagnostic event (non-status-changing)
+/// so audit gaps are observable without marking the run as Failed.
+#[allow(clippy::too_many_arguments)]
 fn audit_confirmation(
     log_writer: Option<&Arc<Mutex<LogWriter>>>,
     action: &str,
@@ -302,6 +307,7 @@ fn audit_confirmation(
     tool_call_id: &str,
     run_ref: &RunRef,
     trace_id: &TraceId,
+    sequence: &mut u64,
     event_sink: &mut dyn FnMut(CoreEvent),
 ) {
     let Some(writer) = log_writer else { return };
@@ -309,15 +315,18 @@ fn audit_confirmation(
     let mut w = match writer.lock() {
         Ok(w) => w,
         Err(_) => {
-            // Lock poisoned — emit observable error.
+            *sequence += 1;
             event_sink(CoreEvent::new(
                 run_ref.clone(),
                 trace_id.clone(),
-                0, // sequence unknown here, will be reordered
-                CoreEventKind::ErrorRaised,
-                CoreEventPayload::Error {
-                    code: "audit_lock_poisoned".to_string(),
-                    message: "confirmation audit log lock poisoned".to_string(),
+                *sequence,
+                CoreEventKind::LogRecordEmitted,
+                CoreEventPayload::Json {
+                    value: serde_json::json!({
+                        "level": "warn",
+                        "code": "audit_lock_poisoned",
+                        "message": "confirmation audit log lock poisoned",
+                    }),
                 },
             ));
             return;
@@ -332,28 +341,36 @@ fn audit_confirmation(
         run_ref.as_str(),
         trace_id.as_str(),
     ) {
+        *sequence += 1;
         event_sink(CoreEvent::new(
             run_ref.clone(),
             trace_id.clone(),
-            0,
-            CoreEventKind::ErrorRaised,
-            CoreEventPayload::Error {
-                code: "audit_write_failed".to_string(),
-                message: format!("confirmation audit write failed: {e}"),
+            *sequence,
+            CoreEventKind::LogRecordEmitted,
+            CoreEventPayload::Json {
+                value: serde_json::json!({
+                    "level": "warn",
+                    "code": "audit_write_failed",
+                    "message": format!("confirmation audit write failed: {e}"),
+                }),
             },
         ));
         return;
     }
 
     if let Err(e) = w.flush() {
+        *sequence += 1;
         event_sink(CoreEvent::new(
             run_ref.clone(),
             trace_id.clone(),
-            0,
-            CoreEventKind::ErrorRaised,
-            CoreEventPayload::Error {
-                code: "audit_flush_failed".to_string(),
-                message: format!("confirmation audit flush failed: {e}"),
+            *sequence,
+            CoreEventKind::LogRecordEmitted,
+            CoreEventPayload::Json {
+                value: serde_json::json!({
+                    "level": "warn",
+                    "code": "audit_flush_failed",
+                    "message": format!("confirmation audit flush failed: {e}"),
+                }),
             },
         ));
     }
@@ -812,22 +829,30 @@ mod tests {
         assert!(!content.contains("secret"));
     }
 
-    /// [P1] Audit failure emits ErrorRaised event.
-    /// Policy: audit failures do NOT block tool execution, but are observable.
+    /// Audit failure uses LogRecordEmitted (not ErrorRaised) and does not
+    /// mark the run as Failed. Sequences are monotonically increasing.
     #[tokio::test]
-    async fn audit_failure_emits_error_event() {
+    async fn audit_failure_uses_log_record_emitted() {
         let (registry, mgr, run_ref, trace_id) = setup();
         let events = Arc::new(Mutex::new(Vec::new()));
         let events_clone = events.clone();
         let mut seq = 0u64;
 
-        // Create a valid LogWriter, then remove the log file to cause write failures.
-        let tmp = TempDir::new().unwrap();
+        // Poison the Mutex to trigger lock failure path.
         let log_writer = Arc::new(Mutex::new(
-            crate::logging::LogWriter::new(tmp.path()).unwrap(),
+            crate::logging::LogWriter::new(TempDir::new().unwrap().path()).unwrap(),
         ));
-        // Drop the temp dir so the log file path becomes invalid on next write.
-        // (LogWriter holds the file handle, but we can test the policy with a valid writer.)
+        {
+            let _guard = log_writer.lock().unwrap();
+            // Mutex is now poisoned for any subsequent lock attempt since
+            // we'll panic-drop this guard.
+        }
+        // Force poison by panicking while holding the lock.
+        let log_writer_for_poison = log_writer.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _g = log_writer_for_poison.lock().unwrap();
+            panic!("intentional poison");
+        }));
 
         let mgr_clone = Arc::new(mgr);
         let mgr_spawn = mgr_clone.clone();
@@ -837,7 +862,7 @@ mod tests {
             let _ = mgr_spawn.deliver_confirmation(&run_ref_clone, "c1", false);
         });
 
-        let _batch = execute_tools(
+        let batch = execute_tools(
             &[make_call("c1", "confirm_required")],
             &registry,
             Path::new("/tmp"),
@@ -855,26 +880,40 @@ mod tests {
 
         deny_handle.await.unwrap();
 
-        // Verify audit events were logged (success case — valid writer).
-        log_writer.lock().unwrap().flush().unwrap();
-        let content = std::fs::read_to_string(tmp.path().join("event-log.jsonl")).unwrap();
+        // The batch was denied (user said no).
+        assert!(batch.batch_denied);
+
+        // Verify NO ErrorRaised events (audit failure must not mark run as Failed).
+        let evts = events.lock().unwrap();
+        let error_raised: Vec<_> = evts
+            .iter()
+            .filter(|e| e.kind == CoreEventKind::ErrorRaised)
+            .collect();
         assert!(
-            content.contains("tool_confirmation"),
-            "audit should record confirmation events"
-        );
-        assert!(
-            content.contains("denied_by_user"),
-            "audit should record denial"
+            error_raised.is_empty(),
+            "audit failure must NOT emit ErrorRaised (would mark run as Failed)"
         );
 
-        // Verify the tool execution was NOT blocked by audit.
-        let evts = events.lock().unwrap();
-        let completed = evts
+        // Verify LogRecordEmitted events were emitted for the lock failure.
+        let log_events: Vec<_> = evts
             .iter()
-            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
+            .filter(|e| e.kind == CoreEventKind::LogRecordEmitted)
+            .collect();
         assert!(
-            completed.is_some(),
-            "tool execution should complete even with audit logging"
+            !log_events.is_empty(),
+            "audit lock failure should emit LogRecordEmitted diagnostic"
         );
+
+        // Verify sequences are monotonically increasing (no sequence=0).
+        let mut last_seq = 0u64;
+        for evt in evts.iter() {
+            assert!(
+                evt.sequence > last_seq,
+                "sequence must be monotonically increasing: got {} after {}",
+                evt.sequence,
+                last_seq
+            );
+            last_seq = evt.sequence;
+        }
     }
 }

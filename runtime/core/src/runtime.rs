@@ -1,7 +1,6 @@
 //! Core Runtime — implements CoreRuntimeApi.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use protocol_interface::core::*;
@@ -96,12 +95,9 @@ impl CoreRuntimeBuilder {
                 .map_err(|e| ProtocolError::Internal(format!("conversation store: {}", e)))?,
         );
 
-        // Create audit log writer in the workspace's .alius/logs directory.
+        // Create audit log writer under the workspace's .alius/logs directory.
         let log_writer = {
-            let log_dir = std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".alius")
-                .join("logs");
+            let log_dir = workspace_ref.root.join(".alius").join("logs");
             match LogWriter::new(&log_dir) {
                 Ok(writer) => Some(Arc::new(Mutex::new(writer))),
                 Err(e) => {

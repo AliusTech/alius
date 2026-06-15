@@ -116,7 +116,7 @@ When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step
 
 **Terminal state protection**: `confirm_and_await` and `deliver_confirmation` only restore status to `Running` on explicit `Approved` decision and only when the current status is `WaitingForApproval`. The status check + update in `deliver_confirmation` is atomic (under the same write lock) to prevent a race with `cancel_run`.
 
-**Loop termination on denial**: `run_plan` and `run_chat_with_tools` also check for denial at the engine level via `any_tool_denied()`, emitting `ErrorRaised(code: "tool_denied")` and `FinalResult(success: false)` to prevent the model from continuing after user denial.
+**Loop termination on denial**: `run_plan` and `run_chat_with_tools` check `ToolBatchResult.batch_denied` after `execute_tools` returns. On denial, the engine emits `ErrorRaised(code: "tool_denied")` and `FinalResult(success: false)`, preventing the model from continuing after user denial. This uses the structured `batch_denied` field — no string matching.
 
 **Confirmation decision type**: `confirm_and_await` returns a `ConfirmationDecision` enum (`Approved`, `Denied`, `Cancelled`, `Unavailable`) instead of a raw `bool`, preserving the reason for audit and error reporting.
 
