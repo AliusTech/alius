@@ -105,6 +105,7 @@ pub async fn continue_with_tool_results(
     client: &LlmClient,
     conversation: &Conversation,
     tool_results: &[(String, String, String)],
+    assistant_tool_calls: Vec<runtime_model::ToolCall>,
     tools: Vec<ToolDef>,
     event_sink: &mut dyn FnMut(CoreEvent),
     run_ref: &RunRef,
@@ -112,7 +113,12 @@ pub async fn continue_with_tool_results(
     sequence: &mut u64,
 ) -> Result<ModelStepResult, ProtocolError> {
     let (stream, tool_calls) = client
-        .continue_with_tool_results(conversation, tool_results.to_vec(), tools)
+        .continue_with_tool_results(
+            conversation,
+            tool_results.to_vec(),
+            assistant_tool_calls,
+            tools,
+        )
         .await
         .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 

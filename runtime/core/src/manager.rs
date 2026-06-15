@@ -179,9 +179,28 @@ impl CoreRuntimeManager {
 
     /// Cancel a run through the protocol interface.
     pub fn cancel(&self, run_ref: &RunRef, reason: Option<String>) -> Result<(), ProtocolError> {
-        // NOTE: Stage B cancel_pending_confirmations will be wired here once
-        // CoreRuntimeManager gains a session_manager handle (B4 follow-up).
+        // Stage B: Cancel any pending tool confirmations for this run
+        self.runtime()
+            .session_manager()
+            .cancel_pending_confirmations(run_ref);
+
         self.interface.cancel(run_ref, reason)
+    }
+
+    /// Respond to a tool confirmation request (Stage B B4).
+    ///
+    /// When a tool operation in Plan mode requires user approval, the loop engine
+    /// emits a `ToolConfirmationRequired` event and pauses. The TUI calls this method
+    /// with the user's yes/no decision, resuming the paused tool execution.
+    pub fn respond_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), ProtocolError> {
+        self.runtime()
+            .session_manager()
+            .deliver_confirmation(run_ref, tool_call_id, approved)
     }
 
     /// Read current runtime configuration.

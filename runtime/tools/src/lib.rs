@@ -1,9 +1,13 @@
+pub mod native;
 pub mod package;
 pub mod permission;
 pub mod registry;
 pub mod shell_gate;
 pub mod traits;
 pub mod wasm_host;
+
+#[cfg(feature = "mcp")]
+pub mod mcp_bridge;
 
 pub use package::{
     ToolHostCapability, ToolPackage, ToolPackageManifest, ToolPackageResolver, ToolRuntimeHost,

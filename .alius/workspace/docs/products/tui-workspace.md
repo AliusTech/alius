@@ -47,6 +47,21 @@ During an active configuration task, the input surface stays inside the main wor
 | Interaction surface | Text input, inline single-select, inline multi-select, custom input, or approval controls. |
 | Status bar | Current workspace, git status, and runtime state. |
 
+Every workspace launch starts with a dedicated welcome block in the Conversation area. The block is not rendered as an `Output` block and does not show Agent Workspace copy, Protocol details, operation menus, release notes, or help tips.
+
+The welcome block has four responsive layouts:
+
+- `Wide`: `width >= 100 && height >= 14`, full logo, version, `慎始如终`, and a right column for `SOUL`, `Plan`, `Execute`, `Review`, and the Enter hint. Model names include provider wrappers such as `BigModel(glm-4.5-coding)`.
+- `Medium`: `72 <= width < 100 && height >= 12`, medium logo and the same information hierarchy. Model names are compacted to the provider-native model name.
+- `Compact`: `46 <= width < 72 && height >= 12`, centered small logo card with `SOUL`, `Plan`, `Execute`, `Review`, and the Enter hint stacked below.
+- `Tiny`: `width < 46 || height < 12`, plain text without borders to avoid terminal wrapping errors.
+
+All welcome layouts show `Version`, the fixed slogan `慎始如终`, `SOUL`, `Plan`, `Execute`, `Review`, and either `Press Enter to start` or `Press Enter to continue`. Unconfigured values render as `Not selected` or `Not configured`.
+
+Bordered welcome layouts (`Wide`, `Medium`, and `Compact`) use the available conversation width instead of a fixed card width. They keep the same left and right horizontal margin at every terminal size, so resizing wider expands the welcome border and available content area symmetrically.
+
+When the current directory is not inside a Git repository, the status bar shows only `cwd` and does not render placeholder repo or branch fields.
+
 ## Modes
 
 | Mode | Purpose |
@@ -73,8 +88,35 @@ Common block kinds:
 - Plan Proposal
 - Execution
 - Prompt
+- Status
 - Output
 - Error
+
+Core `ToolCallStarted` and `ToolCallCompleted` events render as Status/Error
+blocks in the Conversation area. Shell calls use the command as the visible
+label, for example `shell: git clone ...`, and completion blocks include a
+short sanitized output summary. These tool progress blocks are UI-only and must
+not be inserted into the model conversation between assistant `tool_calls` and
+tool results.
+
+## Conversation Block Folding
+
+Long conversation blocks (more than 3 logical lines including the title) are automatically folded:
+
+- **Title Line Format**: The title and first content line are merged: `○ Title First line content`
+- **Collapsed Display**: Shows title+first-line merged, second line, and third line with fold hint
+- **Fold Hint**: Appears at the end of the third line: `… 点击展开 / Ctrl+O 全部展开`
+- **Click to Toggle**: Click anywhere on a folded block to expand/collapse it
+- **Global Toggle**: `Ctrl+O` expands all foldable blocks; press again to restore default folding
+- **Non-Foldable**: Welcome, ConfigOverview, and empty Execution (loading) blocks are never folded
+- **New Content**: Defaults to folded unless global expand is active
+
+## Text Selection and Copy
+
+- **Native Selection**: Hold `Shift` to temporarily release mouse capture for terminal native text selection
+- **Right-Click Menu**: Use the terminal/system native right-click context menu to copy
+- **No Built-in Menu**: Alius does not show its own right-click menu or "copied" status
+- **Fallback**: If the terminal doesn't support native right-click, use Shift + system copy shortcut (Cmd+C / Ctrl+Shift+C)
 
 ## Workspace Configuration Center
 
@@ -84,24 +126,60 @@ The available tabs are:
 
 - `configuration-models`
 - `configuration-language`
-- `configuration-solo`
+- `configuration-soul`
 
-The Conversation area records the request, current prompt, validation feedback, fetch failures, and save confirmation. It does not render option lists. The interaction surface renders the active option picker, multi-select list, text input, or exit confirmation.
+The Conversation area does not echo raw configuration commands such as `/config`, `/init`, or `/model`, and it does not echo selected option values as user requests. It records human-readable task status, current prompt context, validation feedback, fetch failures, and final success confirmation. The interaction surface renders the active option picker, multi-select list, text input, or exit confirmation.
 
-Opening `/config` validates required local state and jumps to the first missing item. Required state is:
+Opening `/config` pushes a **configuration overview** block into the Conversation area and lands on the first section with a missing item (or `configuration-models` if all are satisfied). The overview block shows one row per section — `✓`/`○` status marker, the section label, and the current value (Execute model name, locale, role id) — and is **updated in place** (the most recent overview block is replaced, not duplicated) whenever the configuration changes. The interaction surface top renders a **section nav bar** — `配置 · 模型 · 语言 · 灵魂` — where "配置" is a fixed non-selectable title and the three sections are inline with the active one white-background-highlighted. `Tab`/`Shift+Tab` cycles Models → Language → Soul → Models and moves the highlight.
+
+**Selections apply immediately.** There is no Save or Cancel button: choosing a model role, a language, or a role writes settings + `.alius/config/providers.toml` + `.alius/config/model.toml`, rebuilds the runtime bridge, and refreshes the overview — all at once, then keeps the task open for further edits. Esc exits silently (nothing is ever unsaved). The required-state list below is not gated by a save; it is satisfied progressively as the user picks values:
 
 - At least one enabled model in the local model library.
 - `Plan Model`, `Execute Model`, and `Review Model` each map to an enabled model.
 - Selected models reference providers with a Base URL.
 - Selected providers have a direct API key or API key environment source.
-- A Soul is selected.
+- A role is selected.
 - A language is selected.
 
 The `configuration-models` section assigns `Plan Model`, `Execute Model`, and `Review Model` from enabled entries in the local model library. It does not allow manual model-name, Base URL, or API key entry.
 
-The `configuration-language` section selects the interface language. The `configuration-soul` section selects the active Solo/Soul role.
+The `configuration-language` section selects the interface language. The `configuration-soul` section selects the active role.
 
-Saving the configuration center writes settings, writes `.alius/config/providers.toml`, writes `.alius/config/model.toml`, and rebuilds the local runtime bridge. This is an administration surface, not a default model execution path.
+`/model` (model pool) works the same apply-on-select way: Add/View/Delete persist immediately; there is no "Save Model Pool"/"Cancel" button, and Esc exits.
+
+## Init Wizard
+
+Typing `/init` **clears the Conversation area** (including the welcome block) — it is a reset flow — then starts an inline `InitWizard` state machine in the workspace instead of reusing the `/config` tab surface. The pure state machine lives in `runtime/config/src/init_wizard.rs`; project filesystem effects and resumable state persistence live in `runtime/config/src/project_init.rs`.
+
+The visible flow is:
+
+```text
+INIT_START (skipped on fresh workspace — no Start confirmation)
+  -> RESUME (only when .alius/runtime/init-state.toml exists)
+  -> CHECK_WORKSPACE
+  -> CREATE_PROJECT (skipped on fresh workspace; only Reinitialize/Exit when .alius exists)
+  -> SELECT_LANGUAGE
+  -> CONFIGURE_MODEL_POOL
+  -> CONFIGURE_ASSIGNMENT
+  -> CONFIGURE_ROLE
+  -> COMPLETE
+```
+
+The right-side workflow panel renders the current `/init` state, configuration checklist, summaries, and import selections. It does not append cwd/git/footer metadata; that information belongs to the workspace status area. The Conversation area does not echo the `/init` command; it records a human-readable initialization status, errors, and the final check-mark completion message. Successful step progress stays in the right-side workflow panel instead of producing repeated `Output` blocks. The interaction surface renders the current state's action panel and uses operation-specific scopes such as `init-start`, `select-language`, `configure-model-pool`, `configure-assignment`, and `complete`.
+
+On a fresh workspace (no `.alius`), `/init` skips the `INIT_START` confirmation and runs `CHECK_WORKSPACE` + `CREATE_PROJECT` (reset=false) automatically to reach `SELECT_LANGUAGE`, **without writing `.alius/runtime/init-state.toml`**. So if the user Escapes before submitting any answer, `.alius` exists (the skeleton) but no resume state is left — the next `/init` sees `.alius` and offers Reinitialize/Exit. Persistence of init-state begins only on the first real submit. The `CREATE_PROJECT` choice panel (Reinitialize / Exit) is reached only when `.alius` already exists.
+
+The interaction surface top renders an **init stage nav bar** — `初始化 · 语言 · 模型池 · 分配 · 角色` — mirroring `/config`. "初始化" is a fixed non-selectable title; the four configurable stages are inline, the active one is white-background-highlighted, and stages whose data is already set get a `✓` prefix. `Shift+Tab` steps the wizard back one stage (reuse `InitWizard::back()`); walking forward again auto-skips stages that are already complete (`next_unfinished_state`). If a precondition is unmet moving forward (e.g. model pool emptied, then reaching Assignment), the existing per-stage guard surfaces the issue.
+
+Language selection during `/init` immediately updates the right-side workflow panel, action panel labels, and step feedback to the selected locale while keeping the internal operation scopes stable. The role step loads installed role formulas for selection, preserves saved role progress only when resuming init-state, and treats activation/installation failure as an `/init` error with recovery options instead of silently advancing.
+
+Slash commands are handled before plan-draft continuation input. This keeps `/init`, `/config`, and `/model` reachable even after an uninitialized workspace reports missing model or role requirements during a plan-draft attempt.
+
+When `.alius/runtime/init-state.toml` exists, `/init` starts with `Continue Previous`, `Restart`, and `Exit`. Successful transitions save progress to that file. `Complete` and `Cancelled` clear it.
+
+Model import inside `/init` uses the same provider catalog as `/model`: provider, API mode, Base URL, plaintext API Key input with paste support, remote model fetch, and model multi-select import. The CLI adapter executes the model fetch with `runtime-model`; `runtime-config` does not depend on `runtime-model`. Imported models are written to `.alius/config/providers.toml` immediately so a later `/config` task can read the same model pool even if initialization is resumed or interrupted. A successful `/init` model fetch also writes the entered API Key into the active runtime settings so Bypass/Direct chat can start without reporting a missing `api_key`. `/init` then assigns Plan/Execute/Review from the imported model pool.
+
+Fresh `/init` starts from an empty wizard context instead of pre-filling language, role, or model assignment from existing runtime settings. Choosing reinitialization resets project config defaults, clears the selected role, clears language overrides, and clears model assignment before the user selects new values. After role configuration succeeds, initialization saves and exits automatically. The workspace defaults to Copilot mode. Team mode is entered through a separate workspace operation, not as a mode choice during initialization.
 
 ## Model Pool
 
@@ -117,7 +195,7 @@ GLM-5-Turbo    BigModel GLM (Coding Plan)    OpenAI API
 
 API Key input is plaintext, accepts keyboard input and paste, and is not masked while the user edits it. Saved keys are still not shown in session output or model details.
 
-Returned models are shown as a multi-select list. Manual model-name entry is not part of the add flow. Deleting a model is blocked while it is assigned to `Plan Model`, `Execute Model`, or `Review Model`; the user must change the assignment in `/config` first.
+Returned models are shown as a multi-select list. Manual model-name entry is not part of the add flow. Imported and deleted model-pool entries are written to `.alius/config/providers.toml` immediately, so reopening `/config` sees the current model pool. Deleting a model is blocked while it is assigned to `Plan Model`, `Execute Model`, or `Review Model`; the user must change the assignment in `/config` first.
 
 Saving `/config` synchronizes compatibility fields: `Plan Model` maps to `tiers.light`, `Execute Model` maps to `tiers.medium` and the active legacy runtime model, and `Review Model` maps to `tiers.high` and `Settings.llm.review_model`.
 

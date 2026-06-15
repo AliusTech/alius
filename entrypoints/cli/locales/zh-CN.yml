@@ -565,6 +565,14 @@ workspace:
     description: "Alius 仍在推理中。请选择是否中断本次运行。"
     confirm: "中断执行"
     continue_waiting: "继续等待"
+  tool_confirmation:
+    title: "工具确认请求"
+    description: "此工具操作需要您的批准才能执行"
+    tool: "工具"
+    allow: "允许"
+    deny: "拒绝"
+  tool_confirmed: "工具执行已批准"
+  tool_denied: "工具执行已拒绝"
   decision:
     title: "需要确认"
     description: "Alius 已在澄清任务后生成计划。请选择如何继续："

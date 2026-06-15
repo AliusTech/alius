@@ -838,6 +838,30 @@ async fn run_loop(
                 WorkspaceAction::ClosePlan => {
                     state.close_plan();
                 }
+                WorkspaceAction::RespondToolConfirmation {
+                    tool_call_id,
+                    approved,
+                } => {
+                    // Stage B B5: Send confirmation response to runtime
+                    if let Some(run_ref) = &state.current_run_ref {
+                        if let Some(bridge) = &session.bridge {
+                            if let Err(e) = bridge.respond_confirmation(run_ref, &tool_call_id, approved) {
+                                state.push_block(ConversationBlock::error(format!(
+                                    "Failed to respond to tool confirmation: {}",
+                                    e
+                                )));
+                            }
+                            // Record the decision in conversation
+                            let decision_text = if approved {
+                                t!("workspace.tool_confirmed").to_string()
+                            } else {
+                                t!("workspace.tool_denied").to_string()
+                            };
+                            state.push_block(ConversationBlock::decision(decision_text));
+                        }
+                    }
+                    state.restore_text_input();
+                }
             },
             Event::Paste(text) => {
                 state.handle_paste(&text);
@@ -1046,6 +1070,9 @@ async fn execute_goal(
 
         match bridge.start_streaming(&prompt, rt_mode) {
             Ok((run_ref, mut event_rx)) => {
+                // Stage B: Store run_ref for tool confirmation responses
+                state.current_run_ref = Some(run_ref.clone());
+
                 let mut full_response = String::new();
                 let mut errors: Vec<String> = Vec::new();
                 let mut done = false;
@@ -1282,6 +1309,17 @@ async fn collect_plan_controller_response(
                     }
                     (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
                         state.record_tool_call_completed(value);
+                    }
+                    (
+                        CoreEventKind::ToolConfirmationRequired,
+                        CoreEventPayload::ToolConfirmation {
+                            tool_call_id,
+                            tool_name,
+                            details,
+                        },
+                    ) => {
+                        // Stage B B5: Show tool confirmation UI
+                        state.show_tool_confirmation(tool_call_id, tool_name, details);
                     }
                     (
                         CoreEventKind::FinalResult,
@@ -2294,6 +2332,8 @@ struct WorkspaceState {
     expanded_blocks: std::collections::HashSet<String>,
     global_expanded: bool,
     block_row_map: std::collections::HashMap<String, (u16, u16)>,
+    /// Current run reference for tool confirmation (Stage B).
+    current_run_ref: Option<protocol_interface::core::RunRef>,
 }
 
 impl WorkspaceState {
@@ -2348,6 +2388,7 @@ impl WorkspaceState {
             expanded_blocks: std::collections::HashSet::new(),
             global_expanded: false,
             block_row_map: std::collections::HashMap::new(),
+            current_run_ref: None,
         }
     }
 
@@ -3318,6 +3359,20 @@ impl WorkspaceState {
             "workspace.execution_interrupt.description"
         )));
         self.interaction = InteractionUi::Decision(DecisionState::execution_interrupt());
+        self.focus_zone = FocusZone::Input;
+    }
+
+    /// Show tool confirmation prompt (Stage B B5).
+    fn show_tool_confirmation(&mut self, tool_call_id: &str, tool_name: &str, details: &str) {
+        let description = format!(
+            "{}\n\n{}: {}\n\n{}",
+            t!("workspace.tool_confirmation.description"),
+            t!("workspace.tool_confirmation.tool"),
+            tool_name,
+            details
+        );
+        self.push_block(ConversationBlock::decision(description));
+        self.interaction = InteractionUi::Decision(DecisionState::tool_confirmation(tool_call_id));
         self.focus_zone = FocusZone::Input;
     }
 

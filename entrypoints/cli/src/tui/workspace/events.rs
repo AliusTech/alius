@@ -22,6 +22,11 @@ pub enum WorkspaceAction {
     ContinueExecution,
     ContinueConfig,
     ClosePlan,
+    /// Respond to a tool confirmation request (Stage B B5).
+    RespondToolConfirmation {
+        tool_call_id: String,
+        approved: bool,
+    },
     Quit,
 }
 
@@ -53,4 +58,6 @@ pub enum DecisionKind {
     ExecutionInterrupt,
     ConfigExit,
     PlanCompletion,
+    /// Tool confirmation decision (Stage B).
+    ToolConfirmation,
 }

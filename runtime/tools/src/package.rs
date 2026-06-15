@@ -106,6 +106,7 @@ impl ToolPackageResolver {
                 registry.register(tool);
             }
         }
+        crate::native::register_native_tools(&mut registry);
         Ok(registry)
     }
 
@@ -114,7 +115,9 @@ impl ToolPackageResolver {
             Ok(registry) => registry,
             Err(err) => {
                 eprintln!("[warn] Failed to load Rust WASM tools: {err}");
-                ToolRegistry::new()
+                let mut registry = ToolRegistry::new();
+                crate::native::register_native_tools(&mut registry);
+                registry
             }
         }
     }

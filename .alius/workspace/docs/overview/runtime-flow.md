@@ -92,15 +92,22 @@ Plan mode can iterate through model calls and tool results when a tool registry 
 ```text
 alius init
   -> load Settings
-  -> reset_project_config(locale)
-  -> create .alius/config/*
-  -> ensure .alius/memory/*
-  -> ensure .alius/workspace/
-  -> run init wizard
-  -> save selected provider, model, locale, and soul settings
+  -> load or create runtime-config InitWizard state machine
+  -> resume from .alius/runtime/init-state.toml when present
+  -> check workspace
+  -> create or verify .alius/config, memory, capability, runtime, and workspace directories
+  -> select language
+  -> configure model pool
+  -> assign Plan, Execute, and Review models
+  -> select SOUL
+  -> resolve capability lock
+  -> create workspace template directories
+  -> validate required state
+  -> save settings, providers.toml, and model.toml
+  -> clear init-state on Complete or Cancelled
 ```
 
-Current init code ensures the workspace directory exists. It does not yet generate this full documentation set.
+The workspace `/init` flow uses operation-specific prompt scopes for the current state. It does not present the `/config` tab scope list while initialization is running. The CLI adapter executes state-machine commands and keeps remote model-list fetching outside `runtime-config`.
 
 ## Extension Command Flow
 

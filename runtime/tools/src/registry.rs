@@ -6,9 +6,12 @@ use std::sync::Arc;
 use crate::{AliusTool, WasmPluginTool};
 use protocol_interface::ToolDef;
 
-/// Tool registry for managing available tools
+/// Tool registry for managing available tools.
+///
+/// Stores tools as `Arc<dyn AliusTool>` so both native Rust tools and WASM
+/// plugin adapters (`WasmPluginTool`) live in the same map.
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<WasmPluginTool>>,
+    tools: HashMap<String, Arc<dyn AliusTool>>,
 }
 
 impl ToolRegistry {
@@ -18,18 +21,25 @@ impl ToolRegistry {
         }
     }
 
+    /// Register any tool (native or WASM-backed).
+    pub fn register<T: AliusTool + 'static>(&mut self, tool: T) {
+        let name = tool.name().to_string();
+        self.tools.insert(name, Arc::new(tool));
+    }
+
     /// Register a Rust WASM module tool adapter.
-    pub fn register(&mut self, tool: WasmPluginTool) {
-        let name = tool.name();
-        self.tools.insert(name.to_string(), Arc::new(tool));
+    pub fn register_wasm(&mut self, tool: WasmPluginTool) {
+        self.register(tool);
+    }
+
+    /// Register a tool with a custom name (for MCP tools with qualified names)
+    pub fn register_with_name(&mut self, tool: Arc<dyn AliusTool>, name: String) {
+        self.tools.insert(name, tool);
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn AliusTool>> {
-        self.tools.get(name).map(|tool| {
-            let tool: Arc<dyn AliusTool> = tool.clone();
-            tool
-        })
+        self.tools.get(name).cloned()
     }
 
     /// Check if a tool exists

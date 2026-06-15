@@ -141,6 +141,16 @@ impl CoreRuntime {
         }
     }
 
+    /// Access the tool registry.
+    pub fn tool_registry(&self) -> Option<Arc<runtime_tools::ToolRegistry>> {
+        self.tool_registry.clone()
+    }
+
+    /// Access the session manager (Stage B: needed for tool confirmation bridge).
+    pub fn session_manager(&self) -> Arc<SessionManager> {
+        self.session_manager.clone()
+    }
+
     fn validate_envelope(
         &self,
         envelope: &ProtocolEnvelope<CoreRequest>,
@@ -230,6 +240,7 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
         };
 
@@ -316,6 +327,7 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
         };
 
@@ -686,6 +698,7 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
         };
 

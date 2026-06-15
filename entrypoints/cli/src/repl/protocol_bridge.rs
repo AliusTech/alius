@@ -210,6 +210,18 @@ impl ProtocolBridge {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
+    /// Respond to a tool confirmation request (Stage B B4).
+    pub fn respond_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<()> {
+        self.manager
+            .respond_confirmation(run_ref, tool_call_id, approved)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
     /// Query log records through the Runtime Manager.
     #[allow(dead_code)]
     pub fn query_logs(&self, query: LogQuery) -> Result<Vec<LogRecord>> {

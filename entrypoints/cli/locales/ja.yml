@@ -565,6 +565,14 @@ workspace:
     description: "Alius はまだ推論中です。この実行を中断するか選択してください。"
     confirm: "実行を中断"
     continue_waiting: "待機を続ける"
+  tool_confirmation:
+    title: "ツール確認が必要"
+    description: "このツール操作を実行する前に承認が必要です"
+    tool: "ツール"
+    allow: "許可"
+    deny: "拒否"
+  tool_confirmed: "ツール実行が承認されました"
+  tool_denied: "ツール実行が拒否されました"
   decision:
     title: "確認が必要です"
     description: "Alius はタスクを確認したうえでプランを生成しました。続行方法を選択してください："

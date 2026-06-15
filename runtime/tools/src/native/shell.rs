@@ -1,0 +1,172 @@
+//! Native `shell` tool — cross-platform command execution with Shell Gate.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use tokio::process::Command;
+
+use protocol_interface::{AliusError, RuntimeMode};
+
+use crate::permission::PermissionLevel;
+use crate::shell_gate::authorizer::{authorize, ShellGateConfig, ShellGateDecision};
+use crate::shell_gate::{ShellCommandRequest, ShellOrigin};
+use crate::traits::{AliusTool, ToolContext, ToolResult};
+
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const MAX_OUTPUT_CHARS: usize = 20_000;
+
+pub struct Shell;
+
+#[async_trait]
+impl AliusTool for Shell {
+    fn name(&self) -> &'static str {
+        "shell"
+    }
+
+    fn description(&self) -> &'static str {
+        "Run a shell command (sh -c on Unix, cmd /C on Windows). Workspace-scoped; high-risk commands need approval in Plan mode."
+    }
+
+    fn required_permission(&self) -> PermissionLevel {
+        PermissionLevel::Execute
+    }
+
+    fn preview_confirmation(&self, args: &Value, mode: RuntimeMode) -> bool {
+        // Plan mode + Shell Gate "ApprovalRequired" (High/Critical risk) → pause.
+        if mode != RuntimeMode::Plan {
+            return false;
+        }
+        let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        if command.is_empty() {
+            return false;
+        }
+        let req = ShellCommandRequest {
+            command: command.to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::new(),
+            origin: ShellOrigin::LocalCli,
+            workspace_root: PathBuf::new(),
+        };
+        matches!(
+            authorize(&req, &ShellGateConfig::default()),
+            ShellGateDecision::ApprovalRequired { .. }
+        )
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "The shell command to run" },
+                "cwd": { "type": "string", "description": "Working directory relative to workspace. Default: workspace root" },
+                "timeout": { "type": "integer", "description": format!("Timeout in seconds. Default: {DEFAULT_TIMEOUT_SECS}") }
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolResult, AliusError> {
+        let command = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if command.is_empty() {
+            return Ok(ToolResult::error("command is required".to_string()));
+        }
+        let timeout_secs = args
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .max(1);
+        let cwd = resolve_cwd(args.get("cwd").and_then(|v| v.as_str()), &ctx.workspace);
+
+        let req = ShellCommandRequest {
+            command: command.clone(),
+            args: Vec::new(),
+            cwd: cwd.clone(),
+            origin: ShellOrigin::LocalCli,
+            workspace_root: ctx.workspace.clone(),
+        };
+        match authorize(&req, &ShellGateConfig::default()) {
+            ShellGateDecision::Deny { reason } => {
+                return Ok(ToolResult::error(format!("denied by Shell Gate: {reason}")));
+            }
+            // Allow + ApprovalRequired both proceed. Plan-mode confirmation is
+            // gated by preview_confirmation() at the tool_step level (Stage B).
+            _ => {}
+        }
+
+        let mut cmd = build_command(&command);
+        cmd.current_dir(&cwd);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        // env fully inherited from parent process (default).
+
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return Ok(ToolResult::error(format!("failed to spawn: {e}"))),
+        };
+        let output =
+            match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
+                .await
+            {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => return Ok(ToolResult::error(format!("wait failed: {e}"))),
+                Err(_) => {
+                    return Ok(ToolResult::error(format!(
+                        "timed out after {timeout_secs}s"
+                    )))
+                }
+            };
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit = output.status.code().unwrap_or(-1);
+        let combined = format!(
+            "[exit:{}]\n{}\n{}",
+            exit,
+            truncate_output(&stdout),
+            truncate_output(&stderr)
+        );
+        Ok(ToolResult {
+            output: combined,
+            success: output.status.success(),
+            metadata: Some(json!({ "exit_code": exit })),
+        })
+    }
+}
+
+fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> PathBuf {
+    match cwd {
+        Some(c) if !c.is_empty() => workspace.join(c),
+        _ => workspace.to_path_buf(),
+    }
+}
+
+#[cfg(unix)]
+fn build_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
+#[cfg(windows)]
+fn build_command(command: &str) -> Command {
+    let mut c = Command::new("cmd");
+    c.arg("/C").arg(command);
+    c
+}
+
+fn truncate_output(s: &str) -> String {
+    if s.chars().count() <= MAX_OUTPUT_CHARS {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(MAX_OUTPUT_CHARS).collect();
+    format!("{truncated}\n... [output truncated]")
+}

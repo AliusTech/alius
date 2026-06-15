@@ -165,6 +165,8 @@ pub struct DecisionState {
     pub custom_input: InputBuffer,
     pub custom_focused: bool,
     pub kind: DecisionKind,
+    /// Tool call ID for tool confirmation decisions (Stage B).
+    pub tool_call_id: Option<String>,
 }
 
 impl DecisionState {
@@ -181,6 +183,7 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::PlanApproval,
+            tool_call_id: None,
         }
     }
 
@@ -193,6 +196,7 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::PlanCompletion,
+            tool_call_id: None,
         }
     }
 
@@ -211,6 +215,7 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::NodeReview,
+            tool_call_id: None,
         }
     }
 
@@ -223,6 +228,7 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::InitCommand,
+            tool_call_id: None,
         }
     }
 
@@ -238,6 +244,24 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::ExecutionInterrupt,
+            tool_call_id: None,
+        }
+    }
+
+    /// Tool confirmation decision (Stage B B5).
+    pub fn tool_confirmation(tool_call_id: &str) -> Self {
+        Self {
+            title: t!("workspace.tool_confirmation.title").to_string(),
+            scope_title: Some("tool-confirmation".to_string()),
+            options: vec![
+                t!("workspace.tool_confirmation.allow").to_string(),
+                t!("workspace.tool_confirmation.deny").to_string(),
+            ],
+            selected: 0,
+            custom_input: InputBuffer::default(),
+            custom_focused: false,
+            kind: DecisionKind::ToolConfirmation,
+            tool_call_id: Some(tool_call_id.to_string()),
         }
     }
 
@@ -253,6 +277,7 @@ impl DecisionState {
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::ConfigExit,
+            tool_call_id: None,
         }
     }
 
@@ -320,6 +345,7 @@ impl DecisionState {
                 DecisionKind::ExecutionInterrupt => WorkspaceAction::ContinueExecution,
                 DecisionKind::ConfigExit => WorkspaceAction::ContinueConfig,
                 DecisionKind::PlanCompletion => WorkspaceAction::ClosePlan,
+                DecisionKind::ToolConfirmation => WorkspaceAction::CancelDecision,
             };
         }
 
@@ -350,6 +376,15 @@ impl DecisionState {
                 _ => WorkspaceAction::ContinueConfig,
             },
             DecisionKind::PlanCompletion => WorkspaceAction::ClosePlan,
+            DecisionKind::ToolConfirmation => {
+                // Stage B B5: Return tool confirmation response
+                let tool_call_id = self.tool_call_id.clone().unwrap_or_default();
+                let approved = self.selected == 0; // 0 = Allow, 1 = Deny
+                WorkspaceAction::RespondToolConfirmation {
+                    tool_call_id,
+                    approved,
+                }
+            }
         }
     }
 }

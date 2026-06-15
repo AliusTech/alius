@@ -1,0 +1,30 @@
+state = "ConfigureModelPool"
+
+[context]
+cwd = "/Users/weixug/Workspaces/02_AliusTech/Alius/alius_cli/entrypoints/cli"
+language = "zh-CN"
+fetched_models = []
+selected_model_indices = []
+plan_model = "glm-4.7-thinking"
+execute_model = "claude-sonnet-4.5"
+review_model = "gpt-5.5"
+selected_soul = "default"
+capability_lock_exists = false
+workspace_created = false
+issues = []
+selected_index = 0
+
+[[context.model_pool]]
+id = "bigmodel-openai-gpt-4o"
+display_name = "gpt-4o"
+provider = "bigmodel"
+api_protocol = "OpenAi"
+base_url = "https://api.openai.com/v1"
+model_name = "gpt-4o"
+
+[[context.soul_choices]]
+id = "default"
+description = "current"
+
+[[context.message_log]]
+Success = "Language selected: zh-CN"
