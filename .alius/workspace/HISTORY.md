@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-15
 
+[2026-06-15 23:56] Codex: runtime/core/src/loop_engine/engine.rs + runtime/model/src/client.rs - P3-3 test hardening: upgraded Chat denial test to run LoopEngine::run and assert ToolConfirmationRequired -> ToolCallCompleted -> ErrorRaised(tool_denied) -> FinalResult(success=false); added hidden provider injection constructor for engine tests.
+
 [2026-06-15 18:50] Alius: runtime/core/src/loop_engine/engine.rs - P3-3 Chat path denial parity: run_chat_with_tools now emits ErrorRaised(code: "tool_denied") before FinalResult(success: false) on batch denial, matching Plan path semantics; added chat_denial_batch_returns_denied test; 31 engine+tool_step tests total.
 
 [2026-06-15 18:45] Alius: .alius/workspace/docs/modules/tools-and-shell-gate.md - P3-3 doc fix: corrected audit failure event from ErrorRaised to LogRecordEmitted to match implementation; clarified these are non-status-changing diagnostic events with monotonic sequences.

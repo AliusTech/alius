@@ -1199,7 +1199,10 @@ mod tests {
     /// Chat path denial: ErrorRaised(tool_denied) + FinalResult(success=false).
     #[tokio::test]
     async fn chat_denial_emits_error_raised_and_failed_final() {
+        use runtime_model::{ChatEvent, ChatStream, LlmProvider, ToolCall};
         use runtime_tools::AliusTool;
+        use std::future::Future;
+        use std::pin::Pin;
         use std::sync::{Arc, Mutex};
 
         struct DenyTool;
@@ -1230,8 +1233,80 @@ mod tests {
             }
         }
 
+        struct ToolCallProvider {
+            tool_calls: Vec<ToolCall>,
+        }
+
+        impl LlmProvider for ToolCallProvider {
+            fn chat_stream<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<ChatStream>> + Send + 'a>> {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok(stream)
+                })
+            }
+
+            fn chat_once<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _system: Option<&'a str>,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + 'a>> {
+                Box::pin(async { Ok(String::new()) })
+            }
+
+            fn list_models<'a>(
+                &'a self,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>
+            {
+                Box::pin(async { Ok(Vec::new()) })
+            }
+
+            fn chat_stream_with_tools<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                let tool_calls = self.tool_calls.clone();
+                Box::pin(async move {
+                    let stream: ChatStream = Box::pin(futures::stream::iter(vec![
+                        Ok(ChatEvent::Delta {
+                            text: "requesting tool".to_string(),
+                        }),
+                        Ok(ChatEvent::Done {
+                            full_response: "requesting tool".to_string(),
+                        }),
+                    ]));
+                    Ok((stream, Some(tool_calls)))
+                })
+            }
+
+            fn continue_with_tool_results<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                _tool_results: &'a [(String, String, String)],
+                _assistant_tool_calls: &'a [ToolCall],
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok((stream, None))
+                })
+            }
+        }
+
         let mut registry = runtime_tools::ToolRegistry::new();
         registry.register(DenyTool).unwrap();
+        let registry = Arc::new(registry);
 
         let session_manager = Arc::new(crate::SessionManager::new(
             protocol_interface::core::WorkspaceRef::new("/tmp"),
@@ -1239,56 +1314,92 @@ mod tests {
         let session = session_manager.create_session();
         let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
 
-        // Cancel immediately to trigger denial.
-        let sm = session_manager.clone();
-        let rr = run_ref.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            let _ = sm.cancel_run(&rr);
-        });
+        let tool_call = ToolCall::new("tc-1".to_string(), "deny_tool".to_string(), json!({}));
+        let client = Arc::new(runtime_model::LlmClient::new_with_provider_for_test(
+            Box::new(ToolCallProvider {
+                tool_calls: vec![tool_call],
+            }),
+            "mock-model",
+            protocol_interface::ProviderType::Openai,
+        ));
 
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let events_clone = events.clone();
-        let mut seq = 0u64;
-
-        let call = runtime_model::ToolCall {
-            id: "tc-1".into(),
-            name: "deny_tool".into(),
-            args: json!({}),
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut conversation = runtime_model::Conversation::new(None);
+        conversation.add_user_message("please run the denied tool".to_string());
+        let ctx = LoopContext {
+            client,
+            conversation,
+            settings: runtime_config::LlmSettings::default(),
+            workspace: tmp.path().to_path_buf(),
+            tool_registry: Some(registry),
+            session: Some(session_manager.clone()),
+            max_context_tokens: 4096,
+            cancel_token: None,
+            log_writer: None,
+        };
+        let input = RunLoopInput {
+            content: "please run the denied tool".to_string(),
+            mode: RuntimeMode::Chat,
+            policy: LoopPolicy::chat(),
         };
 
-        // Use Chat mode with tools.
-        let batch = super::super::tool_step::execute_tools(
-            &[call],
-            &registry,
-            std::path::Path::new("/tmp"),
-            "test",
-            RuntimeMode::Chat,
-            Some(&session_manager),
-            &mut |e| events_clone.lock().unwrap().push(e),
-            &run_ref,
-            &trace_id,
-            &mut seq,
-            None,
-        )
-        .await
-        .unwrap();
+        let deny_session = session_manager.clone();
+        let rr = run_ref.clone();
+        let deny_handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            deny_session
+                .deliver_confirmation(&rr, "tc-1", false)
+                .unwrap();
+        });
 
-        // The batch must be marked as denied.
-        assert!(batch.batch_denied, "Chat batch should be denied");
-        assert_eq!(batch.denial_reason, Some("cancelled"));
+        let events = Arc::new(Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+        let result = LoopEngine::run(&run_ref, &trace_id, &input, &ctx, &mut |e| {
+            events_clone.lock().unwrap().push(e)
+        })
+        .await;
+        deny_handle.await.unwrap();
 
-        // ToolCallCompleted must carry denied=true. The engine's
-        // run_chat_with_tools checks batch_denied and emits
-        // ErrorRaised(tool_denied) + FinalResult(success=false).
+        assert!(result.final_content.contains("Tool results:"));
+        assert!(!result.final_content.contains("should not run"));
+
         let evts = events.lock().unwrap();
-        let completed = evts
+        let confirmation_idx = evts
             .iter()
-            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
-        assert!(completed.is_some(), "must emit ToolCallCompleted");
-        if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
+            .position(|e| e.kind == CoreEventKind::ToolConfirmationRequired)
+            .expect("must emit ToolConfirmationRequired");
+        let completed_idx = evts
+            .iter()
+            .position(|e| e.kind == CoreEventKind::ToolCallCompleted)
+            .expect("must emit ToolCallCompleted");
+        let error_idx = evts
+            .iter()
+            .position(|e| {
+                e.kind == CoreEventKind::ErrorRaised
+                    && matches!(
+                        &e.payload,
+                        CoreEventPayload::Error { code, .. } if code == "tool_denied"
+                    )
+            })
+            .expect("must emit ErrorRaised(tool_denied)");
+        let final_idx = evts
+            .iter()
+            .position(|e| {
+                e.kind == CoreEventKind::FinalResult
+                    && matches!(&e.payload, CoreEventPayload::Final { success: false, .. })
+            })
+            .expect("must emit FinalResult(success=false)");
+
+        assert!(confirmation_idx < completed_idx);
+        assert!(completed_idx < error_idx);
+        assert!(error_idx < final_idx);
+
+        if let CoreEventPayload::Json { value } = &evts[completed_idx].payload {
             assert_eq!(value["success"], false);
             assert_eq!(value["denied"], true);
+            assert_eq!(value["denial_reason"], "denied_by_user");
+        } else {
+            panic!("ToolCallCompleted must use JSON payload");
         }
     }
 }

@@ -86,6 +86,24 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    /// Construct a client from a provider implementation for cross-crate engine tests.
+    #[doc(hidden)]
+    #[cfg(debug_assertions)]
+    pub fn new_with_provider_for_test(
+        provider: Box<dyn crate::provider::LlmProvider>,
+        model: impl Into<String>,
+        provider_type: ProviderType,
+    ) -> Self {
+        Self {
+            provider,
+            model: model.into(),
+            provider_type,
+            provider_mode: None,
+            model_cache: RwLock::new(None),
+            cache_ttl: Duration::from_secs(300),
+        }
+    }
+
     /// Create a new LLM client from LLM settings.
     ///
     /// Selects the provider implementation based on `settings.provider`.
