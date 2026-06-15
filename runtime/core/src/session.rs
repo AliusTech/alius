@@ -21,6 +21,8 @@ struct RunState {
     /// When the user responds (or the run is cancelled), the sender is removed;
     /// dropping it makes the receiver's `await` return Err (treated as denied).
     confirmation: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    /// Cancellation token for stopping the run. Checked by loop engine.
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl SessionManager {
@@ -92,6 +94,7 @@ impl SessionManager {
                 events: Vec::new(),
                 status: RunStatus::Started,
                 confirmation: HashMap::new(),
+                cancel_token: tokio_util::sync::CancellationToken::new(),
             },
         );
 
@@ -229,6 +232,10 @@ impl SessionManager {
         match state.confirmation.remove(tool_call_id) {
             Some(sender) => {
                 let _ = sender.send(approved);
+                drop(runs);
+
+                // Reset status back to Running after confirmation
+                self.update_run_status(run_ref, RunStatus::Running)?;
                 Ok(())
             }
             None => Err(ProtocolError::Internal(format!(
@@ -244,6 +251,102 @@ impl SessionManager {
         if let Some(state) = runs.get_mut(run_ref.as_str()) {
             state.confirmation.clear();
         }
+    }
+
+    /// Cancel a run by triggering its cancellation token.
+    /// This stops the loop execution and updates status to Cancelled.
+    /// Emits a cancellation event if events exist.
+    pub fn cancel_run(&self, run_ref: &RunRef) -> Result<(), ProtocolError> {
+        let runs = self.runs.read().unwrap();
+        let state = runs
+            .get(run_ref.as_str())
+            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
+
+        state.cancel_token.cancel();
+
+        // Extract trace_id from existing events if available
+        let trace_id = state.events.first().map(|e| e.trace_id.clone());
+        drop(runs);
+
+        self.update_run_status(run_ref, RunStatus::Cancelled)?;
+        self.cancel_pending_confirmations(run_ref);
+
+        // Persist cancellation event if we have a trace_id
+        if let Some(trace_id) = trace_id {
+            let cancel_event = CoreEvent::new(
+                run_ref.clone(),
+                trace_id,
+                0, // sequence will be ignored, just for event creation
+                CoreEventKind::ErrorRaised,
+                CoreEventPayload::Error {
+                    code: "cancelled".to_string(),
+                    message: "Run cancelled by user".to_string(),
+                },
+            );
+            let _ = self.push_event(run_ref, cancel_event);
+        }
+
+        Ok(())
+    }
+
+    /// Check if a run has been cancelled.
+    pub fn is_cancelled(&self, run_ref: &RunRef) -> bool {
+        let runs = self.runs.read().unwrap();
+        runs.get(run_ref.as_str())
+            .map(|s| s.cancel_token.is_cancelled())
+            .unwrap_or(false)
+    }
+
+    /// Get a clone of the cancel token for a run.
+    /// Used to pass the token to the loop engine.
+    pub fn get_cancel_token(
+        &self,
+        run_ref: &RunRef,
+    ) -> Result<tokio_util::sync::CancellationToken, ProtocolError> {
+        let runs = self.runs.read().unwrap();
+        let state = runs
+            .get(run_ref.as_str())
+            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
+        Ok(state.cancel_token.clone())
+    }
+
+    /// Handle automatic status transitions based on event kinds.
+    /// Called after pushing an event to maintain status consistency.
+    /// Does not transition if already in a terminal state (Cancelled).
+    pub fn handle_event_status_transition(
+        &self,
+        run_ref: &RunRef,
+        event: &CoreEvent,
+    ) -> Result<(), ProtocolError> {
+        // Check if run is already in a terminal state
+        let current_status = {
+            let runs = self.runs.read().unwrap();
+            runs.get(run_ref.as_str())
+                .map(|s| s.status.clone())
+                .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?
+        };
+
+        // Don't transition from Cancelled (it's a terminal state)
+        if current_status == RunStatus::Cancelled {
+            return Ok(());
+        }
+
+        match (&event.kind, &event.payload) {
+            (CoreEventKind::FinalResult, CoreEventPayload::Final { success: true, .. }) => {
+                self.update_run_status(run_ref, RunStatus::Completed)?;
+            }
+            (CoreEventKind::FinalResult, CoreEventPayload::Final { success: false, .. }) => {
+                self.update_run_status(run_ref, RunStatus::Failed)?;
+            }
+            (CoreEventKind::ErrorRaised, _) => {
+                self.update_run_status(run_ref, RunStatus::Failed)?;
+            }
+            (CoreEventKind::ToolConfirmationRequired, _) => {
+                self.update_run_status(run_ref, RunStatus::WaitingForApproval)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Get all run refs across all sessions.

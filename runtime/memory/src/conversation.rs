@@ -108,7 +108,14 @@ impl ConversationStore {
             std::fs::create_dir_all(parent)?;
         }
         let line = serde_json::to_string(message)?;
-        std::fs::write(&messages_path, format!("{}\n", line))?;
+
+        // Use append mode to avoid overwriting existing messages
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&messages_path)?;
+        writeln!(file, "{}", line)?;
         Ok(())
     }
 

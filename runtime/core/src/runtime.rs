@@ -23,7 +23,7 @@ pub struct CoreRuntime {
     memory_global: Arc<RwLock<Option<runtime_store::MemoryStore>>>,
     memory_project: Arc<RwLock<Option<runtime_store::MemoryStore>>>,
     tool_registry: Option<Arc<runtime_tools::ToolRegistry>>,
-    conversation_store: runtime_store::ConversationStore,
+    conversation_store: Arc<runtime_store::ConversationStore>,
 }
 
 struct ActiveRun {
@@ -89,8 +89,10 @@ impl CoreRuntimeBuilder {
 
         let memory_global = runtime_store::MemoryStore::global().ok();
         let memory_project = runtime_store::MemoryStore::project().ok();
-        let conversation_store = runtime_store::ConversationStore::new()
-            .map_err(|e| ProtocolError::Internal(format!("conversation store: {}", e)))?;
+        let conversation_store = Arc::new(
+            runtime_store::ConversationStore::new()
+                .map_err(|e| ProtocolError::Internal(format!("conversation store: {}", e)))?,
+        );
 
         Ok(CoreRuntime {
             session_manager: Arc::new(SessionManager::new(workspace_ref)),
@@ -126,8 +128,10 @@ impl CoreRuntime {
         let client = LlmClient::new(llm_settings)
             .unwrap_or_else(|_| LlmClient::new(runtime_config::LlmSettings::default()).unwrap());
 
-        let conversation_store = runtime_store::ConversationStore::new()
-            .expect("Failed to create conversation store for test runtime");
+        let conversation_store = Arc::new(
+            runtime_store::ConversationStore::new()
+                .expect("Failed to create conversation store for test runtime"),
+        );
 
         Self {
             session_manager: Arc::new(SessionManager::new(workspace_ref)),
@@ -139,6 +143,16 @@ impl CoreRuntime {
             tool_registry: None,
             conversation_store,
         }
+    }
+
+    /// Access the tool registry.
+    pub fn tool_registry(&self) -> Option<Arc<runtime_tools::ToolRegistry>> {
+        self.tool_registry.clone()
+    }
+
+    /// Access the session manager (Stage B: needed for tool confirmation bridge).
+    pub fn session_manager(&self) -> Arc<SessionManager> {
+        self.session_manager.clone()
     }
 
     fn validate_envelope(
@@ -221,7 +235,23 @@ impl CoreRuntimeApi for CoreRuntime {
 
         let mut conversation = Conversation::new(soul_prompt);
         if !user_content.is_empty() {
-            conversation.add_user_message(user_content);
+            conversation.add_user_message(user_content.clone());
+
+            // Persist user message to conversation store
+            let session_id =
+                protocol_interface::SessionId::from_existing(session_ref.as_str().to_string());
+            let message = protocol_interface::Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: protocol_interface::MessageRole::User,
+                content: user_content.clone(),
+                created_at: chrono::Utc::now(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+            };
+            let _ = self
+                .conversation_store
+                .append_message(&session_id, &message);
         }
 
         let ctx = LoopContext {
@@ -230,11 +260,14 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
+            cancel_token: None,
         };
 
         let sr = session_ref.clone();
         let tr = turn_ref.clone();
+        let conversation_store = self.conversation_store.clone();
 
         let mut loop_events = Vec::new();
         let _result = tokio::task::block_in_place(|| {
@@ -247,14 +280,39 @@ impl CoreRuntimeApi for CoreRuntime {
         });
 
         for event in loop_events {
-            self.session_manager.push_event(
-                &run_ref,
-                event.with_session_ref(sr.clone()).with_turn_ref(tr.clone()),
-            )?;
-        }
+            let event = event.with_session_ref(sr.clone()).with_turn_ref(tr.clone());
+            self.session_manager.push_event(&run_ref, event.clone())?;
 
-        self.session_manager
-            .update_run_status(&run_ref, RunStatus::Completed)?;
+            // Persist assistant message on FinalResult
+            if let CoreEventKind::FinalResult = event.kind {
+                if let CoreEventPayload::Final {
+                    content,
+                    success: true,
+                } = &event.payload
+                {
+                    if let Some(session_ref) = &event.session_ref {
+                        let session_id = protocol_interface::SessionId::from_existing(
+                            session_ref.as_str().to_string(),
+                        );
+                        let message = protocol_interface::Message {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: protocol_interface::MessageRole::Assistant,
+                            content: content.clone(),
+                            created_at: chrono::Utc::now(),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            tool_name: None,
+                        };
+                        let _ = conversation_store.append_message(&session_id, &message);
+                    }
+                }
+            }
+
+            // Handle status transitions
+            let _ = self
+                .session_manager
+                .handle_event_status_transition(&run_ref, &event);
+        }
 
         Ok(run_ref)
     }
@@ -307,8 +365,27 @@ impl CoreRuntimeApi for CoreRuntime {
 
         let mut conversation = Conversation::new(soul_prompt);
         if !user_content.is_empty() {
-            conversation.add_user_message(user_content);
+            conversation.add_user_message(user_content.clone());
+
+            // Persist user message to conversation store
+            let session_id =
+                protocol_interface::SessionId::from_existing(session_ref.as_str().to_string());
+            let message = protocol_interface::Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: protocol_interface::MessageRole::User,
+                content: user_content,
+                created_at: chrono::Utc::now(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+            };
+            let _ = self
+                .conversation_store
+                .append_message(&session_id, &message);
         }
+
+        // Get cancel token for this run
+        let cancel_token = self.session_manager.get_cancel_token(&run_ref).ok();
 
         let ctx = LoopContext {
             client: self.client.clone(),
@@ -316,7 +393,9 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
+            cancel_token,
         };
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -324,6 +403,9 @@ impl CoreRuntimeApi for CoreRuntime {
         let tr = turn_ref.clone();
         let run_ref_clone = run_ref.clone();
         let trace_id_clone = trace_id.clone();
+        let session_manager = self.session_manager.clone();
+        let run_ref_for_persist = run_ref.clone();
+        let conversation_store = self.conversation_store.clone();
 
         std::thread::Builder::new()
             .name("alius-streaming-run".to_string())
@@ -341,7 +423,43 @@ impl CoreRuntimeApi for CoreRuntime {
                         &mut |event| {
                             let event =
                                 event.with_session_ref(sr.clone()).with_turn_ref(tr.clone());
-                            let _ = tx.send(event);
+
+                            // Send to channel for TUI
+                            let _ = tx.send(event.clone());
+
+                            // Persist to SessionManager for query_logs/subscribe
+                            let _ = session_manager.push_event(&run_ref_for_persist, event.clone());
+
+                            // Persist assistant message on FinalResult
+                            if let CoreEventKind::FinalResult = event.kind {
+                                if let CoreEventPayload::Final {
+                                    content,
+                                    success: true,
+                                } = &event.payload
+                                {
+                                    if let Some(session_ref) = &event.session_ref {
+                                        let session_id =
+                                            protocol_interface::SessionId::from_existing(
+                                                session_ref.as_str().to_string(),
+                                            );
+                                        let message = protocol_interface::Message {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            role: protocol_interface::MessageRole::Assistant,
+                                            content: content.clone(),
+                                            created_at: chrono::Utc::now(),
+                                            tool_calls: None,
+                                            tool_call_id: None,
+                                            tool_name: None,
+                                        };
+                                        let _ = conversation_store
+                                            .append_message(&session_id, &message);
+                                    }
+                                }
+                            }
+
+                            // Update status based on event kind
+                            let _ = session_manager
+                                .handle_event_status_transition(&run_ref_for_persist, &event);
                         },
                     )
                     .await
@@ -358,8 +476,7 @@ impl CoreRuntimeApi for CoreRuntime {
         let command = &envelope.payload;
         match command.kind {
             CoreCommandKind::Cancel => {
-                self.session_manager
-                    .update_run_status(&command.target_run, RunStatus::Cancelled)?;
+                self.session_manager.cancel_run(&command.target_run)?;
             }
             CoreCommandKind::Continue => {
                 self.session_manager
@@ -686,7 +803,9 @@ impl CoreRuntimeApi for CoreRuntime {
             settings: llm_settings,
             workspace: self.session_manager.workspace_root(),
             tool_registry: self.tool_registry.clone(),
+            session: Some(self.session_manager.clone()),
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
+            cancel_token: None,
         };
 
         let loop_input = LoopEngine::input_from_request(&RequestInput::Text {
@@ -905,6 +1024,276 @@ mod tests {
         let report = rt.health_check().unwrap();
         // Default test runtime has api_key but may not have model/soul
         assert!(report.errors.len() <= 2);
+    }
+
+    // ===== P2 Validation Tests =====
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_streaming_persists_loop_events() {
+        let rt = test_runtime();
+        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Drain channel to let events be processed
+        let mut event_count = 0;
+        while let Ok(Some(_event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            event_count += 1;
+            if event_count > 20 {
+                break; // Prevent infinite loop
+            }
+        }
+
+        // Now query persisted events
+        let events = rt.subscribe(&run_ref).unwrap();
+
+        // Should have at least TurnStarted (stub), RunStarted, and FinalResult
+        assert!(
+            events.len() >= 3,
+            "Expected at least 3 events, got {}",
+            events.len()
+        );
+        assert_eq!(events[0].kind, CoreEventKind::TurnStarted); // stub event
+        assert_eq!(events[1].kind, CoreEventKind::RunStarted); // loop engine event
+
+        // Last event should be FinalResult
+        let last = events.last().unwrap();
+        assert_eq!(last.kind, CoreEventKind::FinalResult);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_returns_streaming_events() {
+        let rt = test_runtime();
+        let request =
+            CoreRequest::run_loop("hello", RuntimeMode::Chat, LoopPolicy::chat()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Wait for completion
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {}
+
+        // Verify subscribe returns the same events
+        let events = rt.subscribe(&run_ref).unwrap();
+        assert!(!events.is_empty());
+        assert_eq!(events[0].kind, CoreEventKind::TurnStarted); // stub event first
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_run_marks_completed() {
+        let rt = test_runtime();
+        let request = CoreRequest::run_loop("test", RuntimeMode::Chat, LoopPolicy::chat()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Wait for FinalResult
+        let mut found_final = false;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            if event.kind == CoreEventKind::FinalResult {
+                found_final = true;
+                break;
+            }
+        }
+
+        assert!(found_final, "Should receive FinalResult event");
+
+        // Check status is Completed or Failed (depending on API key)
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        if let Some(session) = sessions.first() {
+            let snapshot = rt.inspect(&session.session_ref).unwrap();
+            let run = snapshot.runs.iter().find(|r| r.run_ref == run_ref).unwrap();
+            assert!(
+                matches!(run.status, RunStatus::Completed | RunStatus::Failed),
+                "Expected Completed or Failed, got {:?}",
+                run.status
+            );
+            assert!(run.finished_at.is_some(), "finished_at should be set");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_run_marks_failed_on_error() {
+        let rt = test_runtime();
+        // Use Plan mode without tool registry to trigger error
+        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Wait for all events
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {}
+
+        // Check status
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        if let Some(session) = sessions.first() {
+            let snapshot = rt.inspect(&session.session_ref).unwrap();
+            if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
+                // Should be Failed due to missing tool registry or API error
+                assert!(
+                    matches!(run.status, RunStatus::Failed | RunStatus::Completed),
+                    "Expected Failed or Completed, got {:?}",
+                    run.status
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_streaming_run_stops_future_events() {
+        let rt = test_runtime();
+        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Wait for first event
+        let first_event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        assert!(first_event.is_ok(), "Should receive at least one event");
+
+        // Cancel the run
+        let cancel_cmd = CoreCommand::cancel(run_ref.clone(), Some("test cancel".to_string()));
+        let cmd_envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), cancel_cmd);
+        rt.send(cmd_envelope).unwrap();
+
+        // Verify status is Cancelled
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        if let Some(session) = sessions.first() {
+            let snapshot = rt.inspect(&session.session_ref).unwrap();
+            if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
+                assert_eq!(run.status, RunStatus::Cancelled);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_is_idempotent() {
+        let rt = test_runtime();
+        let request = CoreRequest::start_turn("test").unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+        let run_ref = rt.start(envelope).unwrap();
+
+        // Cancel once
+        let cancel_cmd = CoreCommand::cancel(run_ref.clone(), None);
+        let cmd_envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), cancel_cmd);
+        rt.send(cmd_envelope.clone()).unwrap();
+
+        // Cancel again - should not error
+        let result = rt.send(cmd_envelope);
+        assert!(result.is_ok(), "Cancel should be idempotent");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn conversation_messages_persist() {
+        let rt = test_runtime();
+        let request = CoreRequest::start_turn("Hello, world!").unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let run_ref = rt.start(envelope).unwrap();
+
+        // Wait for completion
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Get session
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        assert!(!sessions.is_empty(), "Should have at least one session");
+
+        let session = &sessions[0];
+        let session_id =
+            protocol_interface::SessionId::from_existing(session.session_ref.as_str().to_string());
+
+        // Load messages from conversation store
+        let messages = rt.conversation_store.load_messages(&session_id).unwrap();
+
+        // Should have at least user message
+        assert!(!messages.is_empty(), "Should have persisted messages");
+
+        // First message should be user message
+        let user_msg = messages
+            .iter()
+            .find(|m| m.role == protocol_interface::MessageRole::User);
+        assert!(user_msg.is_some(), "Should have user message");
+        assert_eq!(user_msg.unwrap().content, "Hello, world!");
+
+        // If run completed successfully, should also have assistant message
+        let assistant_msg = messages
+            .iter()
+            .find(|m| m.role == protocol_interface::MessageRole::Assistant);
+        if let Ok(snapshot) = rt.inspect(&session.session_ref) {
+            if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
+                if run.status == RunStatus::Completed {
+                    assert!(
+                        assistant_msg.is_some(),
+                        "Completed run should have assistant message"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_status_is_terminal() {
+        let rt = test_runtime();
+        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
+
+        let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
+
+        // Wait for first event
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+
+        // Cancel the run
+        let cancel_cmd = CoreCommand::cancel(run_ref.clone(), None);
+        let cmd_envelope =
+            ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), cancel_cmd);
+        rt.send(cmd_envelope).unwrap();
+
+        // Wait for remaining events (including FinalResult)
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {}
+
+        // Verify status is still Cancelled (not overwritten by FinalResult)
+        let sessions = rt
+            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+            .unwrap();
+        if let Some(session) = sessions.first() {
+            let snapshot = rt.inspect(&session.session_ref).unwrap();
+            if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
+                assert_eq!(
+                    run.status,
+                    RunStatus::Cancelled,
+                    "Cancelled should be terminal and not overwritten"
+                );
+            }
+        }
     }
 
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -41,6 +41,26 @@ impl LoopEngine {
         ctx: &LoopContext,
         event_sink: &mut dyn FnMut(CoreEvent),
     ) -> LoopExecutionResult {
+        // Check for cancellation before starting
+        if let Some(token) = &ctx.cancel_token {
+            if token.is_cancelled() {
+                event_sink(CoreEvent::new(
+                    run_ref.clone(),
+                    trace_id.clone(),
+                    1,
+                    CoreEventKind::FinalResult,
+                    CoreEventPayload::Final {
+                        content: "Cancelled by user".to_string(),
+                        success: false,
+                    },
+                ));
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: String::new(),
+                };
+            }
+        }
+
         // Emit RunStarted
         event_sink(CoreEvent::new(
             run_ref.clone(),
@@ -57,10 +77,12 @@ impl LoopEngine {
             },
         ));
 
-        if !input.policy.tools_enabled {
-            Self::run_chat(run_ref, trace_id, ctx, event_sink).await
-        } else {
-            Self::run_plan(run_ref, trace_id, input, ctx, event_sink).await
+        match input.mode {
+            RuntimeMode::Chat if input.policy.tools_enabled => {
+                Self::run_chat_with_tools(run_ref, trace_id, ctx, event_sink).await
+            }
+            RuntimeMode::Chat => Self::run_chat(run_ref, trace_id, ctx, event_sink).await,
+            RuntimeMode::Plan => Self::run_plan(run_ref, trace_id, input, ctx, event_sink).await,
         }
     }
 
@@ -72,6 +94,24 @@ impl LoopEngine {
         event_sink: &mut dyn FnMut(CoreEvent),
     ) -> LoopExecutionResult {
         let mut seq = 2u64;
+
+        // Check for cancellation before starting model call
+        if let Some(token) = &ctx.cancel_token {
+            if token.is_cancelled() {
+                emit_final(
+                    event_sink,
+                    run_ref,
+                    trace_id,
+                    &mut seq,
+                    "Cancelled by user",
+                    false,
+                );
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: String::new(),
+                };
+            }
+        }
 
         match super::model_step::execute_chat(
             &ctx.client,
@@ -133,6 +173,198 @@ impl LoopEngine {
         }
     }
 
+    /// Chat/Bypass mode: one model turn with optional one-shot tool execution.
+    ///
+    /// This path exposes tools to the model, executes the requested batch once,
+    /// and returns the tool results as the final turn output. It intentionally
+    /// does not continue the model with tool results; multi-turn tool loops are
+    /// reserved for Plan mode.
+    async fn run_chat_with_tools(
+        run_ref: &RunRef,
+        trace_id: &TraceId,
+        ctx: &LoopContext,
+        event_sink: &mut dyn FnMut(CoreEvent),
+    ) -> LoopExecutionResult {
+        // Check for cancellation before starting
+        if let Some(token) = &ctx.cancel_token {
+            if token.is_cancelled() {
+                let mut seq = 2u64;
+                emit_final(
+                    event_sink,
+                    run_ref,
+                    trace_id,
+                    &mut seq,
+                    "Cancelled by user",
+                    false,
+                );
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: String::new(),
+                };
+            }
+        }
+
+        let registry = match &ctx.tool_registry {
+            Some(registry) => registry.clone(),
+            None => return Self::run_chat(run_ref, trace_id, ctx, event_sink).await,
+        };
+
+        let tools = registry.to_tool_defs();
+        if tools.is_empty() {
+            return Self::run_chat(run_ref, trace_id, ctx, event_sink).await;
+        }
+
+        let mut seq = 2u64;
+        let model_result = match super::model_step::execute_with_tools(
+            &ctx.client,
+            &ctx.conversation,
+            tools,
+            event_sink,
+            run_ref,
+            trace_id,
+            &mut seq,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                seq += 1;
+                event_sink(CoreEvent::new(
+                    run_ref.clone(),
+                    trace_id.clone(),
+                    seq,
+                    CoreEventKind::ErrorRaised,
+                    CoreEventPayload::Error {
+                        code: "model_error".to_string(),
+                        message: e.to_string(),
+                    },
+                ));
+                emit_final(event_sink, run_ref, trace_id, &mut seq, "", false);
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: String::new(),
+                };
+            }
+        };
+
+        let tool_calls = model_result.tool_calls.clone().unwrap_or_default();
+        if tool_calls.is_empty() {
+            emit_final(
+                event_sink,
+                run_ref,
+                trace_id,
+                &mut seq,
+                &model_result.text,
+                true,
+            );
+            return LoopExecutionResult {
+                events: Vec::new(),
+                final_content: model_result.text,
+            };
+        }
+
+        if let Err(message) = validate_assistant_tool_calls(&tool_calls) {
+            seq += 1;
+            event_sink(CoreEvent::new(
+                run_ref.clone(),
+                trace_id.clone(),
+                seq,
+                CoreEventKind::ErrorRaised,
+                CoreEventPayload::Error {
+                    code: "invalid_tool_calls".to_string(),
+                    message,
+                },
+            ));
+            emit_final(
+                event_sink,
+                run_ref,
+                trace_id,
+                &mut seq,
+                &model_result.text,
+                false,
+            );
+            return LoopExecutionResult {
+                events: Vec::new(),
+                final_content: model_result.text,
+            };
+        }
+
+        // Check for cancellation before executing tools
+        if let Some(token) = &ctx.cancel_token {
+            if token.is_cancelled() {
+                emit_final(
+                    event_sink,
+                    run_ref,
+                    trace_id,
+                    &mut seq,
+                    "Cancelled by user",
+                    false,
+                );
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: String::new(),
+                };
+            }
+        }
+
+        let tool_results = match super::tool_step::execute_tools(
+            &tool_calls,
+            &registry,
+            &ctx.workspace,
+            &format!("chat-run-{}", run_ref.as_str()),
+            RuntimeMode::Chat,
+            ctx.session.as_ref().map(|a| a.as_ref()),
+            event_sink,
+            run_ref,
+            trace_id,
+            &mut seq,
+        )
+        .await
+        {
+            Ok(results) => normalize_tool_results(&tool_calls, &results),
+            Err(e) => {
+                seq += 1;
+                event_sink(CoreEvent::new(
+                    run_ref.clone(),
+                    trace_id.clone(),
+                    seq,
+                    CoreEventKind::ErrorRaised,
+                    CoreEventPayload::Error {
+                        code: "tool_error".to_string(),
+                        message: e.to_string(),
+                    },
+                ));
+                emit_final(
+                    event_sink,
+                    run_ref,
+                    trace_id,
+                    &mut seq,
+                    &model_result.text,
+                    false,
+                );
+                return LoopExecutionResult {
+                    events: Vec::new(),
+                    final_content: model_result.text,
+                };
+            }
+        };
+
+        let final_content = chat_tool_final_content(&model_result.text, &tool_results);
+        emit_final(
+            event_sink,
+            run_ref,
+            trace_id,
+            &mut seq,
+            &final_content,
+            true,
+        );
+
+        LoopExecutionResult {
+            events: Vec::new(),
+            final_content,
+        }
+    }
+
     /// Plan mode: multi-iteration loop with tool execution.
     ///
     /// Each iteration:
@@ -183,6 +415,21 @@ impl LoopEngine {
 
         let mut last_assistant_tool_calls: Option<Vec<runtime_model::ToolCall>> = None;
         loop {
+            // Check for cancellation at the start of each iteration
+            if let Some(token) = &ctx.cancel_token {
+                if token.is_cancelled() {
+                    emit_final(
+                        event_sink,
+                        run_ref,
+                        trace_id,
+                        &mut seq,
+                        "Cancelled by user",
+                        false,
+                    );
+                    break;
+                }
+            }
+
             iteration_index += 1;
 
             if iteration_index > max_iterations {
@@ -323,6 +570,21 @@ impl LoopEngine {
                     },
                 ));
                 break;
+            }
+
+            // Check for cancellation before executing tools
+            if let Some(token) = &ctx.cancel_token {
+                if token.is_cancelled() {
+                    emit_final(
+                        event_sink,
+                        run_ref,
+                        trace_id,
+                        &mut seq,
+                        "Cancelled by user",
+                        false,
+                    );
+                    break;
+                }
             }
 
             let tool_results = match super::tool_step::execute_tools(
@@ -554,6 +816,41 @@ fn emit_final(
     ));
 }
 
+fn chat_tool_final_content(model_text: &str, tool_results: &[(String, String, String)]) -> String {
+    let mut sections = Vec::new();
+    if !model_text.trim().is_empty() {
+        sections.push(model_text.to_string());
+    }
+
+    if !tool_results.is_empty() {
+        let mut lines = vec!["Tool results:".to_string()];
+        for (call_id, tool_name, output) in tool_results {
+            lines.push(format!(
+                "- {} ({}): {}",
+                tool_name,
+                call_id,
+                indent_multiline(&truncate_chat_tool_output(output))
+            ));
+        }
+        sections.push(lines.join("\n"));
+    }
+
+    sections.join("\n\n")
+}
+
+fn truncate_chat_tool_output(output: &str) -> String {
+    const MAX_CHARS: usize = 4_000;
+    if output.chars().count() <= MAX_CHARS {
+        return output.to_string();
+    }
+    let truncated: String = output.chars().take(MAX_CHARS).collect();
+    format!("{truncated}\n... [tool output truncated]")
+}
+
+fn indent_multiline(output: &str) -> String {
+    output.replace('\n', "\n  ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,5 +1012,21 @@ mod tests {
             &pending
         ));
         assert!(should_truncate_context(&context_mgr, &conversation, &[]));
+    }
+
+    #[test]
+    fn chat_tool_final_content_keeps_single_turn_tool_results() {
+        let content = chat_tool_final_content(
+            "I will inspect the file.",
+            &[(
+                "call-readme".to_string(),
+                "read_file".to_string(),
+                "README contents".to_string(),
+            )],
+        );
+
+        assert!(content.contains("I will inspect the file."));
+        assert!(content.contains("Tool results:"));
+        assert!(content.contains("- read_file (call-readme): README contents"));
     }
 }

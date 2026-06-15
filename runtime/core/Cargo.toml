@@ -21,6 +21,7 @@ runtime-tools = { workspace = true }
 runtime-mcp = { workspace = true, optional = true }
 
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
