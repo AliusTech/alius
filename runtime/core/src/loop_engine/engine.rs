@@ -352,6 +352,26 @@ impl LoopEngine {
 
         let tool_results = normalize_tool_results(&tool_calls, &batch.results);
         let final_content = chat_tool_final_content(&model_result.text, &tool_results);
+
+        // If any tool was denied/cancelled/unavailable, emit ErrorRaised
+        // before the failed FinalResult — same semantics as Plan path.
+        if batch.batch_denied {
+            seq += 1;
+            event_sink(CoreEvent::new(
+                run_ref.clone(),
+                trace_id.clone(),
+                seq,
+                CoreEventKind::ErrorRaised,
+                CoreEventPayload::Error {
+                    code: "tool_denied".to_string(),
+                    message: format!(
+                        "tool execution {} — chat aborted",
+                        batch.denial_reason.unwrap_or("denied")
+                    ),
+                },
+            ));
+        }
+
         emit_final(
             event_sink,
             run_ref,
@@ -1174,5 +1194,101 @@ mod tests {
             session_manager.get_run_status(&run_ref).unwrap(),
             protocol_interface::core::RunStatus::Cancelled
         );
+    }
+
+    /// Chat path denial: ErrorRaised(tool_denied) + FinalResult(success=false).
+    #[tokio::test]
+    async fn chat_denial_emits_error_raised_and_failed_final() {
+        use runtime_tools::AliusTool;
+        use std::sync::{Arc, Mutex};
+
+        struct DenyTool;
+        #[async_trait::async_trait]
+        impl AliusTool for DenyTool {
+            fn name(&self) -> &'static str {
+                "deny_tool"
+            }
+            fn description(&self) -> &'static str {
+                "always denied"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({})
+            }
+            fn preview_confirmation(&self, _: &serde_json::Value, _: RuntimeMode) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                Ok(runtime_tools::ToolResult {
+                    output: "should not run".into(),
+                    success: true,
+                    metadata: None,
+                })
+            }
+        }
+
+        let mut registry = runtime_tools::ToolRegistry::new();
+        registry.register(DenyTool).unwrap();
+
+        let session_manager = Arc::new(crate::SessionManager::new(
+            protocol_interface::core::WorkspaceRef::new("/tmp"),
+        ));
+        let session = session_manager.create_session();
+        let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
+
+        // Cancel immediately to trigger denial.
+        let sm = session_manager.clone();
+        let rr = run_ref.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _ = sm.cancel_run(&rr);
+        });
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut seq = 0u64;
+
+        let call = runtime_model::ToolCall {
+            id: "tc-1".into(),
+            name: "deny_tool".into(),
+            args: json!({}),
+        };
+
+        // Use Chat mode with tools.
+        let batch = super::super::tool_step::execute_tools(
+            &[call],
+            &registry,
+            std::path::Path::new("/tmp"),
+            "test",
+            RuntimeMode::Chat,
+            Some(&session_manager),
+            &mut |e| events_clone.lock().unwrap().push(e),
+            &run_ref,
+            &trace_id,
+            &mut seq,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The batch must be marked as denied.
+        assert!(batch.batch_denied, "Chat batch should be denied");
+        assert_eq!(batch.denial_reason, Some("cancelled"));
+
+        // ToolCallCompleted must carry denied=true. The engine's
+        // run_chat_with_tools checks batch_denied and emits
+        // ErrorRaised(tool_denied) + FinalResult(success=false).
+        let evts = events.lock().unwrap();
+        let completed = evts
+            .iter()
+            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
+        assert!(completed.is_some(), "must emit ToolCallCompleted");
+        if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
+            assert_eq!(value["success"], false);
+            assert_eq!(value["denied"], true);
+        }
     }
 }
