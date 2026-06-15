@@ -2664,14 +2664,14 @@ impl WorkspaceState {
             MouseEventKind::Moved => {
                 self.hover_zone = self.zone_for_position(mouse.column, mouse.row);
             }
-            MouseEventKind::Down(_) => {
+            MouseEventKind::Down(_)
                 // Handle click on conversation blocks to toggle fold/unfold
                 if self.layout_rects.conversation.contains(Position {
                     x: mouse.column,
                     y: mouse.row,
-                }) {
-                    self.handle_conversation_click(mouse.column, mouse.row);
-                }
+                }) =>
+            {
+                self.handle_conversation_click(mouse.column, mouse.row);
             }
             _ => {}
         }

@@ -222,6 +222,17 @@ pub struct InitContext {
     pub error: Option<InitErrorState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingInitConfig {
+    pub language: Option<String>,
+    pub model_pool: Vec<ModelInfo>,
+    pub plan_model: Option<String>,
+    pub execute_model: Option<String>,
+    pub review_model: Option<String>,
+    pub selected_soul: Option<String>,
+    pub soul_choices: Vec<SoulRef>,
+}
+
 impl InitContext {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
@@ -249,24 +260,15 @@ impl InitContext {
         }
     }
 
-    pub fn with_existing_config(
-        cwd: PathBuf,
-        language: Option<String>,
-        model_pool: Vec<ModelInfo>,
-        plan_model: Option<String>,
-        execute_model: Option<String>,
-        review_model: Option<String>,
-        selected_soul: Option<String>,
-        soul_choices: Vec<SoulRef>,
-    ) -> Self {
+    pub fn with_existing_config(cwd: PathBuf, existing: ExistingInitConfig) -> Self {
         let mut context = Self::new(cwd);
-        context.language = language;
-        context.model_pool = model_pool;
-        context.plan_model = plan_model;
-        context.execute_model = execute_model;
-        context.review_model = review_model;
-        context.selected_soul = selected_soul;
-        context.soul_choices = soul_choices;
+        context.language = existing.language;
+        context.model_pool = existing.model_pool;
+        context.plan_model = existing.plan_model;
+        context.execute_model = existing.execute_model;
+        context.review_model = existing.review_model;
+        context.selected_soul = existing.selected_soul;
+        context.soul_choices = existing.soul_choices;
         context
     }
 }
@@ -1127,21 +1129,21 @@ impl InitWizard {
             InitState::ConfigureModelAssignment => {
                 let mut options = vec![
                     option(
-                        &format!(
+                        format!(
                             "Plan Model    {}",
                             self.model_label(self.context.plan_model.as_deref())
                         ),
                         "plan",
                     ),
                     option(
-                        &format!(
+                        format!(
                             "Execute Model    {}",
                             self.model_label(self.context.execute_model.as_deref())
                         ),
                         "execute",
                     ),
                     option(
-                        &format!(
+                        format!(
                             "Review Model    {}",
                             self.model_label(self.context.review_model.as_deref())
                         ),
@@ -1182,7 +1184,7 @@ impl InitWizard {
                     .context
                     .soul_choices
                     .iter()
-                    .map(|soul| option(&format!("{} - {}", soul.id, soul.description), &soul.id))
+                    .map(|soul| option(format!("{} - {}", soul.id, soul.description), &soul.id))
                     .collect::<Vec<_>>();
                 options.push(option("Back", "back"));
                 options.push(option("Exit", "exit"));

@@ -71,37 +71,39 @@ mod tests {
     use tempfile::TempDir;
 
     fn provider_config_with_models() -> ProviderConfig {
-        let mut providers = ProviderConfig::default();
-        providers.model_library = ModelLibraryConfig {
-            models: vec![
-                ModelLibraryEntry {
-                    id: "planner".to_string(),
-                    display_name: "planner".to_string(),
-                    provider: "openai".to_string(),
-                    base_url: "https://api.openai.com/v1".to_string(),
-                    model_name: "gpt-plan".to_string(),
-                    reasoning_note: ReasoningNote::Standard,
-                    enabled: true,
-                },
-                ModelLibraryEntry {
-                    id: "executor".to_string(),
-                    display_name: "executor".to_string(),
-                    provider: "openai".to_string(),
-                    base_url: "https://api.openai.com/v1".to_string(),
-                    model_name: "gpt-exec".to_string(),
-                    reasoning_note: ReasoningNote::Standard,
-                    enabled: true,
-                },
-                ModelLibraryEntry {
-                    id: "disabled-reviewer".to_string(),
-                    display_name: "reviewer".to_string(),
-                    provider: "openai".to_string(),
-                    base_url: "https://api.openai.com/v1".to_string(),
-                    model_name: "gpt-review".to_string(),
-                    reasoning_note: ReasoningNote::Standard,
-                    enabled: false,
-                },
-            ],
+        let mut providers = ProviderConfig {
+            model_library: ModelLibraryConfig {
+                models: vec![
+                    ModelLibraryEntry {
+                        id: "planner".to_string(),
+                        display_name: "planner".to_string(),
+                        provider: "openai".to_string(),
+                        base_url: "https://api.openai.com/v1".to_string(),
+                        model_name: "gpt-plan".to_string(),
+                        reasoning_note: ReasoningNote::Standard,
+                        enabled: true,
+                    },
+                    ModelLibraryEntry {
+                        id: "executor".to_string(),
+                        display_name: "executor".to_string(),
+                        provider: "openai".to_string(),
+                        base_url: "https://api.openai.com/v1".to_string(),
+                        model_name: "gpt-exec".to_string(),
+                        reasoning_note: ReasoningNote::Standard,
+                        enabled: true,
+                    },
+                    ModelLibraryEntry {
+                        id: "disabled-reviewer".to_string(),
+                        display_name: "reviewer".to_string(),
+                        provider: "openai".to_string(),
+                        base_url: "https://api.openai.com/v1".to_string(),
+                        model_name: "gpt-review".to_string(),
+                        reasoning_note: ReasoningNote::Standard,
+                        enabled: false,
+                    },
+                ],
+            },
+            ..Default::default()
         };
         providers.tiers.light = TierConfig {
             description: "Plan Model".to_string(),

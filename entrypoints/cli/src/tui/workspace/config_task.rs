@@ -1991,18 +1991,15 @@ impl ConfigTask {
             .collect::<Vec<_>>();
         if self.enabled_models().is_empty() {
             choices.push(choice(
-                &t!("workspace.config_task.action.empty_pool_first").to_string(),
+                t!("workspace.config_task.action.empty_pool_first"),
                 "model_pool",
             ));
         }
         choices.push(choice(
-            &t!("workspace.config_task.action.save").to_string(),
+            t!("workspace.config_task.action.save"),
             "save_config",
         ));
-        choices.push(choice(
-            &t!("workspace.config_task.action.cancel").to_string(),
-            "cancel",
-        ));
+        choices.push(choice(t!("workspace.config_task.action.cancel"), "cancel"));
         choices
     }
 
@@ -2022,16 +2019,10 @@ impl ConfigTask {
 
     fn model_pool_choices(&self) -> Vec<ConfigChoice> {
         vec![
+            choice(t!("workspace.config_task.action.add_model"), "add_model"),
+            choice(t!("workspace.config_task.action.view_model"), "view_model"),
             choice(
-                &t!("workspace.config_task.action.add_model").to_string(),
-                "add_model",
-            ),
-            choice(
-                &t!("workspace.config_task.action.view_model").to_string(),
-                "view_model",
-            ),
-            choice(
-                &t!("workspace.config_task.action.delete_model").to_string(),
+                t!("workspace.config_task.action.delete_model"),
                 "delete_model",
             ),
         ]
@@ -2687,20 +2678,20 @@ fn base_url_choices_for_provider(
 fn delete_confirm_choices() -> Vec<ConfigChoice> {
     vec![
         choice(
-            &t!("workspace.config_task.action.confirm_delete").to_string(),
+            t!("workspace.config_task.action.confirm_delete"),
             "confirm_delete",
         ),
         choice(
-            &t!("workspace.config_task.action.cancel_delete").to_string(),
+            t!("workspace.config_task.action.cancel_delete"),
             "cancel_delete",
         ),
     ]
 }
 
-fn choice(label: &str, value: &str) -> ConfigChoice {
+fn choice(label: impl Into<String>, value: impl Into<String>) -> ConfigChoice {
     ConfigChoice {
-        label: label.to_string(),
-        value: value.to_string(),
+        label: label.into(),
+        value: value.into(),
     }
 }
 
@@ -2710,10 +2701,7 @@ fn with_config_actions(choices: Vec<ConfigChoice>) -> Vec<ConfigChoice> {
 }
 
 fn with_back(mut choices: Vec<ConfigChoice>) -> Vec<ConfigChoice> {
-    choices.push(choice(
-        &t!("workspace.config_task.action.back").to_string(),
-        "back",
-    ));
+    choices.push(choice(t!("workspace.config_task.action.back"), "back"));
     choices
 }
 

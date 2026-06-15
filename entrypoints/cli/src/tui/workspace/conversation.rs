@@ -282,7 +282,7 @@ pub fn render(
                     let line_text = content_lines[i];
                     if i == remaining_to_show && i < content_lines.len() - 1 {
                         // Last visible line with fold hint
-                        let hint = format!(" … 点击展开 / Ctrl+O 全部展开");
+                        let hint = " … 点击展开 / Ctrl+O 全部展开".to_string();
                         let available_width =
                             inner.width.saturating_sub(hint.len() as u16) as usize;
                         let truncated = truncate_chars(line_text, available_width);

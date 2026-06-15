@@ -234,10 +234,10 @@ impl Settings {
     }
 }
 
-fn assignment_entry<'a>(
-    snapshot: &'a ProjectConfigSnapshot,
+fn assignment_entry(
+    snapshot: &ProjectConfigSnapshot,
     role: ModelAssignmentRole,
-) -> Option<&'a ModelLibraryEntry> {
+) -> Option<&ModelLibraryEntry> {
     let model_id = snapshot.model_assignment.get(role);
     if model_id.trim().is_empty() {
         return None;

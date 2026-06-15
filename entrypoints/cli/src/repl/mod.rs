@@ -373,7 +373,8 @@ impl ReplSession {
                     if !tools.is_empty() {
                         output.push_str("Built-in Tools:\n");
                         for tool in &tools {
-                            output.push_str(&format!("  🔧 {} - {}\n", tool.name, tool.description));
+                            output
+                                .push_str(&format!("  🔧 {} - {}\n", tool.name, tool.description));
                         }
                     }
 
