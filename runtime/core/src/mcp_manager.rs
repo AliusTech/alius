@@ -35,31 +35,37 @@ impl std::fmt::Display for McpStatus {
     }
 }
 
-/// Manager for MCP background initialization and lifecycle
+/// Manager for MCP background initialization and lifecycle.
+///
+/// MCP tools are stored separately from the native/WASM `ToolRegistry`
+/// because `ToolRegistry::register` requires `&mut self` and the registry
+/// is `Arc`-wrapped. MCP tools are accessible via `mcp_tools()` and are
+/// merged into `tool_list` queries at the runtime level.
 pub struct McpManager {
-    registry: Arc<RwLock<Option<Arc<McpRegistry>>>>,
+    mcp_registry: Arc<RwLock<Option<Arc<McpRegistry>>>>,
     status: Arc<RwLock<McpStatus>>,
+    mcp_tools: Arc<RwLock<Vec<Arc<dyn runtime_tools::AliusTool>>>>,
 }
 
 impl McpManager {
     /// Create a new MCP manager
     pub fn new() -> Self {
         Self {
-            registry: Arc::new(RwLock::new(None)),
+            mcp_registry: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(McpStatus::NotStarted)),
+            mcp_tools: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Start background initialization (non-blocking)
-    pub fn start_background_init(&self, tool_registry: Arc<runtime_tools::ToolRegistry>) {
-        let registry_clone = self.registry.clone();
+    /// Start background initialization (non-blocking).
+    /// `existing_tool_names` is the list of native/WASM tool names already registered;
+    /// MCP tools with duplicate names will be skipped.
+    pub fn start_background_init(&self, existing_tool_names: Vec<String>) {
+        let registry_clone = self.mcp_registry.clone();
         let status_clone = self.status.clone();
-
-        // Wrap Arc<ToolRegistry> in RwLock for internal use
-        let tool_registry = Arc::new(RwLock::new(tool_registry));
+        let tools_clone = self.mcp_tools.clone();
 
         tokio::spawn(async move {
-            // Update status to initializing
             *status_clone.write().await = McpStatus::Initializing;
             tracing::debug!("MCP background initialization started");
 
@@ -67,26 +73,20 @@ impl McpManager {
                 Ok(mcp_registry) => {
                     let connected = mcp_registry.list_connected().await.len();
 
-                    // Register tools
-                    match Self::register_tools(&tool_registry, mcp_registry.clone()).await {
-                        Ok(tool_count) => {
-                            *registry_clone.write().await = Some(mcp_registry);
-                            *status_clone.write().await = McpStatus::Ready {
-                                connected,
-                                tools: tool_count,
-                            };
-                            tracing::info!(
-                                "MCP initialized successfully: {} servers, {} tools",
-                                connected,
-                                tool_count
-                            );
-                        }
-                        Err(e) => {
-                            let msg = format!("Tool registration failed: {}", e);
-                            *status_clone.write().await = McpStatus::Failed(msg.clone());
-                            tracing::warn!("{}", msg);
-                        }
-                    }
+                    let (tool_count, mcp_tool_list) =
+                        Self::register_tools(mcp_registry.clone(), &existing_tool_names).await;
+
+                    *registry_clone.write().await = Some(mcp_registry);
+                    *tools_clone.write().await = mcp_tool_list;
+                    *status_clone.write().await = McpStatus::Ready {
+                        connected,
+                        tools: tool_count,
+                    };
+                    tracing::info!(
+                        "MCP initialized successfully: {} servers, {} tools",
+                        connected,
+                        tool_count
+                    );
                 }
                 Err(e) => {
                     let msg = format!("Initialization failed: {}", e);
@@ -128,24 +128,58 @@ impl McpManager {
         Ok(Arc::new(registry))
     }
 
-    /// Register MCP tools to the tool registry (async)
+    /// Register MCP tools. Creates McpToolAdapter instances and stores them
+    /// in a local registry. Returns the count of successfully registered tools.
+    ///
+    /// Native/WASM tools take priority — MCP tools with duplicate names are skipped.
     async fn register_tools(
-        _tool_registry: &Arc<RwLock<Arc<runtime_tools::ToolRegistry>>>,
         mcp_registry: Arc<McpRegistry>,
-    ) -> Result<usize, String> {
-        // Access MCP tools
-        let tools_map = mcp_registry
-            .list_all_tools()
-            .await
-            .map_err(|e| format!("Failed to list tools: {}", e))?;
+        existing_tool_names: &[String],
+    ) -> (usize, Vec<Arc<dyn runtime_tools::AliusTool>>) {
+        let tools_map = match mcp_registry.list_all_tools().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Failed to list MCP tools: {e}");
+                return (0, Vec::new());
+            }
+        };
 
-        // Count total tools across all servers
-        let tools_count: usize = tools_map.values().map(|v| v.len()).sum();
+        let mut registered = 0usize;
+        let mut mcp_tools: Vec<Arc<dyn runtime_tools::AliusTool>> = Vec::new();
 
-        // TODO: Actual tool registration to be implemented when ToolRegistry supports dynamic registration
-        // For now we just return the count
+        for (server_name, tools) in &tools_map {
+            let client = match mcp_registry.get_server(server_name).await {
+                Some(c) => c,
+                None => {
+                    tracing::warn!("MCP server '{}' has no client, skipping tools", server_name);
+                    continue;
+                }
+            };
 
-        Ok(tools_count)
+            for tool in tools {
+                // Skip if a native/WASM tool with the same name already exists.
+                if existing_tool_names.iter().any(|n| n == &tool.name) {
+                    tracing::info!(
+                        "MCP tool '{}' from '{}' skipped: native/WASM tool takes priority",
+                        tool.name,
+                        server_name
+                    );
+                    continue;
+                }
+
+                let adapter =
+                    runtime_tools::mcp_bridge::McpToolAdapter::from_mcp_tool(tool, client.clone());
+                mcp_tools.push(Arc::new(adapter));
+                registered += 1;
+                tracing::debug!(
+                    "Registered MCP tool '{}' from server '{}'",
+                    tool.name,
+                    server_name
+                );
+            }
+        }
+
+        (registered, mcp_tools)
     }
 
     /// Get current MCP status
@@ -155,7 +189,12 @@ impl McpManager {
 
     /// Get MCP registry if ready
     pub async fn registry(&self) -> Option<Arc<McpRegistry>> {
-        self.registry.read().await.clone()
+        self.mcp_registry.read().await.clone()
+    }
+
+    /// Get MCP tool list (for runtime tool_list queries).
+    pub async fn mcp_tools(&self) -> Vec<Arc<dyn runtime_tools::AliusTool>> {
+        self.mcp_tools.read().await.clone()
     }
 }
 
@@ -232,5 +271,37 @@ mod tests {
                 tools: 5
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tools_empty_before_init() {
+        let manager = McpManager::new();
+        let tools = manager.mcp_tools().await;
+        assert!(
+            tools.is_empty(),
+            "MCP tools should be empty before initialization"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mcp_no_config_no_panic() {
+        // Start background init without MCP config — should not panic.
+        let manager = McpManager::new();
+        manager.start_background_init(vec!["shell".to_string(), "read_file".to_string()]);
+
+        // Wait a moment for the background task.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let status = manager.status().await;
+        // Should be Failed (no config) — not panicked.
+        assert!(
+            matches!(status, McpStatus::Failed(_)),
+            "Expected Failed status when no MCP config, got {:?}",
+            status
+        );
+
+        // MCP tools should still be empty.
+        let tools = manager.mcp_tools().await;
+        assert!(tools.is_empty());
     }
 }

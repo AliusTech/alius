@@ -114,7 +114,10 @@ Alius must document extension systems by maturity.
 Acceptance criteria:
 
 - Documentation covers MCP, WASM Plugin, Workflow, Agent Team, and A2A.
-- Documentation clearly labels MCP tools, Plugin tools, Workflow prompt/tool execution, and Agent Team/A2A live traffic as not fully connected to the default workspace unless current code shows otherwise.
+- MCP tools are registered into the runtime tool chain when the `mcp` feature is enabled and a valid `~/.alius/mcp/servers.toml` config exists. MCP tools are accessible via `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list`.
+- Native/WASM tools take priority over MCP tools — duplicate names are skipped.
+- MCP initialization failure does not block runtime startup.
+- Documentation labels Workflow prompt/tool execution and Agent Team/A2A live traffic as not fully connected to the default workspace unless current code shows otherwise.
 
 ## F-011 JSON-RPC Entrypoint
 
