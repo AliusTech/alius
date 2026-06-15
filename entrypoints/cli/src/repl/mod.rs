@@ -366,8 +366,21 @@ impl ReplSession {
             "/tools" => {
                 if let Some(bridge) = &self.bridge {
                     let tools = bridge.tool_list()?;
-                    let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-                    Ok(t!("tools.available", tools = names.join(", ")).to_string())
+
+                    let mut output = String::new();
+
+                    // Display built-in tools
+                    if !tools.is_empty() {
+                        output.push_str("Built-in Tools:\n");
+                        for tool in &tools {
+                            output.push_str(&format!("  🔧 {} - {}\n", tool.name, tool.description));
+                        }
+                    }
+
+                    // MCP tools will be displayed here in future
+                    // TODO: Add MCP tools display when MCP manager methods are available
+
+                    Ok(output)
                 } else {
                     Ok(t!("tools.available", tools = "").to_string())
                 }
@@ -562,6 +575,7 @@ impl ReplSession {
                 protocol_interface::MessageRole::System => t!("history.role.system"),
                 protocol_interface::MessageRole::User => t!("history.role.user"),
                 protocol_interface::MessageRole::Assistant => t!("history.role.assistant"),
+                protocol_interface::MessageRole::Tool => t!("history.role.tool"),
                 protocol_interface::MessageRole::Summary => t!("history.role.summary"),
             };
             println!("  {:3}. [{}] {}", i + 1, role, preview);
@@ -819,6 +833,7 @@ impl ReplSession {
                         protocol_interface::MessageRole::System => t!("history.role.system"),
                         protocol_interface::MessageRole::User => t!("history.role.user"),
                         protocol_interface::MessageRole::Assistant => t!("history.role.assistant"),
+                        protocol_interface::MessageRole::Tool => t!("history.role.tool"),
                         protocol_interface::MessageRole::Summary => t!("history.role.summary"),
                     };
                     let preview = if msg.content.len() > 80 {

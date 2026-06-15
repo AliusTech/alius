@@ -20,15 +20,15 @@ mod tests {
     use protocol_interface::core::{CoreRequestKind, RequestInput, RuntimeMode};
 
     #[test]
-    fn chat_mode_builds_one_iteration_no_tools_policy() {
+    fn chat_mode_builds_tool_enabled_bypass_policy() {
         let request = build_loop_request("hello", ReplMode::Chat).unwrap();
         assert_eq!(request.kind, CoreRequestKind::RunLoop);
 
         match request.input {
             RequestInput::RunLoop { input } => {
                 assert_eq!(input.mode, RuntimeMode::Chat);
-                assert_eq!(input.policy.max_iterations, 1);
-                assert!(!input.policy.tools_enabled);
+                assert_eq!(input.policy.max_iterations, 10);
+                assert!(input.policy.tools_enabled);
                 assert!(!input.policy.planning_enabled);
             }
             other => panic!("unexpected input: {:?}", other),

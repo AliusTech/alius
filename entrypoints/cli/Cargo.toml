@@ -51,5 +51,10 @@ runtime-store = { workspace = true }
 # i18n
 rust-i18n = "3"
 
+# Archive extraction
+flate2 = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

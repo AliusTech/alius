@@ -111,6 +111,13 @@ pub enum Command {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
+
+    /// Check and install CLI updates.
+    #[command(about = "Check and install CLI updates")]
+    Update {
+        #[command(subcommand)]
+        command: Option<UpdateCommand>,
+    },
 }
 
 /// Subcommands for MCP server management.
@@ -277,4 +284,16 @@ pub enum CredentialCommand {
     },
     /// Check if the OS keyring is available.
     Check,
+}
+
+/// Subcommands for CLI self-update.
+#[derive(Subcommand)]
+pub enum UpdateCommand {
+    /// Check if a newer version is available.
+    #[command(about = "Check for updates")]
+    Check,
+
+    /// Download and install the latest version.
+    #[command(about = "Install the latest version")]
+    Install,
 }

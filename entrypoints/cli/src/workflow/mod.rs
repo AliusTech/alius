@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+fn user_agent() -> String {
+    format!("alius-cli/{}", env!("ALIUS_VERSION"))
+}
+
 /// A workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -174,7 +178,9 @@ pub async fn execute_step(step: &Step, ctx: &ExecutionContext) -> Result<StepRes
             let method = step.method.as_deref().unwrap_or("POST");
             let body = step.body.as_ref().map(|b| ctx.interpolate_json(b));
 
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .user_agent(user_agent())
+                .build()?;
             let mut req = match method.to_uppercase().as_str() {
                 "GET" => client.get(&url),
                 "POST" => client.post(&url),

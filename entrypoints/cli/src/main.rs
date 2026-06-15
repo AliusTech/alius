@@ -12,17 +12,18 @@ mod plugin;
 mod repl;
 mod tui;
 mod ui;
+mod updater;
 mod workflow;
 
 use alius_cli::{
     Cli, Command, ConfigCommand, CoreCommand, CredentialCommand, McpCommand, PluginCommand,
-    SoulCommand, WorkflowCommand,
+    SoulCommand, UpdateCommand, WorkflowCommand,
 };
 use anyhow::Result;
 use clap::Parser;
 use core_runtime::CoreRuntimeManager;
 use protocol_interface::core::{CoreEventKind, CoreEventPayload, RuntimeMode};
-use runtime_config::Settings;
+use runtime_config::{Settings, SoulRole};
 use rust_i18n::t;
 use std::io::Write;
 
@@ -37,8 +38,15 @@ fn set_locale(locale: &str) {
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load settings from default location or specified config file
-    let settings = Settings::load()?;
+    // Load settings from default/user/project config, then hydrate legacy chat
+    // fields from the project-local model pool and role activation state.
+    let mut settings = Settings::load()?;
+    if let Ok(cwd) = std::env::current_dir() {
+        settings.hydrate_from_project_config(&cwd);
+    }
+    if let Some(soul_id) = crate::formula::current_project_soul() {
+        settings.soul.role = SoulRole::new(soul_id);
+    }
 
     // Apply saved locale before any UI output
     set_locale(&settings.ui.locale);
@@ -46,6 +54,9 @@ pub async fn run() -> Result<()> {
     match cli.command {
         // No subcommand or explicit REPL: start interactive mode
         None | Some(Command::Repl) => {
+            if updater::should_auto_check(&settings) {
+                let _ = updater::check_and_notify_silent().await;
+            }
             crate::repl::run_repl(settings).await?;
         }
         // Run a single prompt in non-interactive mode
@@ -137,6 +148,10 @@ pub async fn run() -> Result<()> {
         // Workflow management
         Some(Command::Workflow { command }) => {
             handle_workflow(command).await?;
+        }
+        // CLI self-update
+        Some(Command::Update { command }) => {
+            handle_update(command).await?;
         }
         // Initialize project configuration via TUI wizard
         Some(Command::Init) => {
@@ -576,6 +591,113 @@ async fn handle_workflow(cmd: WorkflowCommand) -> Result<()> {
                     println!("Invalid workflow: {}", e);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Handle CLI self-update subcommands.
+async fn handle_update(command: Option<UpdateCommand>) -> Result<()> {
+    match command {
+        Some(UpdateCommand::Install) | None => {
+            let install = matches!(command, Some(UpdateCommand::Install));
+
+            // Check install method first.
+            let method = updater::platform::detect_install_method();
+            match method {
+                updater::platform::InstallMethod::Npm => {
+                    println!("Installed via npm. Run: npm update -g @alius-tech/alius");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Homebrew => {
+                    println!("Installed via Homebrew. Run: brew upgrade alius");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Development => {
+                    println!("Development build detected. Self-update is not available.");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Standalone => {}
+            }
+
+            println!("{}", t!("update.checking"));
+            match updater::check_for_update().await {
+                Ok(Some(info)) => {
+                    println!(
+                        "{}",
+                        t!(
+                            "update.available",
+                            current = info.current,
+                            latest = info.latest
+                        )
+                    );
+
+                    if install {
+                        println!(
+                            "{}",
+                            t!("update.download_start", version = info.latest.as_str())
+                        );
+                        updater::perform_update(&info).await?;
+                        println!("{}", t!("update.installed", version = info.latest.as_str()));
+                        println!("{}", t!("update.installed_restart"));
+                    } else {
+                        println!("{}", t!("update.hint_install"));
+                    }
+                }
+                Ok(None) => {
+                    println!(
+                        "{}",
+                        t!("update.up_to_date", version = env!("ALIUS_VERSION"))
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{}", t!("update.error_check", error = e.to_string()));
+                }
+            }
+            let _ = updater::record_check_time();
+        }
+        Some(UpdateCommand::Check) => {
+            let method = updater::platform::detect_install_method();
+            match method {
+                updater::platform::InstallMethod::Npm => {
+                    println!("Installed via npm. Run: npm update -g @alius-tech/alius");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Homebrew => {
+                    println!("Installed via Homebrew. Run: brew upgrade alius");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Development => {
+                    println!("Development build detected. Self-update is not available.");
+                    return Ok(());
+                }
+                updater::platform::InstallMethod::Standalone => {}
+            }
+
+            println!("{}", t!("update.checking"));
+            match updater::check_for_update().await {
+                Ok(Some(info)) => {
+                    println!(
+                        "{}",
+                        t!(
+                            "update.available",
+                            current = info.current,
+                            latest = info.latest
+                        )
+                    );
+                    println!("{}", t!("update.hint_install"));
+                }
+                Ok(None) => {
+                    println!(
+                        "{}",
+                        t!("update.up_to_date", version = env!("ALIUS_VERSION"))
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{}", t!("update.error_check", error = e.to_string()));
+                }
+            }
+            let _ = updater::record_check_time();
         }
     }
     Ok(())
