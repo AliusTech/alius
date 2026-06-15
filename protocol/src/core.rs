@@ -408,8 +408,8 @@ pub struct LoopPolicy {
 impl LoopPolicy {
     pub fn chat() -> Self {
         Self {
-            max_iterations: 1,
-            tools_enabled: false,
+            max_iterations: 10,
+            tools_enabled: true,
             planning_enabled: false,
             require_convergence_check: true,
             require_approval_for_tools: false,
@@ -553,6 +553,11 @@ pub enum CoreCommandKind {
     RequestRevision,
     SwitchModel,
     SwitchMode,
+    /// User's yes/no response to a tool-confirmation request (Stage B).
+    RespondToolConfirmation {
+        tool_call_id: String,
+        approved: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -676,11 +681,30 @@ pub enum CoreEventKind {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CoreEventPayload {
     Empty,
-    Text { text: String },
-    Json { value: serde_json::Value },
-    Convergence { report: ConvergenceReport },
-    Error { code: String, message: String },
-    Final { content: String, success: bool },
+    Text {
+        text: String,
+    },
+    Json {
+        value: serde_json::Value,
+    },
+    Convergence {
+        report: ConvergenceReport,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
+    Final {
+        content: String,
+        success: bool,
+    },
+    /// A tool operation needs user confirmation before executing (Stage B).
+    /// Emitted with CoreEventKind::ToolConfirmationRequired.
+    ToolConfirmation {
+        tool_call_id: String,
+        tool_name: String,
+        details: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -990,8 +1014,8 @@ mod tests {
     #[test]
     fn loop_policy_presets_match_runtime_modes() {
         let chat = LoopPolicy::chat();
-        assert_eq!(chat.max_iterations, 1);
-        assert!(!chat.tools_enabled);
+        assert_eq!(chat.max_iterations, 10);
+        assert!(chat.tools_enabled);
         assert!(!chat.planning_enabled);
         assert!(chat.require_convergence_check);
         assert!(!chat.require_approval_for_tools);

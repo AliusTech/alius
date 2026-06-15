@@ -17,6 +17,10 @@ pub struct SessionManager {
 struct RunState {
     events: Vec<CoreEvent>,
     status: RunStatus,
+    /// Pending tool-confirmation oneshot senders (Stage B). Keyed by tool_call_id.
+    /// When the user responds (or the run is cancelled), the sender is removed;
+    /// dropping it makes the receiver's `await` return Err (treated as denied).
+    confirmation: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl SessionManager {
@@ -87,6 +91,7 @@ impl SessionManager {
             RunState {
                 events: Vec::new(),
                 status: RunStatus::Started,
+                confirmation: HashMap::new(),
             },
         );
 
@@ -192,6 +197,55 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Store a oneshot sender for a pending tool confirmation (Stage B).
+    /// The loop engine awaits the matching receiver; the TUI delivers the
+    /// user's response via `deliver_confirmation`.
+    pub fn store_confirmation_sender(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        sender: tokio::sync::oneshot::Sender<bool>,
+    ) -> Result<(), ProtocolError> {
+        let mut runs = self.runs.write().unwrap();
+        let state = runs
+            .get_mut(run_ref.as_str())
+            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
+        state.confirmation.insert(tool_call_id.to_string(), sender);
+        Ok(())
+    }
+
+    /// Deliver the user's yes/no to a pending tool confirmation (Stage B).
+    /// Sends on the stored oneshot and removes it; the awaiting loop resumes.
+    pub fn deliver_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), ProtocolError> {
+        let mut runs = self.runs.write().unwrap();
+        let state = runs
+            .get_mut(run_ref.as_str())
+            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
+        match state.confirmation.remove(tool_call_id) {
+            Some(sender) => {
+                let _ = sender.send(approved);
+                Ok(())
+            }
+            None => Err(ProtocolError::Internal(format!(
+                "no pending confirmation for tool_call_id {tool_call_id}"
+            ))),
+        }
+    }
+
+    /// Drop all pending confirmation senders for a run (Stage B).
+    /// Called on Cancel — receivers get Err and treat it as denied.
+    pub fn cancel_pending_confirmations(&self, run_ref: &RunRef) {
+        let mut runs = self.runs.write().unwrap();
+        if let Some(state) = runs.get_mut(run_ref.as_str()) {
+            state.confirmation.clear();
+        }
+    }
+
     /// Get all run refs across all sessions.
     pub fn all_run_refs(&self) -> Vec<(RunRef, Option<SessionRef>)> {
         let sessions = self.sessions.read().unwrap();
@@ -220,5 +274,49 @@ impl SessionManager {
             .get(session_ref.as_str())
             .ok_or_else(|| ProtocolError::SessionNotFound(session_ref.clone()))?;
         Ok(snapshot.runs.iter().map(|r| r.run_ref.clone()).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_interface::core::WorkspaceRef;
+
+    fn mgr_with_run() -> (SessionManager, RunRef) {
+        let mgr = SessionManager::new(WorkspaceRef::new("/tmp"));
+        let session = mgr.create_session();
+        let (_turn, run_ref, _trace) = mgr.create_turn(&session.session_ref).unwrap();
+        (mgr, run_ref)
+    }
+
+    #[tokio::test]
+    async fn confirmation_store_deliver_roundtrip() {
+        let (mgr, run_ref) = mgr_with_run();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "call-1", tx)
+            .unwrap();
+
+        // Deliver the user's approval.
+        mgr.deliver_confirmation(&run_ref, "call-1", true).unwrap();
+        let approved = rx.await.unwrap();
+        assert!(approved);
+
+        // A second deliver for the same id fails (sender already consumed).
+        assert!(mgr.deliver_confirmation(&run_ref, "call-1", true).is_err());
+    }
+
+    #[tokio::test]
+    async fn confirmation_cancel_drops_sender() {
+        let (mgr, run_ref) = mgr_with_run();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "call-2", tx)
+            .unwrap();
+
+        // Cancel drops the sender → receiver gets Err → treated as denied.
+        mgr.cancel_pending_confirmations(&run_ref);
+        let res = rx.await;
+        assert!(res.is_err());
     }
 }
