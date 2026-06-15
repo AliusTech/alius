@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 01:15] Alius: entrypoints/jsonrpc/src/lib.rs - P4-2 review fix: test_run_cancel_observable_via_subscribe now asserts RunCancelled event is present in subscribe snapshot, not just correlation fields; fixed run_start doc comment to match actual return (removed turn_ref).
+
 [2026-06-16 01:00] Alius: entrypoints/jsonrpc/src/lib.rs + .alius/workspace/SPEC.md + .alius/workspace/docs/products/jsonrpc.md - P4-2 JSON-RPC run control: run_start returns run_ref + trace_id + session_ref; run_subscribe returns full event fields (trace_id, run_ref, session_ref, turn_ref, kind, payload, sequence, created_at); run_cancel returns success; cancel observable via subscribe test; product docs updated with complete method table and error codes; 32 jsonrpc tests total.
 
 ## 2026-06-15

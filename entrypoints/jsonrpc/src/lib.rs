@@ -140,7 +140,7 @@ pub fn dispatch_with_runtime(
 
 /// `run_start`: Start a streaming run.
 /// Params: `{"text": "...", "mode": "Chat"|"Plan"}`
-/// Returns: `{"run_ref": "...", "trace_id": "...", "session_ref": "...", "turn_ref": "..."}`
+/// Returns: `{"run_ref": "...", "trace_id": "...", "session_ref": "..."}`
 fn handle_run_start(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
     let text = match request.params.get("text").and_then(|v| v.as_str()) {
         Some(t) if !t.trim().is_empty() => t,
@@ -855,29 +855,33 @@ mod tests {
         let events = result["events"].as_array().unwrap();
         assert!(!events.is_empty(), "should have events after cancel");
 
-        // Verify at least one event has the run_ref correlation field.
+        // Verify RunCancelled event is present — this is the primary
+        // cancellation signal that P4-2 requires callers to observe.
+        let has_run_cancelled = events
+            .iter()
+            .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("run-cancelled"));
+        assert!(
+            has_run_cancelled,
+            "events must contain a RunCancelled event; got kinds: {:?}",
+            events.iter().map(|e| e.get("kind")).collect::<Vec<_>>()
+        );
+
+        // Verify correlation fields are present.
         let has_run_ref = events.iter().any(|e| {
             e.get("run_ref")
                 .and_then(|v| v.as_str())
                 .map(|s| !s.is_empty())
                 .unwrap_or(false)
         });
-        assert!(
-            has_run_ref,
-            "events should include run_ref correlation field"
-        );
+        assert!(has_run_ref, "events should include run_ref");
 
-        // Verify trace_id is present in events.
         let has_trace_id = events.iter().any(|e| {
             e.get("trace_id")
                 .and_then(|v| v.as_str())
                 .map(|s| !s.is_empty())
                 .unwrap_or(false)
         });
-        assert!(
-            has_trace_id,
-            "events should include trace_id correlation field"
-        );
+        assert!(has_trace_id, "events should include trace_id");
     }
 
     #[tokio::test(flavor = "multi_thread")]
