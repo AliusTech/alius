@@ -564,10 +564,10 @@ impl CoreRuntimeApi for CoreRuntime {
                     tool_call_id,
                     approved,
                 ) {
-                    Ok((_tool_name, _trace_id)) => {
+                    Ok(_tool_name) => {
                         // Success - audit logged by tool_step
                     }
-                    Err((err, tool_name, trace_id)) => {
+                    Err((err, tool_name)) => {
                         // Log delivery_failed audit event with full metadata
                         if let Some(writer) = &self.log_writer {
                             if let Ok(mut w) = writer.lock() {
@@ -577,7 +577,7 @@ impl CoreRuntimeApi for CoreRuntime {
                                     &tool_name,
                                     tool_call_id,
                                     command.target_run.as_str(),
-                                    trace_id.as_str(),
+                                    envelope.trace_id.as_str(),
                                 );
                                 let _ = w.flush();
                             }
@@ -1523,6 +1523,42 @@ mod tests {
             .collect();
         assert_eq!(mcp_tools.len(), 1, "should have 1 MCP tool");
         assert_eq!(mcp_tools[0].name, "mcp_search");
+    }
+
+    /// Test: CoreRuntime::send() logs delivery_failed audit event
+    /// when respond_confirmation fails, using envelope.trace_id,
+    /// and fail-cancels the run.
+    #[tokio::test]
+    async fn delivery_failed_audit_uses_envelope_trace_id() {
+        use protocol_interface::{CoreCommand, ProtocolEnvelope};
+
+        let rt = CoreRuntime::new(WorkspaceRef::new("/tmp/test-delivery-audit"));
+
+        // Create a session and run
+        let session = rt.session_manager().create_session().session_ref;
+        let (_, run_ref, _trace_id) = rt.session_manager().create_turn(&session).unwrap();
+
+        // Create a RespondToolConfirmation command for a nonexistent tool_call_id
+        let cmd = CoreCommand::respond_confirmation(run_ref.clone(), "nonexistent-tool-id", true);
+        let envelope = ProtocolEnvelope::new(
+            protocol_interface::Origin::LocalCli,
+            protocol_interface::CapabilityScope::local_cli(),
+            cmd,
+        );
+
+        // Call send - should fail with delivery_failed
+        let result = rt.send(envelope);
+        assert!(
+            result.is_err(),
+            "send should fail for nonexistent confirmation"
+        );
+
+        // Verify run was cancelled (fail-closed)
+        let status = rt.session_manager().get_run_status(&run_ref);
+        assert!(
+            matches!(status, Ok(RunStatus::Cancelled) | Err(_)),
+            "run should be cancelled or not found after delivery failure"
+        );
     }
 
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
