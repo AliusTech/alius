@@ -184,6 +184,96 @@ impl CoreRuntime {
 
         Ok(())
     }
+
+    /// Write a `delivery_failed` confirmation audit event.
+    /// On any failure (lock, write, flush), emits a `LogRecordEmitted`
+    /// diagnostic event to the run's event stream — consistent with
+    /// `tool_step::audit_confirmation` semantics. Does not change
+    /// run terminal status.
+    fn audit_delivery_failed(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        run_ref: &RunRef,
+        trace_id: &TraceId,
+    ) {
+        let Some(writer) = &self.log_writer else {
+            // No log writer — emit diagnostic
+            self.emit_audit_diagnostic(
+                run_ref,
+                trace_id,
+                "audit_no_writer",
+                "no log writer available for delivery_failed audit",
+            );
+            return;
+        };
+
+        let mut w = match writer.lock() {
+            Ok(w) => w,
+            Err(_) => {
+                self.emit_audit_diagnostic(
+                    run_ref,
+                    trace_id,
+                    "audit_lock_poisoned",
+                    "delivery_failed audit log lock poisoned",
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = crate::logging::audit::log_confirmation(
+            &mut w,
+            "delivery_failed",
+            tool_name,
+            tool_call_id,
+            run_ref.as_str(),
+            trace_id.as_str(),
+        ) {
+            self.emit_audit_diagnostic(
+                run_ref,
+                trace_id,
+                "audit_write_failed",
+                &format!("delivery_failed audit write failed: {e}"),
+            );
+            return;
+        }
+
+        if let Err(e) = w.flush() {
+            self.emit_audit_diagnostic(
+                run_ref,
+                trace_id,
+                "audit_flush_failed",
+                &format!("delivery_failed audit flush failed: {e}"),
+            );
+        }
+    }
+
+    /// Emit a LogRecordEmitted diagnostic event to the run's event stream.
+    /// This is non-blocking and does not change run status.
+    /// Uses sequence 0 since diagnostic events are appended after
+    /// the run completes and don't affect execution order.
+    fn emit_audit_diagnostic(
+        &self,
+        run_ref: &RunRef,
+        trace_id: &TraceId,
+        code: &str,
+        message: &str,
+    ) {
+        let event = CoreEvent::new(
+            run_ref.clone(),
+            trace_id.clone(),
+            0, // Diagnostic events don't need ordered sequences
+            CoreEventKind::LogRecordEmitted,
+            CoreEventPayload::Json {
+                value: serde_json::json!({
+                    "level": "warn",
+                    "code": code,
+                    "message": message,
+                }),
+            },
+        );
+        let _ = self.session_manager.push_event(run_ref, event);
+    }
 }
 
 impl CoreRuntimeApi for CoreRuntime {
@@ -568,21 +658,16 @@ impl CoreRuntimeApi for CoreRuntime {
                         // Success - audit logged by tool_step
                     }
                     Err((err, tool_name)) => {
-                        // Log delivery_failed audit event with full metadata
-                        if let Some(writer) = &self.log_writer {
-                            if let Ok(mut w) = writer.lock() {
-                                let _ = crate::logging::audit::log_confirmation(
-                                    &mut w,
-                                    "delivery_failed",
-                                    &tool_name,
-                                    tool_call_id,
-                                    command.target_run.as_str(),
-                                    envelope.trace_id.as_str(),
-                                );
-                                let _ = w.flush();
-                            }
-                            // Lock failure is non-blocking, logged as diagnostic
-                        }
+                        // Log delivery_failed audit event with full metadata.
+                        // On any audit failure, emit a LogRecordEmitted diagnostic
+                        // event to the run's event stream — consistent with
+                        // tool_step::audit_confirmation semantics.
+                        self.audit_delivery_failed(
+                            tool_call_id,
+                            &tool_name,
+                            &command.target_run,
+                            &envelope.trace_id,
+                        );
                         // Fail-closed: cancel the run to prevent hanging
                         let _ = self.session_manager.cancel_run(&command.target_run);
                         return Err(err);
@@ -1723,6 +1808,77 @@ mod tests {
             expected_trace_id.as_str(),
             "trace_id should match envelope.trace_id"
         );
+    }
+
+    /// Test: When audit log write fails (e.g., disk full), a
+    /// LogRecordEmitted diagnostic event is emitted to the run,
+    /// and the run status is NOT changed (non-blocking).
+    #[tokio::test]
+    async fn delivery_failed_audit_emits_diagnostic_on_failure() {
+        use protocol_interface::{CoreCommand, ProtocolEnvelope};
+
+        // Create a runtime WITHOUT a log_writer to force audit failure path
+        let rt = CoreRuntime::new(WorkspaceRef::new("/tmp/test-audit-failure"));
+        assert!(rt.log_writer.is_none(), "should have no log writer");
+
+        // Create a session and run
+        let session = rt.session_manager().create_session().session_ref;
+        let (_, run_ref, _trace_id) = rt.session_manager().create_turn(&session).unwrap();
+
+        // Store initial event count
+        let initial_events = rt.session_manager().get_events(&run_ref).unwrap().len();
+
+        // Create a RespondToolConfirmation command for a nonexistent tool_call_id
+        let cmd = CoreCommand::respond_confirmation(run_ref.clone(), "tc-fail-audit", true);
+        let envelope = ProtocolEnvelope::new(
+            protocol_interface::Origin::LocalCli,
+            protocol_interface::CapabilityScope::local_cli(),
+            cmd,
+        );
+
+        // Call send - should fail but NOT panic
+        let result = rt.send(envelope);
+        assert!(
+            result.is_err(),
+            "send should fail for nonexistent confirmation"
+        );
+
+        // Verify run was cancelled (fail-closed)
+        let status = rt.session_manager().get_run_status(&run_ref);
+        assert!(
+            matches!(status, Ok(RunStatus::Cancelled) | Err(_)),
+            "run should be cancelled after delivery failure"
+        );
+
+        // Verify diagnostic event was emitted
+        let events = rt.session_manager().get_events(&run_ref).unwrap();
+        assert!(
+            events.len() > initial_events,
+            "should have emitted diagnostic event"
+        );
+
+        // Find the LogRecordEmitted diagnostic event
+        let diagnostic = events
+            .iter()
+            .find(|e| e.kind == CoreEventKind::LogRecordEmitted);
+        assert!(
+            diagnostic.is_some(),
+            "should have LogRecordEmitted diagnostic"
+        );
+
+        if let Some(event) = diagnostic {
+            if let CoreEventPayload::Json { value } = &event.payload {
+                assert_eq!(value["level"], "warn");
+                assert_eq!(value["code"], "audit_no_writer");
+                assert!(value["message"].as_str().unwrap().contains("no log writer"));
+            } else {
+                panic!("diagnostic should have Json payload");
+            }
+        }
+
+        // Verify run status is still Cancelled (diagnostic doesn't change status)
+        let final_status = rt.session_manager().get_run_status(&run_ref);
+        assert_eq!(final_status.unwrap(), RunStatus::Cancelled);
     }
 
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

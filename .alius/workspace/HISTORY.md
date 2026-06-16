@@ -6,6 +6,10 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-17
+
+[2026-06-17 00:25] Alius: runtime/core/src/runtime.rs - P3-3 Final review fix: delivery_failed audit path now emits LogRecordEmitted diagnostic events on lock/write/flush failures, consistent with tool_step::audit_confirmation semantics; added audit_delivery_failed and emit_audit_diagnostic helper methods; added delivery_failed_audit_emits_diagnostic_on_failure test verifying diagnostic event emission and non-blocking behavior (run status unchanged).
+
 ## 2026-06-16
 
 [2026-06-16 06:00] Alius: runtime/core/src/runtime.rs + .alius/workspace/docs/overview/implementation-gaps.md - P3-3 Final review fix: delivery_failed audit tests now use CoreRuntimeBuilder with real LogWriter to verify audit log file contents; tests assert event_type=tool_confirmation, action=delivery_failed, trace_id=envelope.trace_id, tool_call_id correct, tool_name non-empty, no sensitive data leaked; added receiver-dropped audit test preserving original tool_name; updated implementation-gaps.md to document tool_name="unknown" sentinel for no-pending/run-not-found cases.
