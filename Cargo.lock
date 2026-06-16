@@ -1922,9 +1922,11 @@ name = "jsonrpc"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "core-runtime",
  "protocol-interface",
  "runtime-config",
+ "runtime-tools",
  "serde",
  "serde_json",
  "tokio",
