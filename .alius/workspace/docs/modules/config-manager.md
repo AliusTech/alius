@@ -4,6 +4,8 @@ Primary paths:
 
 - `runtime/config/src/config_manager.rs`
 - `runtime/config/src/views.rs`
+- `runtime/config/src/init_wizard.rs`
+- `runtime/config/src/project_init.rs`
 - `runtime/config/src/loaders/`
 - `runtime/config/src/settings.rs`
 - `runtime/config/src/merger.rs`
@@ -18,6 +20,7 @@ Primary paths:
 - Resolve `RuntimeConfigView`.
 - Expose schema views for provider, tool, permission, protocol, soul, logging, and session config.
 - Support project initialization defaults.
+- Support resumable `/init` state transitions and init-state persistence.
 - Support legacy config migration where implemented.
 
 ## Main Types
@@ -32,6 +35,9 @@ Primary paths:
 - `ShellGateConfig`
 - `LoggingConfig`
 - `SessionConfig`
+- `InitWizard`
+- `InitViewModel`
+- `InitCommand`
 
 ## Project Config Root
 
@@ -64,7 +70,9 @@ Preferred project config root:
 
 `runtime/config/src/views.rs` defines `ModelLibraryConfig`, `ModelLibraryEntry`, `ModelAssignmentConfig`, and `ModelAssignmentRole`.
 
-The local model library is stored in `.alius/config/providers.toml` under `[[model_library.models]]`. The TUI `/model` flow manages this inventory and is the only TUI flow that fetches remote provider model lists.
+The local model library is stored in `.alius/config/providers.toml` under `[[model_library.models]]`. The TUI `/model` flow manages this inventory and is the only standalone TUI flow that fetches remote provider model lists.
+
+Model imports from `/model` and `/init` persist the provider model library immediately after the user imports models. This keeps a later `/config` task aligned with the model pool even when the user leaves and re-enters configuration before a full settings save. Successful `/init` model fetches also write the entered API Key into the active runtime settings so chat readiness checks do not report a missing `api_key` after initialization. Non-model configuration saves must preserve the existing on-disk model library instead of overwriting it with an empty in-memory task state.
 
 Each entry records the concrete provider, Base URL, provider-native model name, display name, legacy reasoning note, and enabled state.
 
@@ -88,11 +96,18 @@ If `model.toml` is missing, loading migrates assignments from the legacy tiers b
 
 ## Initialization
 
-`runtime/core/src/config.rs` writes embedded defaults and ensures:
+`runtime/config/src/init_wizard.rs` owns pure `/init` state, transition, recovery, and view-model logic. It does not perform filesystem IO, network calls, model requests, role activation, or config writes.
+
+`runtime/config/src/project_init.rs` owns the retryable local filesystem effects used by `/init`:
 
 - `.alius/config/`
 - `.alius/config/model.toml`
 - `.alius/memory/`
+- `.alius/runtime/init-state.toml`
 - `.alius/workspace/`
 
-It does not generate this full documentation set.
+The CLI TUI adapter executes `InitCommand` values, saves state after successful transitions, clears state after completion/cancel, and keeps provider model-list fetching in `entrypoints/cli` through `runtime-model`. The user-facing `/init` flow completes immediately after role configuration is saved; capability resolution, workspace template creation, final validation, and Enter Copilot confirmation are not performed during initialization. The workspace defaults to Copilot mode, while Team mode is switched by a separate workspace operation.
+
+Fresh `/init` starts from a clean wizard context and does not prefill language, role, model pool, or Plan/Execute/Review assignment from the currently hydrated runtime settings. Reinitializing project defaults clears `.alius/config/model.toml`, clears the model library, clears the selected role in `.alius/config/soul.toml`, and does not preserve the previous UI locale. Existing init-state is still resumable from `.alius/runtime/init-state.toml`.
+
+`runtime/core/src/config.rs` still provides legacy-compatible embedded default helpers for older init entrypoints. It does not generate this full documentation set.

@@ -22,6 +22,8 @@ Current configuration modules live under `runtime/config`.
 | --- | --- |
 | `~/.alius/mcp/servers.toml` | MCP server declarations. Loaded by `McpManager` when the project switch in `.alius/config/tools.toml` is enabled. |
 
+`/init` progress is not a project config file. It is persisted separately at `.alius/runtime/init-state.toml` so initialization can resume without mixing transient wizard state into stable configuration schema files.
+
 ## Main Runtime Views
 
 | Type | Purpose |

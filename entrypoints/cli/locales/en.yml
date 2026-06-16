@@ -565,6 +565,14 @@ workspace:
     description: "Alius is still reasoning. Choose whether to interrupt this run."
     confirm: "Interrupt execution"
     continue_waiting: "Continue waiting"
+  tool_confirmation:
+    title: "Tool Confirmation Required"
+    description: "This tool operation requires your approval before executing"
+    tool: "Tool"
+    allow: "Allow"
+    deny: "Deny"
+  tool_confirmed: "Tool execution approved"
+  tool_denied: "Tool execution denied"
   decision:
     title: "Confirmation Required"
     description: "Alius has generated a plan after clarifying the task. Choose how to proceed:"

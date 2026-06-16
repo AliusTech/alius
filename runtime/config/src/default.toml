@@ -11,3 +11,7 @@ role = ""
 
 [ui]
 locale = "en"
+
+[update]
+auto_check = true
+check_interval_hours = 24

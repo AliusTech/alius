@@ -1081,6 +1081,9 @@ async fn execute_goal(
 
         match bridge.start_streaming(&prompt, rt_mode) {
             Ok((run_ref, mut event_rx)) => {
+                // Stage B: Store run_ref for tool confirmation responses
+                state.current_run_ref = Some(run_ref.clone());
+
                 let mut full_response = String::new();
                 let mut errors: Vec<String> = Vec::new();
                 let mut done = false;
@@ -1366,6 +1369,22 @@ async fn collect_plan_controller_response(
                     }
                     (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
                         state.record_tool_call_completed(value);
+                    }
+                    (
+                        CoreEventKind::ToolConfirmationRequired,
+                        CoreEventPayload::ToolConfirmation {
+                            tool_call_id,
+                            tool_name,
+                            details,
+                        },
+                    ) => {
+                        let confirmation = ToolConfirmationState {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: tool_name.clone(),
+                            details: details.clone(),
+                            run_ref: run_ref.clone(),
+                        };
+                        state.show_tool_confirmation(confirmation);
                     }
                     (
                         CoreEventKind::FinalResult,
@@ -2427,6 +2446,8 @@ struct WorkspaceState {
     expanded_blocks: std::collections::HashSet<String>,
     global_expanded: bool,
     block_row_map: std::collections::HashMap<String, (u16, u16)>,
+    /// Current run reference for tool confirmation (Stage B).
+    current_run_ref: Option<protocol_interface::core::RunRef>,
 }
 
 impl WorkspaceState {
@@ -2482,6 +2503,7 @@ impl WorkspaceState {
             expanded_blocks: std::collections::HashSet::new(),
             global_expanded: false,
             block_row_map: std::collections::HashMap::new(),
+            current_run_ref: None,
         }
     }
 

@@ -1,0 +1,6 @@
+# MCP Test Server Configuration
+
+[servers.test-server]
+command = "node"
+args = ["tests/mcp/test_server.js"]
+disabled = false

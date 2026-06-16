@@ -1,0 +1,33 @@
+# MCP 服务器配置示例
+
+# 文件位置: ~/.alius/mcp/servers.toml
+
+[servers]
+
+# 文件系统工具
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/weixug/Documents"]
+disabled = false
+
+# GitHub 集成
+[servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+disabled = true
+
+# PostgreSQL 数据库
+[servers.postgres]
+command = "docker"
+args = ["run", "-i", "mcp/postgres", "postgresql://localhost/mydb"]
+disabled = true
+
+# 自定义工具示例
+[servers.custom-tool]
+command = "/usr/local/bin/my-mcp-server"
+args = []
+disabled = true
+
+[servers.custom-tool.env]
+API_KEY = "${CUSTOM_API_KEY}"
+BASE_URL = "https://api.example.com"

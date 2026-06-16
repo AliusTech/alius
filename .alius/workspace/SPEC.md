@@ -38,9 +38,10 @@ Acceptance criteria:
 - Approved plan nodes execute step by step; after all approved nodes complete, the user confirms plan completion and the Plans panel closes.
 - Clarification prompts put the question text in Conversation and render model-proposed answers in the interaction surface as single-select, multi-select, or text input controls.
 - `/config` is a local tabbed configuration center inside the workspace and does not call the model or fetch provider model lists on entry.
-- `/config` exposes only `configuration-models`, `configuration-language`, and `configuration-solo`; missing required items are reported in Conversation.
+- `/config` exposes only `configuration-models`, `configuration-language`, and `configuration-soul`; missing required items are reported in Conversation.
 - During `/config`, `Tab` and `Shift+Tab` switch configuration tabs instead of switching Plan/Bypass mode.
-- `/model` stays inside the workspace, reads the local model library instead of calling remote model listing, and configures the current `Quick Reasoning`, `Standard Reasoning`, and `Deep Reasoning` model mappings.
+- `/model` stays inside the workspace, owns remote model import, and maintains the local model library used by `/config` Plan/Execute/Review assignment.
+- `/init` runs as a resumable `runtime-config` InitWizard state machine with operation-specific interaction scopes instead of reusing the `/config` tab surface.
 
 ## F-004 Protocol Interface Boundary
 
