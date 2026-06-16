@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 03:30] Alius: runtime/core/src/loop_engine/engine.rs - P4-4 review fix: replaced execute_tools-level test with two engine-level tests using LoopEngine::run + fake LlmProvider: mcp_tool_executed_through_engine_chat_mode (no confirmation, verifies final_content includes MCP output, no ToolConfirmationRequired), mcp_tool_executed_through_engine_plan_mode_with_confirmation (Plan mode, verifies ToolConfirmationRequired emitted, approved → executes correctly, source==Mcp); updated implementation-gaps.md.
+
 [2026-06-16 03:15] Alius: runtime/core/src/loop_engine/engine.rs + .alius/workspace/docs/overview/implementation-gaps.md - P4-4 MCP tool LoopEngine execution test: added mcp_tool_executed_through_registry test that registers a fake MCP-source tool (mcp_echo) in ToolRegistry, executes it through execute_tools (same path as LoopEngine), verifies source==Mcp, output matches, ToolCallStarted/ToolCallCompleted events emitted; updated implementation-gaps.md to reflect MCP tool execution is now tested.
 
 [2026-06-16 03:00] Alius: entrypoints/jsonrpc/src/lib.rs + entrypoints/jsonrpc/Cargo.toml + runtime/core/src/lib.rs + runtime/core/src/manager.rs - P4-3 review fixes v5: JSON-RPC test_dispatch_tool_list_mcp_source_visible constructs CoreRuntimeManager with fake MCP tool via CoreRuntimeBuilder, asserts tool_list returns source=="mcp"; re-exported LlmClient from core-runtime; added runtime-tools and async-trait as dev-dependencies; fixed start_mcp_init comment to list all three config flags.

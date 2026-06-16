@@ -1403,16 +1403,27 @@ mod tests {
         }
     }
 
-    /// MCP tool execution: fake MCP-source tool goes through execute_tools
-    /// (the same path LoopEngine uses), is dispatched via ToolRegistry,
-    /// and produces correct output and events.
-    #[tokio::test]
-    async fn mcp_tool_executed_through_registry() {
+    /// Shared fake MCP tool + provider setup for engine-level tests.
+    fn setup_mcp_engine_test(
+        plan_requires_confirmation: bool,
+    ) -> (
+        std::sync::Arc<runtime_tools::ToolRegistry>,
+        std::sync::Arc<crate::SessionManager>,
+        RunRef,
+        TraceId,
+        LoopContext,
+    ) {
         use protocol_interface::core::ToolSource;
+        use runtime_model::{ChatEvent, ChatStream, LlmProvider, ToolCall};
         use runtime_tools::AliusTool;
+        use std::future::Future;
+        use std::pin::Pin;
 
-        /// Fake MCP tool that echoes its input.
-        struct McpEchoTool;
+        /// Fake MCP tool: echoes input, source = Mcp.
+        /// preview_confirmation respects the `require_confirm` flag.
+        struct McpEchoTool {
+            require_confirm: bool,
+        }
 
         #[async_trait::async_trait]
         impl AliusTool for McpEchoTool {
@@ -1427,6 +1438,10 @@ mod tests {
             }
             fn source(&self) -> ToolSource {
                 ToolSource::Mcp
+            }
+            fn preview_confirmation(&self, _args: &serde_json::Value, mode: RuntimeMode) -> bool {
+                // In Plan mode, require confirmation (same as real McpToolAdapter).
+                self.require_confirm && mode == RuntimeMode::Plan
             }
             async fn execute(
                 &self,
@@ -1445,91 +1460,243 @@ mod tests {
             }
         }
 
-        // Register the fake MCP tool.
-        let registry = runtime_tools::ToolRegistry::new();
-        runtime_tools::native::register_native_tools(&registry);
-        registry.register(McpEchoTool).unwrap();
+        /// Fake provider: returns a tool call for "mcp_echo".
+        struct McpToolCallProvider;
 
-        // Verify source metadata.
-        let tool = registry
-            .get("mcp_echo")
-            .expect("mcp_echo must be registered");
-        assert_eq!(tool.source(), ToolSource::Mcp, "tool source must be Mcp");
+        impl LlmProvider for McpToolCallProvider {
+            fn chat_stream<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<ChatStream>> + Send + 'a>> {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok(stream)
+                })
+            }
+            fn chat_once<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _system: Option<&'a str>,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + 'a>> {
+                Box::pin(async { Ok(String::new()) })
+            }
+            fn list_models<'a>(
+                &'a self,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>
+            {
+                Box::pin(async { Ok(Vec::new()) })
+            }
+            fn chat_stream_with_tools<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async {
+                    let stream: ChatStream = Box::pin(futures::stream::iter(vec![
+                        Ok(ChatEvent::Delta {
+                            text: "calling mcp tool".to_string(),
+                        }),
+                        Ok(ChatEvent::Done {
+                            full_response: "calling mcp tool".to_string(),
+                        }),
+                    ]));
+                    let tool_calls = vec![ToolCall::new(
+                        "tc-mcp-1".to_string(),
+                        "mcp_echo".to_string(),
+                        json!({"message": "hello from mcp"}),
+                    )];
+                    Ok((stream, Some(tool_calls)))
+                })
+            }
+            fn continue_with_tool_results<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                tool_results: &'a [(String, String, String)],
+                _assistant_tool_calls: &'a [ToolCall],
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                // Echo back tool results as model text so final_content includes them.
+                let echoed: String = tool_results
+                    .iter()
+                    .map(|(_, name, output)| format!("- {name}: {output}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Box::pin(async move {
+                    let stream: ChatStream = Box::pin(futures::stream::iter(vec![
+                        Ok(ChatEvent::Delta { text: echoed }),
+                        Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        }),
+                    ]));
+                    Ok((stream, None))
+                })
+            }
+        }
 
-        // Create session/run/trace for the execution.
+        let registry = std::sync::Arc::new({
+            let reg = runtime_tools::ToolRegistry::new();
+            runtime_tools::native::register_native_tools(&reg);
+            reg.register(McpEchoTool {
+                require_confirm: plan_requires_confirmation,
+            })
+            .unwrap();
+            reg
+        });
+
         let session_manager = std::sync::Arc::new(crate::SessionManager::new(
             protocol_interface::core::WorkspaceRef::new("/tmp"),
         ));
         let session = session_manager.create_session();
         let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
 
-        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let events_clone = events.clone();
-        let mut seq = 0u64;
+        let client = std::sync::Arc::new(runtime_model::LlmClient::new_with_provider_for_test(
+            Box::new(McpToolCallProvider),
+            "mock-model",
+            protocol_interface::ProviderType::Openai,
+        ));
 
-        // Build a tool call that references our fake MCP tool.
-        let call = runtime_model::ToolCall {
-            id: "tc-mcp-1".into(),
-            name: "mcp_echo".into(),
-            args: json!({"message": "hello from mcp"}),
+        let tmp = tempfile::TempDir::new().unwrap();
+        let conversation = runtime_model::Conversation::new(None);
+        let ctx = LoopContext {
+            client,
+            conversation,
+            settings: runtime_config::LlmSettings::default(),
+            workspace: tmp.path().to_path_buf(),
+            tool_registry: Some(registry.clone()),
+            session: Some(session_manager.clone()),
+            max_context_tokens: 4096,
+            cancel_token: None,
+            log_writer: None,
         };
 
-        // Execute through the same path LoopEngine uses.
-        let batch = super::super::tool_step::execute_tools(
-            &[call],
-            &registry,
-            std::path::Path::new("/tmp"),
-            "test",
-            protocol_interface::RuntimeMode::Plan,
-            Some(&session_manager),
-            &mut |e| events_clone.lock().unwrap().push(e),
-            &run_ref,
-            &trace_id,
-            &mut seq,
-            None,
-        )
-        .await
-        .unwrap();
+        (registry, session_manager, run_ref, trace_id, ctx)
+    }
 
-        // The batch must not be denied.
-        assert!(!batch.batch_denied, "MCP tool should not be denied");
+    /// Engine-level: LoopEngine::run with fake MCP tool via Chat mode.
+    /// Chat mode: no confirmation, tool executes directly.
+    #[tokio::test]
+    async fn mcp_tool_executed_through_engine_chat_mode() {
+        use protocol_interface::core::ToolSource;
 
-        // Output must match the fake tool's deterministic response.
-        assert_eq!(batch.results.len(), 1);
-        assert_eq!(
-            batch.results[0].2, "mcp_echo: hello from mcp",
-            "output must match fake MCP tool response"
+        let (registry, _sm, run_ref, trace_id, ctx) = setup_mcp_engine_test(false);
+
+        // Verify source.
+        let tool = registry.get("mcp_echo").unwrap();
+        assert_eq!(tool.source(), ToolSource::Mcp);
+
+        let input = RunLoopInput {
+            content: "call mcp tool".to_string(),
+            mode: RuntimeMode::Chat,
+            policy: LoopPolicy::chat(),
+        };
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+        let result = LoopEngine::run(&run_ref, &trace_id, &input, &ctx, &mut |e| {
+            events_clone.lock().unwrap().push(e)
+        })
+        .await;
+
+        // Final content must include MCP tool output.
+        assert!(
+            result.final_content.contains("mcp_echo: hello from mcp"),
+            "final_content must include MCP tool output, got: {}",
+            result.final_content
         );
 
-        // Verify events: ToolCallStarted → ToolCallCompleted(success=true).
+        // Verify no ToolConfirmationRequired in Chat mode.
         let evts = events.lock().unwrap();
-
-        let started = evts
+        let has_confirmation = evts
             .iter()
-            .find(|e| e.kind == CoreEventKind::ToolCallStarted);
-        assert!(started.is_some(), "must emit ToolCallStarted");
+            .any(|e| e.kind == CoreEventKind::ToolConfirmationRequired);
+        assert!(
+            !has_confirmation,
+            "Chat mode must not emit ToolConfirmationRequired"
+        );
 
+        // Verify ToolCallCompleted with success.
         let completed = evts
             .iter()
             .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
         assert!(completed.is_some(), "must emit ToolCallCompleted");
-
         if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
-            assert_eq!(value["success"], true, "tool must succeed");
+            assert_eq!(value["success"], true);
             assert_eq!(value["output"], "mcp_echo: hello from mcp");
             assert_eq!(value["name"], "mcp_echo");
-        } else {
-            panic!("ToolCallCompleted must use JSON payload");
+        }
+    }
+
+    /// Engine-level: LoopEngine::run with fake MCP tool via Plan mode.
+    /// Plan mode: confirmation required, approved → executes correctly.
+    #[tokio::test]
+    async fn mcp_tool_executed_through_engine_plan_mode_with_confirmation() {
+        use protocol_interface::core::ToolSource;
+
+        let (registry, sm, run_ref, trace_id, ctx) = setup_mcp_engine_test(true);
+
+        // Verify source.
+        let tool = registry.get("mcp_echo").unwrap();
+        assert_eq!(tool.source(), ToolSource::Mcp);
+
+        let input = RunLoopInput {
+            content: "call mcp tool".to_string(),
+            mode: RuntimeMode::Plan,
+            policy: LoopPolicy::plan(),
+        };
+
+        // Spawn a task that approves the confirmation.
+        let sm_clone = sm.clone();
+        let rr = run_ref.clone();
+        let approve_handle = tokio::spawn(async move {
+            // Wait for confirmation sender to be stored.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = sm_clone.deliver_confirmation(&rr, "tc-mcp-1", true);
+        });
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+        let result = LoopEngine::run(&run_ref, &trace_id, &input, &ctx, &mut |e| {
+            events_clone.lock().unwrap().push(e)
+        })
+        .await;
+        approve_handle.await.unwrap();
+
+        // Final content must include MCP tool output.
+        assert!(
+            result.final_content.contains("mcp_echo: hello from mcp"),
+            "final_content must include MCP tool output, got: {}",
+            result.final_content
+        );
+
+        let evts = events.lock().unwrap();
+
+        // Verify ToolConfirmationRequired was emitted.
+        let has_confirmation = evts
+            .iter()
+            .any(|e| e.kind == CoreEventKind::ToolConfirmationRequired);
+        assert!(
+            has_confirmation,
+            "Plan mode must emit ToolConfirmationRequired"
+        );
+
+        // Verify ToolCallCompleted with success.
+        let completed = evts
+            .iter()
+            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
+        assert!(completed.is_some(), "must emit ToolCallCompleted");
+        if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
+            assert_eq!(value["success"], true);
+            assert_eq!(value["output"], "mcp_echo: hello from mcp");
         }
 
-        // Verify the tool source is still Mcp in the registry.
+        // Verify source is still Mcp in registry.
         let infos = registry.to_tool_infos();
         let mcp_echo_info = infos.iter().find(|i| i.name == "mcp_echo");
-        assert!(mcp_echo_info.is_some(), "mcp_echo must be in tool infos");
-        assert_eq!(
-            mcp_echo_info.unwrap().source,
-            ToolSource::Mcp,
-            "mcp_echo source must be Mcp"
-        );
+        assert_eq!(mcp_echo_info.unwrap().source, ToolSource::Mcp);
     }
 }
