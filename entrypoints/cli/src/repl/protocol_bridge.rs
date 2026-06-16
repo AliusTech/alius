@@ -238,30 +238,41 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_respond_confirmation_delegates_to_manager() {
-        // Create a bridge with a test workspace
+    fn test_respond_confirmation_returns_error_for_nonexistent_run() {
         let workspace = PathBuf::from("/tmp/test-bridge");
         let settings = Settings::default();
         let bridge = match ProtocolBridge::new(workspace, settings) {
             Ok(b) => b,
-            Err(_) => return, // Skip test if runtime can't be created (e.g., no API key)
+            Err(_) => return, // Skip if no API key
         };
 
-        // Create a run first
-        let run_ref = bridge
-            .send_message_with_mode("test", RuntimeMode::Plan)
-            .ok()
-            .and_then(|events| {
-                events
-                    .iter()
-                    .find(|e| e.payload.kind == CoreEventKind::RunStarted)
-                    .map(|e| e.run_ref.clone().unwrap_or_default())
-            })
-            .unwrap_or_default();
+        // respond_confirmation with a nonexistent run_ref should return an error
+        let fake_run = RunRef::new();
+        let result = bridge.respond_confirmation(&fake_run, "fake-tool-id", true);
+        assert!(result.is_err(), "Should fail for nonexistent run_ref");
+    }
 
-        // Test respond_confirmation - should not panic even with invalid tool_call_id
+    #[test]
+    fn test_respond_confirmation_returns_error_for_nonexistent_tool() {
+        let workspace = PathBuf::from("/tmp/test-bridge");
+        let settings = Settings::default();
+        let bridge = match ProtocolBridge::new(workspace, settings) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        // Create a run
+        let run_ref = match bridge.send_message_with_mode("test", RuntimeMode::Plan) {
+            Ok(events) => events
+                .iter()
+                .find(|e| e.payload.kind == CoreEventKind::RunStarted)
+                .and_then(|e| e.run_ref.clone())
+                .unwrap_or_default(),
+            Err(_) => return, // Skip if runtime not available
+        };
+
+        // respond_confirmation with invalid tool_call_id should fail
         let result = bridge.respond_confirmation(&run_ref, "nonexistent-tool-id", true);
-        // This may return an error due to no pending confirmation, but shouldn't panic
-        assert!(result.is_ok() || result.is_err());
+        assert!(result.is_err(), "Should fail for nonexistent tool_call_id");
     }
 }

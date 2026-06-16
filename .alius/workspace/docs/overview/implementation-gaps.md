@@ -50,7 +50,7 @@ MCP server config, connection, and tool listing are implemented. MCP auto-initia
 
 ## Tool Confirmation Flow
 
-Plan mode tool confirmation is now implemented end-to-end:
+Plan mode tool confirmation is partially implemented:
 
 1. When a tool's `preview_confirmation()` returns `true` (e.g., high-risk shell commands, file writes in Plan mode), `tool_step::execute_tools()` emits a `ToolConfirmationRequired` event and blocks on a oneshot channel.
 
@@ -62,6 +62,8 @@ Plan mode tool confirmation is now implemented end-to-end:
 
 5. Cancel/drop of the confirmation sender is treated as denial (fail-closed).
 
+6. Failure in confirmation delivery triggers fail-closed: UI shows error, current run is cancelled to prevent runtime from hanging.
+
 Tools that trigger confirmation in Plan mode:
 - Shell commands (high-risk)
 - File write operations
@@ -69,7 +71,8 @@ Tools that trigger confirmation in Plan mode:
 - MCP tools (all in Plan mode)
 
 Remaining gaps:
-- MCP tool execution via LoopEngine is tested with a fake MCP-source tool (`mcp_echo`) registered in the shared ToolRegistry, confirming that `execute_tools` dispatches MCP tools correctly, produces correct output, and emits proper events. Real MCP server end-to-end execution (with actual MCP protocol) is not yet tested.
+- **Streaming-path acceptance test**: The end-to-end path (TUI receives `ToolConfirmationRequired` → user approves/denies → runtime resumes → final result) is not yet covered by automated tests. Current tests cover: `SessionManager` level, `LoopEngine/tool_step` level, and `WorkspaceState` level. A streaming integration test that exercises the full bridge path is still needed.
+- MCP tool execution via LoopEngine is tested with a fake MCP-source tool registered in the shared ToolRegistry. Real MCP server end-to-end execution (with actual MCP protocol) is not yet tested.
 - `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.
 
 ## WASM Plugin Integration

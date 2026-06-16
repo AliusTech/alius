@@ -862,9 +862,20 @@ async fn handle_submit(
     if let Some((run_ref, tool_call_id, approved)) = state.handle_tool_confirmation_response(&input)
     {
         if let Some(bridge) = session.bridge.as_ref() {
-            bridge
-                .respond_confirmation(&run_ref, &tool_call_id, approved)
-                .map_err(|e| anyhow::anyhow!("Failed to respond to tool confirmation: {}", e))?;
+            match bridge.respond_confirmation(&run_ref, &tool_call_id, approved) {
+                Ok(()) => {
+                    state.complete_tool_confirmation(approved);
+                }
+                Err(e) => {
+                    state.fail_tool_confirmation(e.to_string());
+                    let _ = bridge.cancel(
+                        &run_ref,
+                        Some("tool confirmation delivery failed".to_string()),
+                    );
+                }
+            }
+        } else {
+            state.fail_tool_confirmation("bridge unavailable".to_string());
         }
         return Ok(());
     }
@@ -1156,18 +1167,32 @@ async fn execute_goal(
                                 }
                                 ExecutionInputAction::ToolConfirmationResponse(response) => {
                                     // User responded to tool confirmation
-                                    if let Some(confirmation) =
-                                        state.pending_tool_confirmation.take()
+                                    if let Some((run_ref, tool_call_id, approved)) =
+                                        state.handle_tool_confirmation_response(&response)
                                     {
-                                        let approved = response == "approve";
-                                        let _ = bridge.respond_confirmation(
-                                            &confirmation.run_ref,
-                                            &confirmation.tool_call_id,
+                                        match bridge.respond_confirmation(
+                                            &run_ref,
+                                            &tool_call_id,
                                             approved,
-                                        );
-                                        // Clear the prompt input and restore state
-                                        state.prompt_input = None;
-                                        state.restore_text_input();
+                                        ) {
+                                            Ok(()) => {
+                                                // Success: clear confirmation state
+                                                state.complete_tool_confirmation(approved);
+                                            }
+                                            Err(e) => {
+                                                // Fail-closed: show error, cancel run
+                                                state.fail_tool_confirmation(e.to_string());
+                                                let _ = bridge.cancel(
+                                                    &run_ref,
+                                                    Some(
+                                                        "tool confirmation delivery failed"
+                                                            .to_string(),
+                                                    ),
+                                                );
+                                                interrupted = true;
+                                                done = true;
+                                            }
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -1521,15 +1546,23 @@ async fn execute_plan_step(
                         done = true;
                     }
                     ExecutionInputAction::ToolConfirmationResponse(response) => {
-                        if let Some(confirmation) = state.pending_tool_confirmation.take() {
-                            let approved = response == "approve";
-                            let _ = bridge.respond_confirmation(
-                                &confirmation.run_ref,
-                                &confirmation.tool_call_id,
-                                approved,
-                            );
-                            state.prompt_input = None;
-                            state.restore_text_input();
+                        if let Some((run_ref, tool_call_id, approved)) =
+                            state.handle_tool_confirmation_response(&response)
+                        {
+                            match bridge.respond_confirmation(&run_ref, &tool_call_id, approved) {
+                                Ok(()) => {
+                                    state.complete_tool_confirmation(approved);
+                                }
+                                Err(e) => {
+                                    state.fail_tool_confirmation(e.to_string());
+                                    let _ = bridge.cancel(
+                                        &run_ref,
+                                        Some("tool confirmation delivery failed".to_string()),
+                                    );
+                                    interrupted = true;
+                                    done = true;
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -3234,29 +3267,44 @@ impl WorkspaceState {
             _ => return None,
         };
 
-        let confirmation = self.pending_tool_confirmation.take()?;
+        let confirmation = self.pending_tool_confirmation.as_ref()?;
         let run_ref = confirmation.run_ref.clone();
         let tool_call_id = confirmation.tool_call_id.clone();
 
-        // Clear the prompt input
-        self.prompt_input = None;
-        self.pending_tool_confirmation = None;
-        self.restore_text_input();
+        Some((run_ref, tool_call_id, approved))
+    }
 
-        // Add confirmation result to conversation
-        if approved {
-            self.push_block(ConversationBlock::request(format!(
-                "✓ Tool '{}' approved",
-                confirmation.tool_name
-            )));
-        } else {
+    /// Complete a successful tool confirmation: clear state and show result.
+    fn complete_tool_confirmation(&mut self, approved: bool) {
+        if let Some(confirmation) = self.pending_tool_confirmation.take() {
+            self.prompt_input = None;
+            self.restore_text_input();
+
+            if approved {
+                self.push_block(ConversationBlock::request(format!(
+                    "✓ Tool '{}' approved",
+                    confirmation.tool_name
+                )));
+            } else {
+                self.push_block(ConversationBlock::error(format!(
+                    "✗ Tool '{}' denied",
+                    confirmation.tool_name
+                )));
+            }
+        }
+    }
+
+    /// Handle a failed confirmation response: show error and fail-closed.
+    fn fail_tool_confirmation(&mut self, error: String) {
+        if let Some(confirmation) = self.pending_tool_confirmation.take() {
+            self.prompt_input = None;
+            self.restore_text_input();
+
             self.push_block(ConversationBlock::error(format!(
-                "✗ Tool '{}' denied",
-                confirmation.tool_name
+                "✗ Tool '{}' confirmation failed: {}",
+                confirmation.tool_name, error
             )));
         }
-
-        Some((run_ref, tool_call_id, approved))
     }
 
     fn begin_plan_draft(&mut self, goal: &str) {
@@ -3852,7 +3900,7 @@ mod tool_confirmation_tests {
 
         state.show_tool_confirmation(confirmation);
 
-        // Simulate approve response
+        // Extract confirmation data
         let result = state.handle_tool_confirmation_response("approve");
         assert!(result.is_some());
 
@@ -3861,7 +3909,12 @@ mod tool_confirmation_tests {
         assert_eq!(tool_call_id, "tc-2");
         assert!(approved);
 
-        // State should be cleared
+        // Confirm: state should NOT be cleared yet (pending bridge response)
+        assert!(state.prompt_input.is_some());
+        assert!(state.pending_tool_confirmation.is_some());
+
+        // Complete the confirmation
+        state.complete_tool_confirmation(approved);
         assert!(state.prompt_input.is_none());
         assert!(state.pending_tool_confirmation.is_none());
     }
@@ -3879,7 +3932,7 @@ mod tool_confirmation_tests {
 
         state.show_tool_confirmation(confirmation);
 
-        // Simulate deny response
+        // Extract confirmation data
         let result = state.handle_tool_confirmation_response("deny");
         assert!(result.is_some());
 
@@ -3888,7 +3941,12 @@ mod tool_confirmation_tests {
         assert_eq!(tool_call_id, "tc-3");
         assert!(!approved);
 
-        // State should be cleared
+        // Confirm: state should NOT be cleared yet
+        assert!(state.prompt_input.is_some());
+        assert!(state.pending_tool_confirmation.is_some());
+
+        // Complete the confirmation
+        state.complete_tool_confirmation(approved);
         assert!(state.prompt_input.is_none());
         assert!(state.pending_tool_confirmation.is_none());
     }
@@ -3921,5 +3979,27 @@ mod tool_confirmation_tests {
         // No pending confirmation
         let result = state.handle_tool_confirmation_response("approve");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fail_tool_confirmation_clears_state() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-5".to_string(),
+            tool_name: "shell".to_string(),
+            details: "ls".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+        assert!(state.prompt_input.is_some());
+        assert!(state.pending_tool_confirmation.is_some());
+
+        // Simulate failure
+        state.fail_tool_confirmation("delivery failed".to_string());
+
+        // State should be cleared
+        assert!(state.prompt_input.is_none());
+        assert!(state.pending_tool_confirmation.is_none());
     }
 }
