@@ -236,6 +236,7 @@ impl ProtocolBridge {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[test]
     fn test_respond_confirmation_returns_error_for_nonexistent_run() {
@@ -274,5 +275,327 @@ mod tests {
         // respond_confirmation with invalid tool_call_id should fail
         let result = bridge.respond_confirmation(&run_ref, "nonexistent-tool-id", true);
         assert!(result.is_err(), "Should fail for nonexistent tool_call_id");
+    }
+
+    /// Streaming acceptance test: approve path.
+    /// Verifies the full chain: start streaming → ToolConfirmationRequired →
+    /// respond_confirmation(approved) → runtime resumes → tool executes →
+    /// ToolCallCompleted(success=true).
+    #[tokio::test]
+    async fn streaming_confirmation_approve_path() {
+        use core_runtime::CoreRuntimeBuilder;
+        use runtime_model::LlmClient;
+        use runtime_tools::ToolRegistry;
+
+        // Create a tool that requires confirmation.
+        struct ConfirmTool;
+        #[async_trait::async_trait]
+        impl runtime_tools::AliusTool for ConfirmTool {
+            fn name(&self) -> &'static str {
+                "confirm_tool"
+            }
+            fn description(&self) -> &'static str {
+                "test tool"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn preview_confirmation(
+                &self,
+                _args: &serde_json::Value,
+                _mode: protocol_interface::core::RuntimeMode,
+            ) -> bool {
+                true // Always requires confirmation
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                Ok(runtime_tools::ToolResult {
+                    output: "tool executed successfully".to_string(),
+                    success: true,
+                    metadata: None,
+                })
+            }
+        }
+
+        // Create tool registry with confirm_tool + native tools.
+        let registry = Arc::new(ToolRegistry::new());
+        runtime_tools::native::register_native_tools(&registry);
+        registry.register(ConfirmTool).unwrap();
+
+        // Create LLM client with a fake provider that returns tool calls.
+        let client = LlmClient::new_with_provider_for_test(
+            Box::new(FakeToolCallProvider {
+                tool_call_id: "tc-approve".to_string(),
+                tool_name: "confirm_tool".to_string(),
+            }),
+            "test-model",
+            protocol_interface::ProviderType::Openai,
+        );
+
+        // Build runtime and bridge.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new(tmp.path()))
+            .settings(runtime_config::Settings::default())
+            .client(client)
+            .tool_registry_arc(registry)
+            .build()
+            .unwrap();
+
+        let bridge = ProtocolBridge::from_runtime(tmp.path().to_path_buf(), runtime);
+
+        // Start streaming Plan run.
+        let (run_ref, mut rx) = bridge
+            .start_streaming("execute confirm_tool", RuntimeMode::Plan)
+            .unwrap();
+
+        // Wait for ToolConfirmationRequired event.
+        let mut confirmation_event = None;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+        {
+            let event = event.expect("channel should not close");
+            if event.kind == CoreEventKind::ToolConfirmationRequired {
+                confirmation_event = Some(event);
+                break;
+            }
+        }
+
+        let confirm_event = confirmation_event.expect("Should receive ToolConfirmationRequired");
+        let tool_call_id = match &confirm_event.payload {
+            CoreEventPayload::ToolConfirmation { tool_call_id, .. } => tool_call_id.clone(),
+            _ => panic!("Expected ToolConfirmation payload"),
+        };
+
+        // Approve the confirmation through bridge.
+        let result = bridge.respond_confirmation(&run_ref, &tool_call_id, true);
+        assert!(result.is_ok(), "respond_confirmation should succeed");
+
+        // Continue listening for final result.
+        let mut final_success = false;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+        {
+            let event = event.expect("channel should not close");
+            match (&event.kind, &event.payload) {
+                (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
+                    assert_eq!(value["success"], true);
+                    assert!(value["output"].as_str().unwrap().contains("tool executed"));
+                }
+                (CoreEventKind::FinalResult, CoreEventPayload::Final { success, .. }) => {
+                    final_success = *success;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            final_success,
+            "Run should complete successfully after approval"
+        );
+    }
+
+    /// Streaming acceptance test: deny path.
+    /// Verifies: start streaming → ToolConfirmationRequired →
+    /// respond_confirmation(denied) → runtime fails → no tool execution.
+    #[tokio::test]
+    async fn streaming_confirmation_deny_path() {
+        use core_runtime::CoreRuntimeBuilder;
+        use runtime_model::LlmClient;
+        use runtime_tools::ToolRegistry;
+
+        // Create a tool that requires confirmation.
+        struct ConfirmTool;
+        #[async_trait::async_trait]
+        impl runtime_tools::AliusTool for ConfirmTool {
+            fn name(&self) -> &'static str {
+                "confirm_tool"
+            }
+            fn description(&self) -> &'static str {
+                "test tool"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn preview_confirmation(
+                &self,
+                _args: &serde_json::Value,
+                _mode: protocol_interface::core::RuntimeMode,
+            ) -> bool {
+                true
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                // Should NOT be called if denied.
+                panic!("Tool should not execute after denial!");
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        runtime_tools::native::register_native_tools(&registry);
+        registry.register(ConfirmTool).unwrap();
+
+        let client = LlmClient::new_with_provider_for_test(
+            Box::new(FakeToolCallProvider {
+                tool_call_id: "tc-deny".to_string(),
+                tool_name: "confirm_tool".to_string(),
+            }),
+            "test-model",
+            protocol_interface::ProviderType::Openai,
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new(tmp.path()))
+            .settings(runtime_config::Settings::default())
+            .client(client)
+            .tool_registry_arc(registry)
+            .build()
+            .unwrap();
+
+        let bridge = ProtocolBridge::from_runtime(tmp.path().to_path_buf(), runtime);
+
+        let (run_ref, mut rx) = bridge
+            .start_streaming("execute confirm_tool", RuntimeMode::Plan)
+            .unwrap();
+
+        // Wait for ToolConfirmationRequired.
+        let mut confirmation_event = None;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+        {
+            let event = event.expect("channel should not close");
+            if event.kind == CoreEventKind::ToolConfirmationRequired {
+                confirmation_event = Some(event);
+                break;
+            }
+        }
+
+        let confirm_event = confirmation_event.expect("Should receive ToolConfirmationRequired");
+        let tool_call_id = match &confirm_event.payload {
+            CoreEventPayload::ToolConfirmation { tool_call_id, .. } => tool_call_id.clone(),
+            _ => panic!("Expected ToolConfirmation payload"),
+        };
+
+        // Deny the confirmation.
+        let result = bridge.respond_confirmation(&run_ref, &tool_call_id, false);
+        assert!(result.is_ok(), "respond_confirmation should succeed");
+
+        // Verify ToolCallCompleted(success=false) and FinalResult(success=false).
+        let mut tool_denied = false;
+        let mut final_failed = false;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+        {
+            let event = event.expect("channel should not close");
+            match (&event.kind, &event.payload) {
+                (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
+                    assert_eq!(value["success"], false);
+                    assert!(value["denied"].as_bool().unwrap_or(false));
+                    tool_denied = true;
+                }
+                (CoreEventKind::FinalResult, CoreEventPayload::Final { success, .. }) => {
+                    final_failed = !success;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(tool_denied, "Tool should be marked as denied");
+        assert!(final_failed, "Run should fail after denial");
+    }
+
+    /// Fake LLM provider that returns a tool call for a named tool.
+    struct FakeToolCallProvider {
+        tool_call_id: String,
+        tool_name: String,
+    }
+
+    impl runtime_model::LlmProvider for FakeToolCallProvider {
+        fn chat_stream<'a>(
+            &'a self,
+            _conversation: &'a runtime_model::Conversation,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow::Result<runtime_model::ChatStream>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            let stream: runtime_model::ChatStream = Box::pin(futures::stream::iter(vec![
+                Ok(runtime_model::ChatEvent::Delta {
+                    text: "calling tool".to_string(),
+                }),
+                Ok(runtime_model::ChatEvent::Done {
+                    full_response: "calling tool".to_string(),
+                }),
+            ]));
+            Box::pin(async move { Ok(stream) })
+        }
+
+        fn chat_once<'a>(
+            &'a self,
+            _prompt: &'a str,
+            _system: Option<&'a str>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(String::new()) })
+        }
+
+        fn list_models<'a>(
+            &'a self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn chat_stream_with_tools<'a>(
+            &'a self,
+            _conversation: &'a runtime_model::Conversation,
+            _tools: &'a [protocol_interface::ToolDef],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = runtime_model::ToolResponse> + Send + 'a>,
+        > {
+            let tool_calls = vec![runtime_model::ToolCall::new(
+                self.tool_call_id.clone(),
+                self.tool_name.clone(),
+                serde_json::json!({}),
+            )];
+            let stream: runtime_model::ChatStream = Box::pin(futures::stream::iter(vec![
+                Ok(runtime_model::ChatEvent::Delta {
+                    text: "requesting tool".to_string(),
+                }),
+                Ok(runtime_model::ChatEvent::Done {
+                    full_response: "requesting tool".to_string(),
+                }),
+            ]));
+            Box::pin(async move { Ok((stream, Some(tool_calls))) })
+        }
+
+        fn continue_with_tool_results<'a>(
+            &'a self,
+            _conversation: &'a runtime_model::Conversation,
+            _tool_results: &'a [(String, String, String)],
+            _assistant_tool_calls: &'a [runtime_model::ToolCall],
+            _tools: &'a [protocol_interface::ToolDef],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = runtime_model::ToolResponse> + Send + 'a>,
+        > {
+            let stream: runtime_model::ChatStream = Box::pin(futures::stream::iter(vec![Ok(
+                runtime_model::ChatEvent::Done {
+                    full_response: String::new(),
+                },
+            )]));
+            Box::pin(async move { Ok((stream, None)) })
+        }
     }
 }

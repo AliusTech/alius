@@ -71,7 +71,7 @@ Tools that trigger confirmation in Plan mode:
 - MCP tools (all in Plan mode)
 
 Remaining gaps:
-- **Streaming-path acceptance test**: The end-to-end path (TUI receives `ToolConfirmationRequired` → user approves/denies → runtime resumes → final result) is not yet covered by automated tests. Current tests cover: `SessionManager` level, `LoopEngine/tool_step` level, and `WorkspaceState` level. A streaming integration test that exercises the full bridge path is still needed.
+- **TUI streaming-path integration test**: While the `ProtocolBridge` streaming acceptance test (`streaming_confirmation_approve_path`, `streaming_confirmation_deny_path`) verifies the full bridge path with fake LLM provider and tool registry, a test exercising the TUI event loop (`execute_goal`/`execute_plan_step`) with actual key input simulation is still missing. The bridge tests prove the protocol path works; TUI loop tests would prove the UI integration.
 - MCP tool execution via LoopEngine is tested with a fake MCP-source tool registered in the shared ToolRegistry. Real MCP server end-to-end execution (with actual MCP protocol) is not yet tested.
 - `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.
 
