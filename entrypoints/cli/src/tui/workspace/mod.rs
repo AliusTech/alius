@@ -3324,12 +3324,14 @@ impl WorkspaceState {
         Self::truncate_details(details, 120)
     }
 
-    /// Truncate string with ellipsis if too long.
+    /// Truncate a string to `max_len` characters (not bytes).
+    /// Safe for multi-byte UTF-8 content (Chinese, emoji, etc.).
     fn truncate_details(s: &str, max_len: usize) -> String {
-        if s.len() <= max_len {
+        if s.chars().count() <= max_len {
             s.to_string()
         } else {
-            format!("{}...", &s[..max_len])
+            let truncated: String = s.chars().take(max_len).collect();
+            format!("{}...", truncated)
         }
     }
 
@@ -4228,7 +4230,33 @@ mod tool_confirmation_tests {
     fn test_truncate_details_long_string() {
         let long = "a".repeat(200);
         let result = WorkspaceState::truncate_details(&long, 100);
-        assert_eq!(result.len(), 103); // 100 + "..."
+        assert_eq!(result.chars().count(), 103); // 100 + "..."
         assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_details_chinese() {
+        // Chinese characters are 3 bytes each
+        let chinese = "你好世界测试工具确认".to_string(); // 10 chars, 30 bytes
+        let result = WorkspaceState::truncate_details(&chinese, 7);
+        assert_eq!(result, "你好世界测试工...");
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_details_emoji() {
+        // Emoji are multi-byte
+        let emoji = "🔧🛠️✅❌".to_string();
+        let result = WorkspaceState::truncate_details(&emoji, 2);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 5); // 2 chars + "..."
+    }
+
+    #[test]
+    fn test_truncate_details_mixed_content() {
+        let mixed = "path: /tmp/文件.txt".to_string(); // mixed ASCII + Chinese
+        let result = WorkspaceState::truncate_details(&mixed, 10);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 13); // 10 chars + "..."
     }
 }

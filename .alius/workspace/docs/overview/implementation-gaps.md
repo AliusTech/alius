@@ -69,17 +69,22 @@ Plan mode tool confirmation is implemented end-to-end:
 6. Failure in confirmation delivery triggers fail-closed: UI shows user-friendly error message with tool_call_id, current run is cancelled to prevent runtime from hanging.
 
 **Audit Logging:**
-- All confirmation events (requested, approved, denied, cancelled, delivery_failed) are logged via `audit::log_confirmation`
+- Confirmation events logged via `audit::log_confirmation`:
+  - `requested` — emitted when confirmation prompt is sent to user
+  - `approved` / `denied` — emitted when user responds
+  - `cancelled` — emitted when run is cancelled while waiting
+  - `unavailable` — emitted when no session exists (fail-closed)
 - Audit records include: `run_ref`, `tool_call_id`, `tool_name`, `action`, `trace_id`
 - Sensitive arguments are NOT logged (only tool name + call ID)
 - Audit failures emit `LogRecordEmitted` diagnostic events (non-blocking)
+- **Note**: `delivery_failed` (respond_confirmation error) is NOT logged as a separate audit entry. Delivery failure is observable via the TUI error state and run cancellation. Adding a runtime-level audit path for delivery failure requires the TUI to pass the LogWriter or emit a CoreEvent, which is not yet implemented.
 
 **Fail-Closed Behavior:**
-- No session available → `ConfirmationDecision::Unavailable`
+- No session available → `ConfirmationDecision::Unavailable`, tool not executed
 - User denial → tool not executed, `ToolCallCompleted(success=false, denied=true)`
-- Channel dropped (cancel) → `ConfirmationDecision::Cancelled`
-- Delivery failure → UI shows error, run cancelled
-- All failures are distinguishable in audit logs
+- Channel dropped (cancel) → `ConfirmationDecision::Cancelled`, tool not executed
+- Delivery failure → TUI shows error, run is cancelled, tool not executed
+- All failures result in the tool NOT being executed (fail-closed)
 
 Tools that trigger confirmation in Plan mode:
 - Shell commands (high-risk)
