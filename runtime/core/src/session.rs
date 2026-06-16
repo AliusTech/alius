@@ -20,7 +20,8 @@ struct RunState {
     /// Pending tool-confirmation oneshot senders (Stage B). Keyed by tool_call_id.
     /// When the user responds (or the run is cancelled), the sender is removed;
     /// dropping it makes the receiver's `await` return Err (treated as denied).
-    confirmation: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    /// Also stores tool_name for audit purposes.
+    confirmation: HashMap<String, (tokio::sync::oneshot::Sender<bool>, String)>,
     /// Cancellation token for stopping the run. Checked by loop engine.
     cancel_token: tokio_util::sync::CancellationToken,
 }
@@ -211,17 +212,21 @@ impl SessionManager {
     /// Store a oneshot sender for a pending tool confirmation (Stage B).
     /// The loop engine awaits the matching receiver; the TUI delivers the
     /// user's response via `deliver_confirmation`.
+    /// Also stores tool_name for audit logging on delivery failure.
     pub fn store_confirmation_sender(
         &self,
         run_ref: &RunRef,
         tool_call_id: &str,
+        tool_name: &str,
         sender: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<(), ProtocolError> {
         let mut runs = self.runs.write().unwrap();
         let state = runs
             .get_mut(run_ref.as_str())
             .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
-        state.confirmation.insert(tool_call_id.to_string(), sender);
+        state
+            .confirmation
+            .insert(tool_call_id.to_string(), (sender, tool_name.to_string()));
         Ok(())
     }
 
@@ -231,18 +236,21 @@ impl SessionManager {
     /// `WaitingForApproval` — cancelled or terminal states are preserved.
     /// The status check + update is atomic (under the same write lock) to
     /// prevent a race with `cancel_run`.
+    ///
+    /// Returns the tool_name on success for audit logging purposes.
+    /// Returns Err with tool_name if no pending confirmation exists.
     pub fn deliver_confirmation(
         &self,
         run_ref: &RunRef,
         tool_call_id: &str,
         approved: bool,
-    ) -> Result<(), ProtocolError> {
+    ) -> Result<String, (ProtocolError, String)> {
         let mut runs = self.runs.write().unwrap();
         let state = runs
             .get_mut(run_ref.as_str())
-            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
+            .ok_or_else(|| (ProtocolError::RunNotFound(run_ref.clone()), String::new()))?;
         match state.confirmation.remove(tool_call_id) {
-            Some(sender) => {
+            Some((sender, tool_name)) => {
                 let _ = sender.send(approved);
 
                 // Atomic: check + update under the same lock.
@@ -260,11 +268,14 @@ impl SessionManager {
                         }
                     }
                 }
-                Ok(())
+                Ok(tool_name)
             }
-            None => Err(ProtocolError::Internal(format!(
-                "no pending confirmation for tool_call_id {tool_call_id}"
-            ))),
+            None => Err((
+                ProtocolError::Internal(format!(
+                    "no pending confirmation for tool_call_id {tool_call_id}"
+                )),
+                String::new(),
+            )),
         }
     }
 
@@ -434,7 +445,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-1", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-1", "test_tool", tx)
             .unwrap();
 
         // Deliver the user's approval → status restored to Running.
@@ -452,7 +463,7 @@ mod tests {
         let (mgr, run_ref) = mgr_with_run();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-2", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-2", "test_tool", tx)
             .unwrap();
 
         // Cancel drops the sender → receiver gets Err → treated as denied.
@@ -467,7 +478,7 @@ mod tests {
 
         // Simulate the full cancel flow: store sender → cancel run.
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-3", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-3", "test_tool", tx)
             .unwrap();
         mgr.cancel_run(&run_ref).unwrap();
 
@@ -487,7 +498,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-4", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-4", "test_tool", tx)
             .unwrap();
 
         // Simulate cancel while waiting.
@@ -506,8 +517,10 @@ mod tests {
 
         let (tx1, _rx1) = tokio::sync::oneshot::channel::<bool>();
         let (tx2, _rx2) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "c1", tx1).unwrap();
-        mgr.store_confirmation_sender(&run_ref, "c2", tx2).unwrap();
+        mgr.store_confirmation_sender(&run_ref, "c1", "test_tool", tx1)
+            .unwrap();
+        mgr.store_confirmation_sender(&run_ref, "c2", "test_tool", tx2)
+            .unwrap();
 
         mgr.cancel_run(&run_ref).unwrap();
 
@@ -539,7 +552,8 @@ mod tests {
             .unwrap();
 
         let (tx, _rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "tc-1", tx).unwrap();
+        mgr.store_confirmation_sender(&run_ref, "tc-1", "test_tool", tx)
+            .unwrap();
 
         // Cancel clears senders and sets Cancelled.
         mgr.cancel_run(&run_ref).unwrap();
@@ -561,7 +575,8 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "tc-2", tx).unwrap();
+        mgr.store_confirmation_sender(&run_ref, "tc-2", "test_tool", tx)
+            .unwrap();
 
         // An error sets Failed.
         mgr.update_run_status(&run_ref, RunStatus::Failed).unwrap();

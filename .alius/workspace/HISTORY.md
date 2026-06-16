@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 05:30] Alius: runtime/core/src/session.rs + runtime/core/src/runtime.rs + runtime/core/src/loop_engine/tool_step.rs + .alius/workspace/docs/overview/implementation-gaps.md - P3-3 Delivery failure audit: enhanced store_confirmation_sender to store tool_name alongside oneshot sender; deliver_confirmation now returns tool_name for audit logging; runtime.rs logs delivery_failed audit event when respond_confirmation fails; delivery failure triggers automatic run cancellation (fail-closed); documentation updated to reflect delivery_failed is now implemented with full audit trail.
+
 [2026-06-16 05:25] Alius: .alius/workspace/docs/overview/implementation-gaps.md + .alius/workspace/HISTORY.md - P3-2 Review fix: corrected audit action names to match runtime implementation. Documentation now uses `denied_by_user` (not `denied`) and `no_session` (not `unavailable`) to match ConfirmationDecision::reason() return values.
 
 [2026-06-16 05:15] Alius: entrypoints/cli/src/tui/workspace/mod.rs + .alius/workspace/docs/overview/implementation-gaps.md + .alius/workspace/HISTORY.md - P3-2 Review fix: fixed UTF-8 unsafe truncation in truncate_details (now uses chars().take() for Unicode safety); added Chinese/emoji truncation tests; corrected implementation-gaps.md audit section to accurately reflect delivery_failed is NOT yet logged as separate audit entry (only observable via TUI error state and run cancellation); audit path for delivery_failed requires TUI to pass LogWriter or emit CoreEvent, documented as not yet implemented.
