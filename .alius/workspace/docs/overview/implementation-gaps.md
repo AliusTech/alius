@@ -71,9 +71,10 @@ Plan mode tool confirmation is implemented end-to-end:
 **Audit Logging:**
 - Confirmation events logged via `audit::log_confirmation`:
   - `requested` — emitted when confirmation prompt is sent to user
-  - `approved` / `denied` — emitted when user responds
+  - `approved` — emitted when user approves the tool
+  - `denied_by_user` — emitted when user denies the tool
   - `cancelled` — emitted when run is cancelled while waiting
-  - `unavailable` — emitted when no session exists (fail-closed)
+  - `no_session` — emitted when no session exists (fail-closed)
 - Audit records include: `run_ref`, `tool_call_id`, `tool_name`, `action`, `trace_id`
 - Sensitive arguments are NOT logged (only tool name + call ID)
 - Audit failures emit `LogRecordEmitted` diagnostic events (non-blocking)
