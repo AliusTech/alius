@@ -23,7 +23,7 @@ Current model:
 Related code lives under:
 
 - `entrypoints/cli/src/mcp/`
-- `.alius/config/mcp.json`
+- `~/.alius/mcp/servers.toml` (user-level MCP server declarations)
 
 Current maturity:
 

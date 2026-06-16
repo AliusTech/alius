@@ -69,7 +69,7 @@ Alius must document the project configuration model under `.alius/config/`.
 Acceptance criteria:
 
 - Documentation covers `ProjectConfigSnapshot` and `RuntimeConfigView`.
-- Documentation lists `config.toml`, `providers.toml`, `soul.toml`, `tools.toml`, `permissions.toml`, `protocol.toml`, and `mcp.json`.
+- Documentation lists `config.toml`, `providers.toml`, `soul.toml`, `tools.toml`, `permissions.toml`, `protocol.toml`, and `~/.alius/mcp/servers.toml` (user-level MCP server declarations).
 - Documentation identifies legacy flat paths as compatibility paths where applicable.
 - Documentation covers the local model library stored in `providers.toml`.
 - Documentation maps `Quick Reasoning`, `Standard Reasoning`, and `Deep Reasoning` to the existing `light`, `medium`, and `high` router tiers.

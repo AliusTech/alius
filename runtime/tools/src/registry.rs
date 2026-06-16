@@ -248,4 +248,89 @@ mod tests {
             assert_eq!(info.source, ToolSource::RustWasm);
         }
     }
+
+    /// A fake tool that reports as MCP source.
+    struct FakeMcpTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl crate::traits::AliusTool for FakeMcpTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn description(&self) -> &'static str {
+            "fake mcp tool"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn source(&self) -> ToolSource {
+            ToolSource::Mcp
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: crate::traits::ToolContext,
+        ) -> Result<crate::traits::ToolResult, AliusError> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn test_mcp_tool_has_mcp_source() {
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
+        registry
+            .register(FakeMcpTool { name: "mcp_search" })
+            .unwrap();
+
+        let infos = registry.to_tool_infos();
+        let native_count = infos
+            .iter()
+            .filter(|i| i.source == ToolSource::RustWasm)
+            .count();
+        let mcp_count = infos.iter().filter(|i| i.source == ToolSource::Mcp).count();
+
+        assert_eq!(native_count, 5); // shell, read_file, write_file, list_dir, edit_file
+        assert_eq!(mcp_count, 1); // mcp_search
+        assert_eq!(infos.len(), 6);
+    }
+
+    #[test]
+    fn test_mcp_and_native_sources_coexist() {
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
+        registry
+            .register(FakeMcpTool { name: "mcp_tool_1" })
+            .unwrap();
+        registry
+            .register(FakeMcpTool { name: "mcp_tool_2" })
+            .unwrap();
+
+        let infos = registry.to_tool_infos();
+        let mcp_tools: Vec<_> = infos
+            .iter()
+            .filter(|i| i.source == ToolSource::Mcp)
+            .collect();
+        assert_eq!(mcp_tools.len(), 2);
+        assert!(mcp_tools.iter().any(|t| t.name == "mcp_tool_1"));
+        assert!(mcp_tools.iter().any(|t| t.name == "mcp_tool_2"));
+    }
+
+    #[test]
+    fn test_mcp_duplicate_name_rejected() {
+        let registry = ToolRegistry::new();
+        native::register_native_tools(&registry);
+
+        // MCP tool with same name as native tool should be rejected.
+        let result = registry.register(FakeMcpTool { name: "shell" });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already registered"));
+
+        // Native tool should still be there with RustWasm source.
+        let infos = registry.to_tool_infos();
+        let shell = infos.iter().find(|i| i.name == "shell").unwrap();
+        assert_eq!(shell.source, ToolSource::RustWasm);
+    }
 }

@@ -54,7 +54,7 @@ Main files:
 - `tools.toml`
 - `permissions.toml`
 - `protocol.toml`
-- `mcp.json`
+- `~/.alius/mcp/servers.toml` (user-level MCP server declarations)
 
 ## Local Model Library
 

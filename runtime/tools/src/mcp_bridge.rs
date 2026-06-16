@@ -68,6 +68,16 @@ impl AliusTool for McpToolAdapter {
         PermissionLevel::Execute
     }
 
+    fn preview_confirmation(
+        &self,
+        _args: &JsonValue,
+        mode: protocol_interface::RuntimeMode,
+    ) -> bool {
+        // Remote MCP tools require confirmation in Plan mode.
+        // In Chat/Bypass mode they execute directly (same as shell write tools).
+        mode == protocol_interface::RuntimeMode::Plan
+    }
+
     async fn execute(&self, args: JsonValue, _ctx: ToolContext) -> Result<ToolResult, AliusError> {
         let result = self
             .client

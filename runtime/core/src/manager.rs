@@ -258,14 +258,39 @@ impl CoreRuntimeManager {
     /// Start MCP background initialization (only available with mcp feature).
     /// Passes the shared ToolRegistry so MCP tools are registered directly
     /// into the runtime tool chain.
+    ///
+    /// MCP initialization is gated by project config:
+    /// - `tools.toml` → `registry.mcp_tools` must be `true`
+    /// - `tools.toml` → `mcp.register_as_tools` must be `true`
+    /// - If either is false or the config cannot be loaded, MCP init is skipped.
     #[cfg(feature = "mcp")]
     pub fn start_mcp_init(&self) {
+        // Check project tool config before starting MCP.
+        if !self.mcp_config_enabled() {
+            tracing::debug!("MCP initialization skipped: disabled in project config");
+            return;
+        }
+
         if let Some(manager) = &self.mcp_manager {
             if let Some(registry) = self.runtime().tool_registry() {
                 manager.start_background_init(registry);
                 tracing::info!("MCP background initialization started");
             } else {
                 tracing::warn!("MCP initialization skipped: no tool registry available");
+            }
+        }
+    }
+
+    /// Check if MCP tools are enabled in the project tool config.
+    #[cfg(feature = "mcp")]
+    fn mcp_config_enabled(&self) -> bool {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| self.workspace_root.clone());
+        match runtime_config::load_project_config(&cwd) {
+            Ok(config) => config.tools.registry.mcp_tools && config.tools.mcp.register_as_tools,
+            Err(_) => {
+                // If config can't be loaded, fall back to checking the default.
+                // Default has mcp_tools = false, so MCP is disabled.
+                false
             }
         }
     }

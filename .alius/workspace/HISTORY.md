@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 02:15] Alius: runtime/core/src/manager.rs + runtime/tools/src/mcp_bridge.rs + runtime/tools/src/registry.rs + entrypoints/jsonrpc/src/lib.rs + .alius/workspace/docs - P4-3 review fixes v2: MCP init gated by tools.toml config (registry.mcp_tools + mcp.register_as_tools must both be true); McpToolAdapter preview_confirmation returns true in Plan mode; added MCP source propagation tests (mcp_tool_has_mcp_source, mcp_and_native_sources_coexist, mcp_duplicate_name_rejected); synced extensions.md, config-manager.md, SPEC.md MCP config path.
+
 [2026-06-16 02:00] Alius: runtime/tools/src/traits.rs + runtime/tools/src/registry.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/runtime.rs + runtime/core/src/manager.rs + .alius/workspace/docs - P4-3 review fixes: added AliusTool::source() trait method (default RustWasm); McpToolAdapter overrides to ToolSource::Mcp; ToolRegistry::to_tool_infos() returns ToolInfo with source metadata; CoreRuntime::tool_list() uses to_tool_infos(); removed misleading mcp_tools() empty stub from CoreRuntimeManager; synced docs (01-current-state.md, implementation-gaps.md, config-schema.md) with actual MCP integration state.
 
 [2026-06-16 01:45] Alius: runtime/tools/src/registry.rs + runtime/tools/src/native/mod.rs + runtime/tools/src/mcp_bridge.rs + runtime/core/src/mcp_manager.rs + runtime/core/src/manager.rs - P4-3 fix: ToolRegistry now uses interior RwLock so register() takes &self; MCP tools registered directly into shared ToolRegistry (visible via tool_list/to_tool_defs/LoopEngine); mcp_bridge Box::leak moved to constructor; McpManager::start_background_init takes Arc<ToolRegistry>.

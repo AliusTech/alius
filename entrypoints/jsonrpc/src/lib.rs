@@ -482,6 +482,8 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert!(result.is_array());
+        // Note: test_manager creates a minimal runtime without tool registry,
+        // so the array may be empty. Source metadata is verified in registry tests.
     }
 
     #[test]
