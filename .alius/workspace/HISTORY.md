@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-17
 
+[2026-06-17 00:35] Alius: runtime/core/src/runtime.rs + runtime/core/src/session.rs + .alius/workspace/docs/modules/tools-and-shell-gate.md - P3-3 Review fix: emit_audit_diagnostic now uses monotonically increasing sequence from SessionManager::next_event_sequence() instead of hardcoded 0; added next_event_sequence() method to SessionManager; updated test to verify sequence > 0 and monotonic increase; documented audit_no_writer diagnostic code in tools-and-shell-gate.md.
+
 [2026-06-17 00:25] Alius: runtime/core/src/runtime.rs - P3-3 Final review fix: delivery_failed audit path now emits LogRecordEmitted diagnostic events on lock/write/flush failures, consistent with tool_step::audit_confirmation semantics; added audit_delivery_failed and emit_audit_diagnostic helper methods; added delivery_failed_audit_emits_diagnostic_on_failure test verifying diagnostic event emission and non-blocking behavior (run status unchanged).
 
 ## 2026-06-16

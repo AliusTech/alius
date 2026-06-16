@@ -250,8 +250,7 @@ impl CoreRuntime {
 
     /// Emit a LogRecordEmitted diagnostic event to the run's event stream.
     /// This is non-blocking and does not change run status.
-    /// Uses sequence 0 since diagnostic events are appended after
-    /// the run completes and don't affect execution order.
+    /// Uses monotonically increasing sequence from SessionManager.
     fn emit_audit_diagnostic(
         &self,
         run_ref: &RunRef,
@@ -259,10 +258,11 @@ impl CoreRuntime {
         code: &str,
         message: &str,
     ) {
+        let seq = self.session_manager.next_event_sequence(run_ref);
         let event = CoreEvent::new(
             run_ref.clone(),
             trace_id.clone(),
-            0, // Diagnostic events don't need ordered sequences
+            seq,
             CoreEventKind::LogRecordEmitted,
             CoreEventPayload::Json {
                 value: serde_json::json!({
@@ -1867,6 +1867,24 @@ mod tests {
         );
 
         if let Some(event) = diagnostic {
+            // Verify sequence is non-zero and monotonically increasing
+            assert!(
+                event.sequence > 0,
+                "diagnostic event sequence must be > 0, got {}",
+                event.sequence
+            );
+            // Verify monotonic: all events should have increasing sequences
+            let mut prev_seq = 0u64;
+            for e in &events {
+                assert!(
+                    e.sequence > prev_seq,
+                    "event sequence must be monotonically increasing: {} > {}",
+                    e.sequence,
+                    prev_seq
+                );
+                prev_seq = e.sequence;
+            }
+
             if let CoreEventPayload::Json { value } = &event.payload {
                 assert_eq!(value["level"], "warn");
                 assert_eq!(value["code"], "audit_no_writer");

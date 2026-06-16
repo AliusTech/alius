@@ -145,6 +145,15 @@ impl SessionManager {
         Ok(state.events.clone())
     }
 
+    /// Get the next sequence number for a run (max existing sequence + 1).
+    /// Returns 1 if no events exist yet.
+    pub fn next_event_sequence(&self, run_ref: &RunRef) -> u64 {
+        let runs = self.runs.read().unwrap();
+        runs.get(run_ref.as_str())
+            .map(|state| state.events.iter().map(|e| e.sequence).max().unwrap_or(0) + 1)
+            .unwrap_or(1)
+    }
+
     /// Close a session, preventing new turns.
     pub fn close(&self, session_ref: &SessionRef) -> Result<(), ProtocolError> {
         let mut sessions = self.sessions.write().unwrap();
