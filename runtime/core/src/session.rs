@@ -20,8 +20,8 @@ struct RunState {
     /// Pending tool-confirmation oneshot senders (Stage B). Keyed by tool_call_id.
     /// When the user responds (or the run is cancelled), the sender is removed;
     /// dropping it makes the receiver's `await` return Err (treated as denied).
-    /// Also stores tool_name for audit purposes.
-    confirmation: HashMap<String, (tokio::sync::oneshot::Sender<bool>, String)>,
+    /// Stores (sender, tool_name, trace_id) for audit purposes on delivery failure.
+    confirmation: HashMap<String, (tokio::sync::oneshot::Sender<bool>, String, TraceId)>,
     /// Cancellation token for stopping the run. Checked by loop engine.
     cancel_token: tokio_util::sync::CancellationToken,
 }
@@ -212,21 +212,23 @@ impl SessionManager {
     /// Store a oneshot sender for a pending tool confirmation (Stage B).
     /// The loop engine awaits the matching receiver; the TUI delivers the
     /// user's response via `deliver_confirmation`.
-    /// Also stores tool_name for audit logging on delivery failure.
+    /// Also stores tool_name and trace_id for audit logging on delivery failure.
     pub fn store_confirmation_sender(
         &self,
         run_ref: &RunRef,
         tool_call_id: &str,
         tool_name: &str,
+        trace_id: &TraceId,
         sender: tokio::sync::oneshot::Sender<bool>,
     ) -> Result<(), ProtocolError> {
         let mut runs = self.runs.write().unwrap();
         let state = runs
             .get_mut(run_ref.as_str())
             .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
-        state
-            .confirmation
-            .insert(tool_call_id.to_string(), (sender, tool_name.to_string()));
+        state.confirmation.insert(
+            tool_call_id.to_string(),
+            (sender, tool_name.to_string(), trace_id.clone()),
+        );
         Ok(())
     }
 
@@ -237,21 +239,40 @@ impl SessionManager {
     /// The status check + update is atomic (under the same write lock) to
     /// prevent a race with `cancel_run`.
     ///
-    /// Returns the tool_name on success for audit logging purposes.
-    /// Returns Err with tool_name if no pending confirmation exists.
+    /// Returns Ok((tool_name, trace_id)) on successful delivery.
+    /// Returns Err((ProtocolError, tool_name, trace_id)) if:
+    ///   - Run not found
+    ///   - No pending confirmation for tool_call_id
+    ///   - Receiver dropped (sender.send fails)
     pub fn deliver_confirmation(
         &self,
         run_ref: &RunRef,
         tool_call_id: &str,
         approved: bool,
-    ) -> Result<String, (ProtocolError, String)> {
+    ) -> Result<(String, TraceId), (ProtocolError, String, TraceId)> {
         let mut runs = self.runs.write().unwrap();
         let state = runs
             .get_mut(run_ref.as_str())
-            .ok_or_else(|| (ProtocolError::RunNotFound(run_ref.clone()), String::new()))?;
+            .ok_or_else(|| {
+                (
+                    ProtocolError::RunNotFound(run_ref.clone()),
+                    String::new(),
+                    TraceId::default(),
+                )
+            })?;
         match state.confirmation.remove(tool_call_id) {
-            Some((sender, tool_name)) => {
-                let _ = sender.send(approved);
+            Some((sender, tool_name, trace_id)) => {
+                // Check if receiver is still alive
+                if let Err(_) = sender.send(approved) {
+                    // Receiver dropped - this is a delivery failure
+                    return Err((
+                        ProtocolError::Internal(format!(
+                            "confirmation receiver dropped for tool_call_id {tool_call_id}"
+                        )),
+                        tool_name,
+                        trace_id,
+                    ));
+                }
 
                 // Atomic: check + update under the same lock.
                 // Only restore to Running if still in WaitingForApproval.
@@ -268,13 +289,14 @@ impl SessionManager {
                         }
                     }
                 }
-                Ok(tool_name)
+                Ok((tool_name, trace_id))
             }
             None => Err((
                 ProtocolError::Internal(format!(
                     "no pending confirmation for tool_call_id {tool_call_id}"
                 )),
                 String::new(),
+                TraceId::default(),
             )),
         }
     }
@@ -445,7 +467,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-1", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-1", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
 
         // Deliver the user's approval → status restored to Running.
@@ -463,7 +485,7 @@ mod tests {
         let (mgr, run_ref) = mgr_with_run();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-2", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-2", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
 
         // Cancel drops the sender → receiver gets Err → treated as denied.
@@ -478,7 +500,7 @@ mod tests {
 
         // Simulate the full cancel flow: store sender → cancel run.
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-3", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-3", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
         mgr.cancel_run(&run_ref).unwrap();
 
@@ -498,7 +520,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "call-4", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "call-4", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
 
         // Simulate cancel while waiting.
@@ -517,9 +539,9 @@ mod tests {
 
         let (tx1, _rx1) = tokio::sync::oneshot::channel::<bool>();
         let (tx2, _rx2) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "c1", "test_tool", tx1)
+        mgr.store_confirmation_sender(&run_ref, "c1", "test_tool", &protocol_interface::TraceId::new(), tx1)
             .unwrap();
-        mgr.store_confirmation_sender(&run_ref, "c2", "test_tool", tx2)
+        mgr.store_confirmation_sender(&run_ref, "c2", "test_tool", &protocol_interface::TraceId::new(), tx2)
             .unwrap();
 
         mgr.cancel_run(&run_ref).unwrap();
@@ -552,7 +574,7 @@ mod tests {
             .unwrap();
 
         let (tx, _rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "tc-1", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "tc-1", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
 
         // Cancel clears senders and sets Cancelled.
@@ -575,7 +597,7 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        mgr.store_confirmation_sender(&run_ref, "tc-2", "test_tool", tx)
+        mgr.store_confirmation_sender(&run_ref, "tc-2", "test_tool", &protocol_interface::TraceId::new(), tx)
             .unwrap();
 
         // An error sets Failed.
@@ -587,5 +609,94 @@ mod tests {
         mgr.deliver_confirmation(&run_ref, "tc-2", true).unwrap();
         assert!(rx.await.unwrap()); // approved signal received
         assert_eq!(mgr.get_run_status(&run_ref).unwrap(), RunStatus::Failed);
+    }
+
+    // ===== P3-3 Delivery Failure Audit Tests =====
+
+    #[tokio::test]
+    async fn delivery_failed_receiver_dropped_returns_error() {
+        // Scenario: receiver is dropped before sender.send()
+        // This simulates a delivery failure where the confirmation
+        // can never be delivered.
+        let (mgr, run_ref) = mgr_with_run();
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let trace_id = protocol_interface::TraceId::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "tc-fail", "shell", &trace_id, tx)
+            .unwrap();
+
+        // Drop the receiver to simulate delivery failure
+        drop(rx);
+
+        // deliver_confirmation should return Err with tool_name and trace_id
+        let result = mgr.deliver_confirmation(&run_ref, "tc-fail", true);
+        assert!(result.is_err());
+        let (err, tool_name, returned_trace_id) = result.unwrap_err();
+        assert!(err.to_string().contains("receiver dropped"));
+        assert_eq!(tool_name, "shell");
+        assert_eq!(returned_trace_id, trace_id);
+    }
+
+    #[tokio::test]
+    async fn delivery_failed_no_pending_confirmation_returns_metadata() {
+        // Scenario: no pending confirmation for the tool_call_id
+        let (mgr, run_ref) = mgr_with_run();
+
+        let result = mgr.deliver_confirmation(&run_ref, "nonexistent", true);
+        assert!(result.is_err());
+        let (err, tool_name, _trace_id) = result.unwrap_err();
+        assert!(err.to_string().contains("no pending confirmation"));
+        // tool_name is empty when no pending confirmation exists
+        assert!(tool_name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_failed_nonempty_trace_id_and_tool_name() {
+        // Verify that delivery failure preserves non-empty metadata
+        let (mgr, run_ref) = mgr_with_run();
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let trace_id = protocol_interface::TraceId::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "tc-meta", "write_file", &trace_id, tx)
+            .unwrap();
+
+        // Drop receiver to trigger delivery failure
+        drop(rx);
+
+        let result = mgr.deliver_confirmation(&run_ref, "tc-meta", false);
+        assert!(result.is_err());
+        let (_err, tool_name, returned_trace_id) = result.unwrap_err();
+
+        // Verify non-empty metadata for audit
+        assert_eq!(tool_name, "write_file");
+        assert!(!tool_name.is_empty());
+        assert_eq!(returned_trace_id, trace_id);
+        assert!(!returned_trace_id.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_success_returns_tool_name_and_trace_id() {
+        // Verify successful delivery returns proper metadata
+        let (mgr, run_ref) = mgr_with_run();
+        mgr.update_run_status(&run_ref, RunStatus::WaitingForApproval)
+            .unwrap();
+
+        let trace_id = protocol_interface::TraceId::new();
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        mgr.store_confirmation_sender(&run_ref, "tc-ok", "edit_file", &trace_id, tx)
+            .unwrap();
+
+        let result = mgr.deliver_confirmation(&run_ref, "tc-ok", true);
+        assert!(result.is_ok());
+        let (tool_name, returned_trace_id) = result.unwrap();
+        assert_eq!(tool_name, "edit_file");
+        assert_eq!(returned_trace_id, trace_id);
+
+        // Verify receiver got the approval signal
+        assert!(rx.await.unwrap());
     }
 }

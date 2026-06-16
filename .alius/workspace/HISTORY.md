@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 05:45] Alius: runtime/core/src/session.rs + runtime/core/src/runtime.rs + runtime/core/src/loop_engine/tool_step.rs - P3-3 Review fix: deliver_confirmation now checks sender.send() return value and treats Err as delivery failure; store_confirmation_sender stores trace_id alongside tool_name; deliver_confirmation returns (tool_name, trace_id) on success and (error, tool_name, trace_id) on failure; runtime.rs uses envelope.trace_id for audit instead of empty string; LogWriter lock errors handled gracefully without panic; added 4 new session tests: delivery_failed_receiver_dropped, delivery_failed_no_pending_confirmation, delivery_failed_nonempty_metadata, delivery_success_metadata.
+
 [2026-06-16 05:30] Alius: runtime/core/src/session.rs + runtime/core/src/runtime.rs + runtime/core/src/loop_engine/tool_step.rs + .alius/workspace/docs/overview/implementation-gaps.md - P3-3 Delivery failure audit: enhanced store_confirmation_sender to store tool_name alongside oneshot sender; deliver_confirmation now returns tool_name for audit logging; runtime.rs logs delivery_failed audit event when respond_confirmation fails; delivery failure triggers automatic run cancellation (fail-closed); documentation updated to reflect delivery_failed is now implemented with full audit trail.
 
 [2026-06-16 05:25] Alius: .alius/workspace/docs/overview/implementation-gaps.md + .alius/workspace/HISTORY.md - P3-2 Review fix: corrected audit action names to match runtime implementation. Documentation now uses `denied_by_user` (not `denied`) and `no_session` (not `unavailable`) to match ConfirmationDecision::reason() return values.

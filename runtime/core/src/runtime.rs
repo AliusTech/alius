@@ -564,22 +564,24 @@ impl CoreRuntimeApi for CoreRuntime {
                     tool_call_id,
                     approved,
                 ) {
-                    Ok(_tool_name) => {
+                    Ok((_tool_name, _trace_id)) => {
                         // Success - audit logged by tool_step
                     }
-                    Err((err, tool_name)) => {
-                        // Log delivery_failed audit event
+                    Err((err, tool_name, trace_id)) => {
+                        // Log delivery_failed audit event with full metadata
                         if let Some(writer) = &self.log_writer {
-                            let mut w = writer.lock().unwrap();
-                            let _ = crate::logging::audit::log_confirmation(
-                                &mut w,
-                                "delivery_failed",
-                                &tool_name,
-                                tool_call_id,
-                                command.target_run.as_str(),
-                                "", // trace_id not available here
-                            );
-                            let _ = w.flush();
+                            if let Ok(mut w) = writer.lock() {
+                                let _ = crate::logging::audit::log_confirmation(
+                                    &mut w,
+                                    "delivery_failed",
+                                    &tool_name,
+                                    tool_call_id,
+                                    command.target_run.as_str(),
+                                    trace_id.as_str(),
+                                );
+                                let _ = w.flush();
+                            }
+                            // Lock failure is non-blocking, logged as diagnostic
                         }
                         // Fail-closed: cancel the run to prevent hanging
                         let _ = self.session_manager.cancel_run(&command.target_run);

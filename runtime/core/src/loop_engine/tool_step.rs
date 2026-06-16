@@ -207,7 +207,7 @@ async fn confirm_and_await(
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-    session.store_confirmation_sender(run_ref, tool_call_id, tool_name, tx)?;
+    session.store_confirmation_sender(run_ref, tool_call_id, tool_name, trace_id, tx)?;
 
     *sequence += 1;
     event_sink(CoreEvent::new(
