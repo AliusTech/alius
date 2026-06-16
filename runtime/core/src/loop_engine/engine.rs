@@ -1402,4 +1402,134 @@ mod tests {
             panic!("ToolCallCompleted must use JSON payload");
         }
     }
+
+    /// MCP tool execution: fake MCP-source tool goes through execute_tools
+    /// (the same path LoopEngine uses), is dispatched via ToolRegistry,
+    /// and produces correct output and events.
+    #[tokio::test]
+    async fn mcp_tool_executed_through_registry() {
+        use protocol_interface::core::ToolSource;
+        use runtime_tools::AliusTool;
+
+        /// Fake MCP tool that echoes its input.
+        struct McpEchoTool;
+
+        #[async_trait::async_trait]
+        impl AliusTool for McpEchoTool {
+            fn name(&self) -> &'static str {
+                "mcp_echo"
+            }
+            fn description(&self) -> &'static str {
+                "fake MCP echo tool"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                json!({"type": "object", "properties": {"message": {"type": "string"}}})
+            }
+            fn source(&self) -> ToolSource {
+                ToolSource::Mcp
+            }
+            async fn execute(
+                &self,
+                args: serde_json::Value,
+                _ctx: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                let msg = args
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("no message");
+                Ok(runtime_tools::ToolResult {
+                    output: format!("mcp_echo: {msg}"),
+                    success: true,
+                    metadata: None,
+                })
+            }
+        }
+
+        // Register the fake MCP tool.
+        let registry = runtime_tools::ToolRegistry::new();
+        runtime_tools::native::register_native_tools(&registry);
+        registry.register(McpEchoTool).unwrap();
+
+        // Verify source metadata.
+        let tool = registry
+            .get("mcp_echo")
+            .expect("mcp_echo must be registered");
+        assert_eq!(tool.source(), ToolSource::Mcp, "tool source must be Mcp");
+
+        // Create session/run/trace for the execution.
+        let session_manager = std::sync::Arc::new(crate::SessionManager::new(
+            protocol_interface::core::WorkspaceRef::new("/tmp"),
+        ));
+        let session = session_manager.create_session();
+        let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut seq = 0u64;
+
+        // Build a tool call that references our fake MCP tool.
+        let call = runtime_model::ToolCall {
+            id: "tc-mcp-1".into(),
+            name: "mcp_echo".into(),
+            args: json!({"message": "hello from mcp"}),
+        };
+
+        // Execute through the same path LoopEngine uses.
+        let batch = super::super::tool_step::execute_tools(
+            &[call],
+            &registry,
+            std::path::Path::new("/tmp"),
+            "test",
+            protocol_interface::RuntimeMode::Plan,
+            Some(&session_manager),
+            &mut |e| events_clone.lock().unwrap().push(e),
+            &run_ref,
+            &trace_id,
+            &mut seq,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The batch must not be denied.
+        assert!(!batch.batch_denied, "MCP tool should not be denied");
+
+        // Output must match the fake tool's deterministic response.
+        assert_eq!(batch.results.len(), 1);
+        assert_eq!(
+            batch.results[0].2, "mcp_echo: hello from mcp",
+            "output must match fake MCP tool response"
+        );
+
+        // Verify events: ToolCallStarted → ToolCallCompleted(success=true).
+        let evts = events.lock().unwrap();
+
+        let started = evts
+            .iter()
+            .find(|e| e.kind == CoreEventKind::ToolCallStarted);
+        assert!(started.is_some(), "must emit ToolCallStarted");
+
+        let completed = evts
+            .iter()
+            .find(|e| e.kind == CoreEventKind::ToolCallCompleted);
+        assert!(completed.is_some(), "must emit ToolCallCompleted");
+
+        if let Some(CoreEventPayload::Json { value }) = completed.map(|e| &e.payload) {
+            assert_eq!(value["success"], true, "tool must succeed");
+            assert_eq!(value["output"], "mcp_echo: hello from mcp");
+            assert_eq!(value["name"], "mcp_echo");
+        } else {
+            panic!("ToolCallCompleted must use JSON payload");
+        }
+
+        // Verify the tool source is still Mcp in the registry.
+        let infos = registry.to_tool_infos();
+        let mcp_echo_info = infos.iter().find(|i| i.name == "mcp_echo");
+        assert!(mcp_echo_info.is_some(), "mcp_echo must be in tool infos");
+        assert_eq!(
+            mcp_echo_info.unwrap().source,
+            ToolSource::Mcp,
+            "mcp_echo source must be Mcp"
+        );
+    }
 }

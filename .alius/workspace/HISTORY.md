@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 03:15] Alius: runtime/core/src/loop_engine/engine.rs + .alius/workspace/docs/overview/implementation-gaps.md - P4-4 MCP tool LoopEngine execution test: added mcp_tool_executed_through_registry test that registers a fake MCP-source tool (mcp_echo) in ToolRegistry, executes it through execute_tools (same path as LoopEngine), verifies source==Mcp, output matches, ToolCallStarted/ToolCallCompleted events emitted; updated implementation-gaps.md to reflect MCP tool execution is now tested.
+
 [2026-06-16 03:00] Alius: entrypoints/jsonrpc/src/lib.rs + entrypoints/jsonrpc/Cargo.toml + runtime/core/src/lib.rs + runtime/core/src/manager.rs - P4-3 review fixes v5: JSON-RPC test_dispatch_tool_list_mcp_source_visible constructs CoreRuntimeManager with fake MCP tool via CoreRuntimeBuilder, asserts tool_list returns source=="mcp"; re-exported LlmClient from core-runtime; added runtime-tools and async-trait as dev-dependencies; fixed start_mcp_init comment to list all three config flags.
 
 [2026-06-16 02:45] Alius: .alius/workspace/docs + entrypoints/jsonrpc/src/lib.rs - P4-3 review fixes v4: synced SPEC.md/01-current-state.md/implementation-gaps.md with full MCP startup condition (mcp feature + three tools.toml flags + servers.toml); fixed config-schema.md and config-manager.md to separate project config files from user-level MCP config.
