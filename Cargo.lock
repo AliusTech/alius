@@ -2794,6 +2794,8 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "protocol-interface",
+ "runtime-tools",
  "serde",
  "serde_json",
  "tokio",

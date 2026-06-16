@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-17
 
+[2026-06-17 01:00] Alius: runtime/mcp/tests/mcp_e2e.rs + runtime/mcp/tests/fixtures/echo_mcp_server.py + runtime/mcp/Cargo.toml + .alius/workspace/docs/overview/implementation-gaps.md - P4-1 MCP real server E2E: added echo_mcp_server.py fixture implementing MCP stdio protocol (initialize, notifications/initialized, tools/list, tools/call); 7 integration tests verifying full protocol flow: initialize→server info, tools/list→echo tool, tools/call→echo response, unknown tool error, protocol sequence, McpToolAdapter source==Mcp, McpToolAdapter execute; updated implementation-gaps.md to reflect real MCP server E2E testing is now complete.
+
 [2026-06-17 00:35] Alius: runtime/core/src/runtime.rs + runtime/core/src/session.rs + .alius/workspace/docs/modules/tools-and-shell-gate.md - P3-3 Review fix: emit_audit_diagnostic now uses monotonically increasing sequence from SessionManager::next_event_sequence() instead of hardcoded 0; added next_event_sequence() method to SessionManager; updated test to verify sequence > 0 and monotonic increase; documented audit_no_writer diagnostic code in tools-and-shell-gate.md.
 
 [2026-06-17 00:25] Alius: runtime/core/src/runtime.rs - P3-3 Final review fix: delivery_failed audit path now emits LogRecordEmitted diagnostic events on lock/write/flush failures, consistent with tool_step::audit_confirmation semantics; added audit_delivery_failed and emit_audit_diagnostic helper methods; added delivery_failed_audit_emits_diagnostic_on_failure test verifying diagnostic event emission and non-blocking behavior (run status unchanged).
