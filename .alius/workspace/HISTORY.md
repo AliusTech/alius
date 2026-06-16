@@ -8,7 +8,9 @@ All entries use the format:
 
 ## 2026-06-16
 
-[2026-06-16 02:45] Alius: .alius/workspace/docs + entrypoints/jsonrpc/src/lib.rs - P4-3 review fixes v4: synced SPEC.md/01-current-state.md/implementation-gaps.md with full MCP startup condition (mcp feature + three tools.toml flags + servers.toml); fixed config-schema.md and config-manager.md to separate project config files from user-level MCP config; added JSON-RPC tool_list response structure test.
+[2026-06-16 03:00] Alius: entrypoints/jsonrpc/src/lib.rs + entrypoints/jsonrpc/Cargo.toml + runtime/core/src/lib.rs + runtime/core/src/manager.rs - P4-3 review fixes v5: JSON-RPC test_dispatch_tool_list_mcp_source_visible constructs CoreRuntimeManager with fake MCP tool via CoreRuntimeBuilder, asserts tool_list returns source=="mcp"; re-exported LlmClient from core-runtime; added runtime-tools and async-trait as dev-dependencies; fixed start_mcp_init comment to list all three config flags.
+
+[2026-06-16 02:45] Alius: .alius/workspace/docs + entrypoints/jsonrpc/src/lib.rs - P4-3 review fixes v4: synced SPEC.md/01-current-state.md/implementation-gaps.md with full MCP startup condition (mcp feature + three tools.toml flags + servers.toml); fixed config-schema.md and config-manager.md to separate project config files from user-level MCP config.
 
 [2026-06-16 02:30] Alius: runtime/core/src/manager.rs + runtime/core/src/runtime.rs + .alius/workspace/docs/modules/extensions.md - P4-3 review fixes v3: mcp_config_enabled uses workspace_root not process cwd; added load_on_workspace_start to MCP startup condition (all three flags required); added CoreRuntimeManager config gating tests (default disabled, all-true enabled, individual flag disabled, workspace_root vs cwd); CoreRuntime::tool_list test verifies MCP source metadata through CoreRuntimeBuilder; extensions.md clarifies project switch vs server declarations vs legacy mcp.json.
 

@@ -397,9 +397,59 @@ mod tests {
         )
     }
 
-    // Note: CoreRuntimeManager with MCP tools is tested in core-runtime tests
-    // (tool_list_returns_correct_source_metadata). JSON-RPC source propagation
-    // is verified through the dispatch_with_runtime -> CoreRuntimeManager chain.
+    /// Build a CoreRuntimeManager with native + fake MCP tools in the registry.
+    fn test_manager_with_mcp_tools() -> CoreRuntimeManager {
+        use async_trait::async_trait;
+        use protocol_interface::core::ToolSource;
+        use runtime_tools::{AliusTool, ToolContext as RtToolContext, ToolRegistry, ToolResult};
+
+        struct FakeMcpTool;
+        #[async_trait]
+        impl AliusTool for FakeMcpTool {
+            fn name(&self) -> &'static str {
+                "mcp_search"
+            }
+            fn description(&self) -> &'static str {
+                "fake mcp search"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn source(&self) -> ToolSource {
+                ToolSource::Mcp
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: RtToolContext,
+            ) -> Result<ToolResult, protocol_interface::AliusError> {
+                unimplemented!()
+            }
+        }
+
+        let registry = std::sync::Arc::new(ToolRegistry::new());
+        runtime_tools::native::register_native_tools(&registry);
+        registry.register(FakeMcpTool).unwrap();
+
+        let settings = runtime_config::Settings::default();
+        let llm_settings = runtime_config::LlmSettings {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let llm_client = core_runtime::LlmClient::new(llm_settings).unwrap_or_else(|_| {
+            core_runtime::LlmClient::new(runtime_config::LlmSettings::default()).unwrap()
+        });
+
+        let runtime = core_runtime::CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new("/tmp/jsonrpc-mcp-test"))
+            .settings(settings)
+            .client(llm_client)
+            .tool_registry_arc(registry)
+            .build()
+            .unwrap();
+
+        CoreRuntimeManager::from_runtime("/tmp/jsonrpc-mcp-test", runtime)
+    }
 
     // ── Legacy dispatch ────────────────────────────────────────────────
 
@@ -489,18 +539,29 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_tool_list_response_structure() {
-        // Verify tool_list response has correct structure.
-        // MCP source propagation is tested in core-runtime
-        // (tool_list_returns_correct_source_metadata).
-        let manager = test_manager();
+    fn test_dispatch_tool_list_mcp_source_visible() {
+        let manager = test_manager_with_mcp_tools();
         let resp = dispatch_with_runtime(&make_request("tool_list"), &manager);
-        assert!(resp.error.is_none(), "tool_list should not error");
-        let result = resp.result.unwrap();
-        assert!(result.is_array(), "tool_list should return array");
-        // Note: test_manager creates minimal runtime without tool registry,
-        // so array may be empty. Structure and source propagation are verified
-        // in core-runtime tests.
+        assert!(resp.error.is_none(), "tool_list failed: {:?}", resp.error);
+        let tools = resp.result.unwrap();
+        assert!(tools.is_array());
+        let tools = tools.as_array().unwrap();
+        assert!(!tools.is_empty(), "should have tools");
+
+        // Verify MCP tool is present with source == "mcp".
+        let mcp_tools: Vec<_> = tools
+            .iter()
+            .filter(|t| t.get("source").and_then(|s| s.as_str()) == Some("mcp"))
+            .collect();
+        assert_eq!(mcp_tools.len(), 1, "should have exactly 1 MCP tool");
+        assert_eq!(mcp_tools[0]["name"], "mcp_search");
+
+        // Verify native tools have source == "rust-wasm".
+        let native_tools: Vec<_> = tools
+            .iter()
+            .filter(|t| t.get("source").and_then(|s| s.as_str()) == Some("rust-wasm"))
+            .collect();
+        assert!(!native_tools.is_empty(), "should have native tools");
     }
 
     #[test]

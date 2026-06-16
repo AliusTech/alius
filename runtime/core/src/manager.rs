@@ -259,10 +259,11 @@ impl CoreRuntimeManager {
     /// Passes the shared ToolRegistry so MCP tools are registered directly
     /// into the runtime tool chain.
     ///
-    /// MCP initialization is gated by project config:
-    /// - `tools.toml` → `registry.mcp_tools` must be `true`
-    /// - `tools.toml` → `mcp.register_as_tools` must be `true`
-    /// - If either is false or the config cannot be loaded, MCP init is skipped.
+    /// MCP initialization is gated by project config — all three must be true:
+    /// - `tools.toml` → `registry.mcp_tools`
+    /// - `tools.toml` → `mcp.load_on_workspace_start`
+    /// - `tools.toml` → `mcp.register_as_tools`
+    /// - If any is false or the config cannot be loaded, MCP init is skipped.
     #[cfg(feature = "mcp")]
     pub fn start_mcp_init(&self) {
         // Check project tool config before starting MCP.

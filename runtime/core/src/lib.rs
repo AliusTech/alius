@@ -19,4 +19,5 @@ pub use event_adapter::EventAdapter;
 pub use loop_engine::{LoopContext, LoopEngine};
 pub use manager::{CoreRuntimeManager, RuntimeManagerContext};
 pub use runtime::{CoreRuntime, CoreRuntimeBuilder};
+pub use runtime_model::LlmClient;
 pub use session::SessionManager;
