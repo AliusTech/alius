@@ -12,10 +12,15 @@ Current configuration modules live under `runtime/config`.
 | `providers.toml` | Provider definitions, compatibility routing tiers, local model library, Base URLs, and API key env names. |
 | `model.toml` | Plan/Execute/Review model assignment backed by enabled local model-library entries. |
 | `soul.toml` | Project Agent Card compatible configuration. |
-| `tools.toml` | Built-in, MCP, plugin, workflow, timeout, confirmation, and registry settings. |
+| `tools.toml` | Built-in, MCP project switch (`registry.mcp_tools`, `mcp.load_on_workspace_start`, `mcp.register_as_tools`), plugin, workflow, timeout, confirmation, and registry settings. |
 | `permissions.toml` | Filesystem, shell, network, memory, project docs, and remote A2A permissions. |
 | `protocol.toml` | Protocol interface enablement and event/command settings. |
-| `~/.alius/mcp/servers.toml` | MCP server declarations (TOML format). Loaded by `McpManager` at runtime startup when the `mcp` feature is enabled. |
+
+### User-level config files (`~/.alius/`)
+
+| File | Description |
+| --- | --- |
+| `~/.alius/mcp/servers.toml` | MCP server declarations. Loaded by `McpManager` when the project switch in `.alius/config/tools.toml` is enabled. |
 
 ## Main Runtime Views
 

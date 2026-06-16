@@ -46,11 +46,11 @@ A2A should be documented as an architecture direction and partial config/protoco
 
 ## MCP Integration
 
-MCP server config, connection, and tool listing are implemented. When the `mcp` feature is enabled and `~/.alius/mcp/servers.toml` exists, MCP tools are registered into the shared `ToolRegistry` via `McpToolAdapter`. They are visible through `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization runs in the background and does not block runtime startup.
+MCP server config, connection, and tool listing are implemented. MCP auto-initialization requires all of: (1) `mcp` Cargo feature enabled, (2) `.alius/config/tools.toml` has `registry.mcp_tools = true`, `mcp.load_on_workspace_start = true`, `mcp.register_as_tools = true`, (3) `~/.alius/mcp/servers.toml` exists. When conditions are met, MCP tools register into the shared `ToolRegistry` via `McpToolAdapter` and are visible through `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization runs in the background and does not block runtime startup.
 
 Remaining gaps:
 - MCP tool execution via LoopEngine is structurally possible (tools are in the registry) but needs integration testing.
-- `~/.alius/mcp/servers.toml` is the only config path; `mcp.json` is not currently used by the runtime loader.
+- `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.
 
 ## WASM Plugin Integration
 

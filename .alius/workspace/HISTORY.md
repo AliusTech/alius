@@ -8,6 +8,8 @@ All entries use the format:
 
 ## 2026-06-16
 
+[2026-06-16 02:45] Alius: .alius/workspace/docs + entrypoints/jsonrpc/src/lib.rs - P4-3 review fixes v4: synced SPEC.md/01-current-state.md/implementation-gaps.md with full MCP startup condition (mcp feature + three tools.toml flags + servers.toml); fixed config-schema.md and config-manager.md to separate project config files from user-level MCP config; added JSON-RPC tool_list response structure test.
+
 [2026-06-16 02:30] Alius: runtime/core/src/manager.rs + runtime/core/src/runtime.rs + .alius/workspace/docs/modules/extensions.md - P4-3 review fixes v3: mcp_config_enabled uses workspace_root not process cwd; added load_on_workspace_start to MCP startup condition (all three flags required); added CoreRuntimeManager config gating tests (default disabled, all-true enabled, individual flag disabled, workspace_root vs cwd); CoreRuntime::tool_list test verifies MCP source metadata through CoreRuntimeBuilder; extensions.md clarifies project switch vs server declarations vs legacy mcp.json.
 
 [2026-06-16 02:15] Alius: runtime/core/src/manager.rs + runtime/tools/src/mcp_bridge.rs + runtime/tools/src/registry.rs + entrypoints/jsonrpc/src/lib.rs + .alius/workspace/docs - P4-3 review fixes v2: MCP init gated by tools.toml config (registry.mcp_tools + mcp.register_as_tools must both be true); McpToolAdapter preview_confirmation returns true in Plan mode; added MCP source propagation tests (mcp_tool_has_mcp_source, mcp_and_native_sources_coexist, mcp_duplicate_name_rejected); synced extensions.md, config-manager.md, SPEC.md MCP config path.

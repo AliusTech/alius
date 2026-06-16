@@ -41,7 +41,7 @@ Preferred project config root:
 .alius/config/
 ```
 
-Main files:
+### Project config files (`.alius/config/`)
 
 - `config.toml`
 - `providers.toml`
@@ -51,10 +51,14 @@ Main files:
 - `model.toml`
   - Plan/Execute/Review model assignment
 - `soul.toml`
-- `tools.toml`
+- `tools.toml` — includes MCP project switch: `registry.mcp_tools`, `mcp.load_on_workspace_start`, `mcp.register_as_tools`
 - `permissions.toml`
 - `protocol.toml`
-- `~/.alius/mcp/servers.toml` (user-level MCP server declarations)
+
+### User-level config files (`~/.alius/`)
+
+- `~/.alius/mcp/servers.toml` — MCP server declarations. Loaded by `McpManager` when the project switch in `tools.toml` is enabled.
+- `.alius/config/mcp.json` — legacy MCP config path referenced in `tools.toml` defaults. Not used by the current runtime loader.
 
 ## Local Model Library
 

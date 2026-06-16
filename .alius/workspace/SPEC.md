@@ -114,7 +114,7 @@ Alius must document extension systems by maturity.
 Acceptance criteria:
 
 - Documentation covers MCP, WASM Plugin, Workflow, Agent Team, and A2A.
-- MCP tools are registered into the runtime tool chain when the `mcp` feature is enabled and a valid `~/.alius/mcp/servers.toml` config exists. MCP tools are accessible via `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list`.
+- MCP tools are registered into the runtime tool chain when all of the following are true: (1) the `mcp` Cargo feature is enabled at build time, (2) the project config `.alius/config/tools.toml` has `registry.mcp_tools = true`, `mcp.load_on_workspace_start = true`, and `mcp.register_as_tools = true`, and (3) a valid `~/.alius/mcp/servers.toml` user-level config exists. MCP tools are accessible via `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list` with `ToolSource::Mcp`.
 - Native/WASM tools take priority over MCP tools — duplicate names are skipped.
 - MCP initialization failure does not block runtime startup.
 - Documentation labels Workflow prompt/tool execution and Agent Team/A2A live traffic as not fully connected to the default workspace unless current code shows otherwise.
