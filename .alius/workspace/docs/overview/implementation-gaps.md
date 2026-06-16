@@ -75,11 +75,12 @@ Plan mode tool confirmation is implemented end-to-end:
   - `denied_by_user` — emitted when user denies the tool
   - `cancelled` — emitted when run is cancelled while waiting
   - `no_session` — emitted when no session exists (fail-closed)
-  - `delivery_failed` — emitted when `respond_confirmation` fails (run not found, no pending confirmation)
+  - `delivery_failed` — emitted when `respond_confirmation` fails (run not found, no pending confirmation, receiver dropped)
 - Audit records include: `run_ref`, `tool_call_id`, `tool_name`, `action`, `trace_id`
 - Sensitive arguments are NOT logged (only tool name + call ID)
 - Audit failures emit `LogRecordEmitted` diagnostic events (non-blocking)
 - `delivery_failed` audit is logged in `runtime.rs` when `SessionManager::deliver_confirmation` returns an error. The run is automatically cancelled after logging to prevent hanging.
+- **tool_name sentinel**: When `deliver_confirmation` cannot recover the original tool_name (run not found, no pending confirmation), it returns `"unknown"` as a sentinel value. For receiver-dropped scenarios, the original tool_name from the stored confirmation metadata is preserved.
 
 **Fail-Closed Behavior:**
 - No session available → `ConfirmationDecision::Unavailable`, tool not executed

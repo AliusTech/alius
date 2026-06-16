@@ -1527,24 +1527,51 @@ mod tests {
 
     /// Test: CoreRuntime::send() logs delivery_failed audit event
     /// when respond_confirmation fails, using envelope.trace_id,
-    /// and fail-cancels the run.
+    /// and fail-cancels the run. Uses CoreRuntimeBuilder to ensure
+    /// a real LogWriter is present.
     #[tokio::test]
     async fn delivery_failed_audit_uses_envelope_trace_id() {
         use protocol_interface::{CoreCommand, ProtocolEnvelope};
 
-        let rt = CoreRuntime::new(WorkspaceRef::new("/tmp/test-delivery-audit"));
+        // Create a temp workspace directory with a real LogWriter
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_ref = WorkspaceRef::new(tmp.path());
+
+        let settings = runtime_config::Settings::default();
+        let client = runtime_model::LlmClient::new(runtime_config::LlmSettings::default())
+            .unwrap_or_else(|_| {
+                runtime_model::LlmClient::new(runtime_config::LlmSettings {
+                    api_key: Some("test-key".into()),
+                    ..Default::default()
+                })
+                .unwrap()
+            });
+
+        let rt = CoreRuntimeBuilder::new()
+            .workspace_ref(workspace_ref)
+            .settings(settings)
+            .client(client)
+            .build()
+            .unwrap();
+
+        // Verify LogWriter was created
+        assert!(
+            rt.log_writer.is_some(),
+            "LogWriter should be created under workspace"
+        );
 
         // Create a session and run
         let session = rt.session_manager().create_session().session_ref;
         let (_, run_ref, _trace_id) = rt.session_manager().create_turn(&session).unwrap();
 
         // Create a RespondToolConfirmation command for a nonexistent tool_call_id
-        let cmd = CoreCommand::respond_confirmation(run_ref.clone(), "nonexistent-tool-id", true);
+        let cmd = CoreCommand::respond_confirmation(run_ref.clone(), "tc-nonexistent", true);
         let envelope = ProtocolEnvelope::new(
             protocol_interface::Origin::LocalCli,
             protocol_interface::CapabilityScope::local_cli(),
             cmd,
         );
+        let expected_trace_id = envelope.trace_id.clone();
 
         // Call send - should fail with delivery_failed
         let result = rt.send(envelope);
@@ -1558,6 +1585,143 @@ mod tests {
         assert!(
             matches!(status, Ok(RunStatus::Cancelled) | Err(_)),
             "run should be cancelled or not found after delivery failure"
+        );
+
+        // Verify audit log was written
+        let log_dir = tmp.path().join(".alius").join("logs");
+        let event_log = log_dir.join("event-log.jsonl");
+        assert!(event_log.exists(), "event-log.jsonl should exist");
+
+        let content = std::fs::read_to_string(&event_log).unwrap();
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert!(!lines.is_empty(), "audit log should contain entries");
+
+        // Parse the last line as the delivery_failed entry
+        let entry: serde_json::Value =
+            serde_json::from_str(lines.last().unwrap()).expect("audit entry should be valid JSON");
+
+        // Verify audit fields
+        assert_eq!(
+            entry["event_type"], "tool_confirmation",
+            "audit entry should be tool_confirmation type"
+        );
+        assert_eq!(
+            entry["data"]["action"], "delivery_failed",
+            "audit action should be delivery_failed"
+        );
+        assert_eq!(
+            entry["data"]["tool_call_id"], "tc-nonexistent",
+            "tool_call_id should match command"
+        );
+        assert_eq!(
+            entry["data"]["tool_name"], "unknown",
+            "tool_name should be 'unknown' sentinel for no-pending case"
+        );
+        assert_eq!(
+            entry["trace_id"].as_str().unwrap(),
+            expected_trace_id.as_str(),
+            "trace_id should match envelope.trace_id"
+        );
+        assert_eq!(
+            entry["data"]["run_ref"].as_str().unwrap(),
+            run_ref.as_str(),
+            "run_ref should match"
+        );
+
+        // Verify sensitive data is NOT logged
+        let log_str = content.to_lowercase();
+        assert!(
+            !log_str.contains("password"),
+            "should not contain sensitive data"
+        );
+        assert!(
+            !log_str.contains("secret"),
+            "should not contain sensitive data"
+        );
+    }
+
+    /// Test: CoreRuntime::send() logs delivery_failed for receiver-dropped
+    /// scenario, preserving original tool_name from stored metadata.
+    #[tokio::test]
+    async fn delivery_failed_receiver_dropped_audit_preserves_tool_name() {
+        use protocol_interface::{CoreCommand, ProtocolEnvelope};
+
+        // Create a temp workspace directory with a real LogWriter
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_ref = WorkspaceRef::new(tmp.path());
+
+        let settings = runtime_config::Settings::default();
+        let client = runtime_model::LlmClient::new(runtime_config::LlmSettings::default())
+            .unwrap_or_else(|_| {
+                runtime_model::LlmClient::new(runtime_config::LlmSettings {
+                    api_key: Some("test-key".into()),
+                    ..Default::default()
+                })
+                .unwrap()
+            });
+
+        let rt = CoreRuntimeBuilder::new()
+            .workspace_ref(workspace_ref)
+            .settings(settings)
+            .client(client)
+            .build()
+            .unwrap();
+
+        // Create a session and run
+        let session = rt.session_manager().create_session().session_ref;
+        let (_, run_ref, trace_id) = rt.session_manager().create_turn(&session).unwrap();
+
+        // Store a confirmation sender then drop the receiver to simulate
+        // receiver-dropped scenario
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        rt.session_manager()
+            .store_confirmation_sender(&run_ref, "tc-shell", "shell", &trace_id, tx)
+            .unwrap();
+        drop(rx); // Drop receiver - next send will fail
+
+        // Create a RespondToolConfirmation command
+        let cmd = CoreCommand::respond_confirmation(run_ref.clone(), "tc-shell", true);
+        let envelope = ProtocolEnvelope::new(
+            protocol_interface::Origin::LocalCli,
+            protocol_interface::CapabilityScope::local_cli(),
+            cmd,
+        );
+        let expected_trace_id = envelope.trace_id.clone();
+
+        // Call send - should fail with delivery_failed
+        let result = rt.send(envelope);
+        assert!(result.is_err(), "send should fail when receiver is dropped");
+
+        // Verify run was cancelled (fail-closed)
+        let status = rt.session_manager().get_run_status(&run_ref);
+        assert!(
+            matches!(status, Ok(RunStatus::Cancelled) | Err(_)),
+            "run should be cancelled after delivery failure"
+        );
+
+        // Verify audit log was written
+        let log_dir = tmp.path().join(".alius").join("logs");
+        let event_log = log_dir.join("event-log.jsonl");
+        assert!(event_log.exists(), "event-log.jsonl should exist");
+
+        let content = std::fs::read_to_string(&event_log).unwrap();
+        let lines: Vec<&str> = content.trim().lines().collect();
+        assert!(!lines.is_empty(), "audit log should contain entries");
+
+        let entry: serde_json::Value =
+            serde_json::from_str(lines.last().unwrap()).expect("audit entry should be valid JSON");
+
+        // Verify audit fields - should preserve original tool_name
+        assert_eq!(entry["data"]["action"], "delivery_failed");
+        assert_eq!(entry["data"]["tool_call_id"], "tc-shell");
+        assert_eq!(
+            entry["data"]["tool_name"], "shell",
+            "should preserve original tool_name from stored metadata"
+        );
+        assert_eq!(
+            entry["trace_id"].as_str().unwrap(),
+            expected_trace_id.as_str(),
+            "trace_id should match envelope.trace_id"
         );
     }
 
