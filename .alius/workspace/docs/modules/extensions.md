@@ -25,11 +25,21 @@ Related code lives under:
 - `entrypoints/cli/src/mcp/`
 - `~/.alius/mcp/servers.toml` (user-level MCP server declarations)
 
-Current maturity:
+### MCP Config Paths
+
+| Purpose | Path | Description |
+| --- | --- | --- |
+| Project switch | `.alius/config/tools.toml` | Controls whether MCP tools load on workspace start. Settings: `registry.mcp_tools`, `mcp.load_on_workspace_start`, `mcp.register_as_tools`. All three must be `true` for MCP auto-init. |
+| Server declarations | `~/.alius/mcp/servers.toml` | User-level MCP server definitions. Loaded by `McpManager` at runtime when the project switch is enabled. |
+| Legacy path | `.alius/config/mcp.json` | Historical reference in `tools.toml` default. Not used by the current runtime loader. May be used by CLI tooling. |
+
+### Current maturity:
 
 - CLI management exists.
 - Server listing, start, and tool listing behavior exists.
-- MCP tools should not be described as fully connected to the default workspace tool loop unless that path is verified.
+- MCP tools enter the shared `ToolRegistry` when project switch is enabled and `~/.alius/mcp/servers.toml` exists.
+- MCP initialization runs in background and does not block runtime startup.
+- Native/WASM tools take priority — MCP tools with duplicate names are skipped.
 
 ## WASM Plugin
 

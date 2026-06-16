@@ -282,14 +282,23 @@ impl CoreRuntimeManager {
     }
 
     /// Check if MCP tools are enabled in the project tool config.
+    /// Uses `workspace_root` (not process cwd) so embedded/JSON-RPC/test
+    /// callers read the correct project config.
+    ///
+    /// All three flags must be true:
+    /// - `registry.mcp_tools` — MCP tool support is enabled
+    /// - `mcp.load_on_workspace_start` — auto-load on workspace start
+    /// - `mcp.register_as_tools` — register into ToolRegistry
     #[cfg(feature = "mcp")]
     fn mcp_config_enabled(&self) -> bool {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| self.workspace_root.clone());
-        match runtime_config::load_project_config(&cwd) {
-            Ok(config) => config.tools.registry.mcp_tools && config.tools.mcp.register_as_tools,
+        match runtime_config::load_project_config(&self.workspace_root) {
+            Ok(config) => {
+                config.tools.registry.mcp_tools
+                    && config.tools.mcp.load_on_workspace_start
+                    && config.tools.mcp.register_as_tools
+            }
             Err(_) => {
-                // If config can't be loaded, fall back to checking the default.
-                // Default has mcp_tools = false, so MCP is disabled.
+                // Default has all three false, so MCP is disabled.
                 false
             }
         }
@@ -322,5 +331,181 @@ impl CoreRuntimeManager {
             capability_scope: self.context.capability_scope.clone(),
             workspace_root: Some(self.workspace_root.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "mcp")]
+mod tests {
+    use super::*;
+    use protocol_interface::core::WorkspaceRef;
+
+    fn make_manager(workspace: &str) -> CoreRuntimeManager {
+        let settings = runtime_config::Settings::default();
+        let llm_settings = runtime_config::LlmSettings {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let client = runtime_model::LlmClient::new(llm_settings).unwrap_or_else(|_| {
+            runtime_model::LlmClient::new(runtime_config::LlmSettings::default()).unwrap()
+        });
+
+        let runtime = crate::CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new(workspace))
+            .settings(settings)
+            .client(client)
+            .build()
+            .unwrap();
+
+        CoreRuntimeManager::from_runtime(workspace, runtime)
+    }
+
+    #[test]
+    fn mcp_disabled_by_default_config() {
+        // Default tools.toml has mcp_tools=false, load_on_workspace_start=false,
+        // register_as_tools=false. MCP should be disabled.
+        // Use a dir inside HOME so find_project_root can find it.
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap();
+        let project_dir = PathBuf::from(&home).join(".alius-test-mcp-default");
+
+        std::fs::create_dir_all(project_dir.join(".alius/config")).unwrap();
+        let tools_content = include_str!("../config/defaults/tools.toml");
+        std::fs::write(project_dir.join(".alius/config/tools.toml"), tools_content).unwrap();
+
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            !manager.mcp_config_enabled(),
+            "MCP should be disabled with default config"
+        );
+
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    /// Helper to create a temp project dir with a tools.toml content.
+    fn make_test_project(name: &str, tools_content: &str) -> PathBuf {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap();
+        let project_dir = PathBuf::from(&home).join(format!(".alius-test-{}", name));
+        std::fs::create_dir_all(project_dir.join(".alius/config")).unwrap();
+        std::fs::write(project_dir.join(".alius/config/tools.toml"), tools_content).unwrap();
+        project_dir
+    }
+
+    #[test]
+    fn mcp_enabled_when_all_flags_true() {
+        let project_dir = make_test_project(
+            "mcp-all-true",
+            r#"
+[registry]
+rust_wasm_modules = true
+mcp_tools = true
+workflow_tools = false
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = true
+register_as_tools = true
+"#,
+        );
+
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            manager.mcp_config_enabled(),
+            "MCP should be enabled when all flags are true"
+        );
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn mcp_disabled_when_mcp_tools_false() {
+        let project_dir = make_test_project(
+            "mcp-tools-false",
+            r#"
+[registry]
+mcp_tools = false
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = true
+register_as_tools = true
+"#,
+        );
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            !manager.mcp_config_enabled(),
+            "MCP should be disabled when mcp_tools=false"
+        );
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn mcp_disabled_when_load_on_workspace_start_false() {
+        let project_dir = make_test_project(
+            "mcp-load-false",
+            r#"
+[registry]
+mcp_tools = true
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = false
+register_as_tools = true
+"#,
+        );
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            !manager.mcp_config_enabled(),
+            "MCP should be disabled when load_on_workspace_start=false"
+        );
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn mcp_disabled_when_register_as_tools_false() {
+        let project_dir = make_test_project(
+            "mcp-register-false",
+            r#"
+[registry]
+mcp_tools = true
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = true
+register_as_tools = false
+"#,
+        );
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            !manager.mcp_config_enabled(),
+            "MCP should be disabled when register_as_tools=false"
+        );
+        std::fs::remove_dir_all(&project_dir).ok();
+    }
+
+    #[test]
+    fn mcp_config_reads_workspace_root_not_cwd() {
+        // Create a project with MCP enabled.
+        let project_dir = make_test_project(
+            "mcp-workspace-root",
+            r#"
+[registry]
+mcp_tools = true
+
+[mcp]
+config = ".alius/config/mcp.json"
+load_on_workspace_start = true
+register_as_tools = true
+"#,
+        );
+
+        let manager = make_manager(project_dir.to_str().unwrap());
+        assert!(
+            manager.mcp_config_enabled(),
+            "MCP should read workspace_root config"
+        );
+        std::fs::remove_dir_all(&project_dir).ok();
     }
 }

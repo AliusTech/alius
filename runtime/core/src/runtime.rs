@@ -1421,5 +1421,75 @@ mod tests {
         }
     }
 
+    /// Verify that CoreRuntime::tool_list() returns tools with correct source metadata.
+    /// Constructs a runtime with both native and MCP tools via CoreRuntimeBuilder.
+    #[test]
+    fn tool_list_returns_correct_source_metadata() {
+        use async_trait::async_trait;
+        use protocol_interface::core::ToolSource;
+        use runtime_tools::ToolRegistry;
+
+        struct FakeMcpTool;
+        #[async_trait]
+        impl runtime_tools::AliusTool for FakeMcpTool {
+            fn name(&self) -> &'static str {
+                "mcp_search"
+            }
+            fn description(&self) -> &'static str {
+                "fake mcp search"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn source(&self) -> ToolSource {
+                ToolSource::Mcp
+            }
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: runtime_tools::ToolContext,
+            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
+                unimplemented!()
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        runtime_tools::native::register_native_tools(&registry);
+        registry.register(FakeMcpTool).unwrap();
+
+        let settings = runtime_config::Settings::default();
+        let llm_settings = runtime_config::LlmSettings {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let client = runtime_model::LlmClient::new(llm_settings).unwrap();
+
+        let rt = CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new("/tmp/test-source"))
+            .settings(settings)
+            .client(client)
+            .tool_registry_arc(registry)
+            .build()
+            .unwrap();
+
+        let tool_list = rt.tool_list().unwrap();
+        assert!(!tool_list.is_empty(), "should have tools");
+
+        // Verify native tools have RustWasm source.
+        let native_tools: Vec<_> = tool_list
+            .iter()
+            .filter(|t| t.source == ToolSource::RustWasm)
+            .collect();
+        assert_eq!(native_tools.len(), 5, "should have 5 native tools");
+
+        // Verify MCP tool has Mcp source.
+        let mcp_tools: Vec<_> = tool_list
+            .iter()
+            .filter(|t| t.source == ToolSource::Mcp)
+            .collect();
+        assert_eq!(mcp_tools.len(), 1, "should have 1 MCP tool");
+        assert_eq!(mcp_tools[0].name, "mcp_search");
+    }
+
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
