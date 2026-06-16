@@ -241,4 +241,56 @@ mod tests {
         assert!(content.contains("cancelled"));
         assert!(content.contains("write_file"));
     }
+
+    #[test]
+    fn test_confirmation_audit_json_structure() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = make_writer(dir.path());
+        log_confirmation(
+            &mut writer,
+            "approved",
+            "shell",
+            "tc-struct",
+            "run-struct",
+            "trace-struct",
+        )
+        .unwrap();
+        writer.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("event-log.jsonl")).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+
+        // Verify event type
+        assert_eq!(entry["event_type"], "tool_confirmation");
+        assert_eq!(entry["trace_id"], "trace-struct");
+
+        // Verify all required fields are present
+        let data = &entry["data"];
+        assert_eq!(data["action"], "approved");
+        assert_eq!(data["tool_name"], "shell");
+        assert_eq!(data["tool_call_id"], "tc-struct");
+        assert_eq!(data["run_ref"], "run-struct");
+    }
+
+    #[test]
+    fn test_confirmation_audit_does_not_contain_sensitive_args() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = make_writer(dir.path());
+        log_confirmation(
+            &mut writer,
+            "requested",
+            "shell",
+            "tc-sec",
+            "run-sec",
+            "trace-sec",
+        )
+        .unwrap();
+        writer.flush().unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("event-log.jsonl")).unwrap();
+        // Should not contain raw command arguments
+        assert!(!content.contains("rm -rf"));
+        assert!(!content.contains("password"));
+        assert!(!content.contains("secret"));
+    }
 }

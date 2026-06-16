@@ -50,11 +50,15 @@ MCP server config, connection, and tool listing are implemented. MCP auto-initia
 
 ## Tool Confirmation Flow
 
-Plan mode tool confirmation is partially implemented:
+Plan mode tool confirmation is implemented end-to-end:
 
 1. When a tool's `preview_confirmation()` returns `true` (e.g., high-risk shell commands, file writes in Plan mode), `tool_step::execute_tools()` emits a `ToolConfirmationRequired` event and blocks on a oneshot channel.
 
-2. The TUI streaming event loop receives this event and displays a confirmation prompt with Approve/Deny choices.
+2. The TUI streaming event loop receives this event and displays a confirmation prompt showing:
+   - Tool name and tool_call_id
+   - Formatted tool arguments (JSON key=value pairs)
+   - Approve/Deny choices
+   - A detailed confirmation block in the conversation area
 
 3. User input is sent back to the runtime via `ProtocolBridge::respond_confirmation()` → `CoreRuntimeManager::respond_confirmation()` → `CoreRuntime::send()` → `SessionManager::deliver_confirmation()`.
 
@@ -62,7 +66,20 @@ Plan mode tool confirmation is partially implemented:
 
 5. Cancel/drop of the confirmation sender is treated as denial (fail-closed).
 
-6. Failure in confirmation delivery triggers fail-closed: UI shows error, current run is cancelled to prevent runtime from hanging.
+6. Failure in confirmation delivery triggers fail-closed: UI shows user-friendly error message with tool_call_id, current run is cancelled to prevent runtime from hanging.
+
+**Audit Logging:**
+- All confirmation events (requested, approved, denied, cancelled, delivery_failed) are logged via `audit::log_confirmation`
+- Audit records include: `run_ref`, `tool_call_id`, `tool_name`, `action`, `trace_id`
+- Sensitive arguments are NOT logged (only tool name + call ID)
+- Audit failures emit `LogRecordEmitted` diagnostic events (non-blocking)
+
+**Fail-Closed Behavior:**
+- No session available → `ConfirmationDecision::Unavailable`
+- User denial → tool not executed, `ToolCallCompleted(success=false, denied=true)`
+- Channel dropped (cancel) → `ConfirmationDecision::Cancelled`
+- Delivery failure → UI shows error, run cancelled
+- All failures are distinguishable in audit logs
 
 Tools that trigger confirmation in Plan mode:
 - Shell commands (high-risk)
@@ -71,7 +88,7 @@ Tools that trigger confirmation in Plan mode:
 - MCP tools (all in Plan mode)
 
 Remaining gaps:
-- **TUI streaming-path integration test**: While the `ProtocolBridge` streaming acceptance test (`streaming_confirmation_approve_path`, `streaming_confirmation_deny_path`) verifies the full bridge path with fake LLM provider and tool registry, a test exercising the TUI event loop (`execute_goal`/`execute_plan_step`) with actual key input simulation is still missing. The bridge tests prove the protocol path works; TUI loop tests would prove the UI integration.
+- **TUI streaming-path integration test**: While the `ProtocolBridge` streaming acceptance test and unit tests verify the full bridge path and UI state, a test exercising the TUI event loop with actual key input simulation is still missing.
 - MCP tool execution via LoopEngine is tested with a fake MCP-source tool registered in the shared ToolRegistry. Real MCP server end-to-end execution (with actual MCP protocol) is not yet tested.
 - `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.
 

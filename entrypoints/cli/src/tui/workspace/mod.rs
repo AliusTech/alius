@@ -3256,12 +3256,19 @@ impl WorkspaceState {
     }
 
     /// Show tool confirmation prompt to user.
-    /// Creates a PromptInputState with Approve/Deny choices.
+    /// Creates a PromptInputState with Approve/Deny choices and formatted details.
     fn show_tool_confirmation(&mut self, confirmation: ToolConfirmationState) {
         let title = format!("Tool '{}' requires confirmation", confirmation.tool_name);
+        let formatted_details = Self::format_tool_details(
+            &confirmation.tool_name,
+            &confirmation.tool_call_id,
+            &confirmation.details,
+        );
         let help = format!(
             "Tool: {} | ID: {} | Args: {}",
-            confirmation.tool_name, confirmation.tool_call_id, confirmation.details
+            confirmation.tool_name,
+            confirmation.tool_call_id,
+            Self::truncate_details(&confirmation.details, 80)
         );
 
         let choices = vec![
@@ -3272,10 +3279,58 @@ impl WorkspaceState {
         let prompt_input =
             PromptInputState::new(title, PromptInputKind::SingleSelect, choices, help);
 
+        // Show a detailed block in the conversation for context
+        self.push_block(ConversationBlock::request(formatted_details));
+
         self.pending_tool_confirmation = Some(confirmation);
         self.prompt_input = Some(prompt_input);
         self.input.clear();
         self.focus_zone = FocusZone::Input;
+    }
+
+    /// Format tool details for display to user.
+    fn format_tool_details(tool_name: &str, tool_call_id: &str, details: &str) -> String {
+        let args_display = Self::format_tool_args(details);
+        format!(
+            "⚠ Tool confirmation required\n  Tool: {}\n  Call ID: {}\n  Args: {}",
+            tool_name, tool_call_id, args_display
+        )
+    }
+
+    /// Format tool arguments for readable display.
+    fn format_tool_args(details: &str) -> String {
+        // Try to parse as JSON for pretty display
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(details) {
+            if let Some(obj) = value.as_object() {
+                // Format as key=value pairs for readability
+                let formatted: Vec<String> = obj
+                    .iter()
+                    .map(|(k, v)| {
+                        let val_str = match v {
+                            serde_json::Value::String(s) => {
+                                format!("\"{}\"", Self::truncate_details(s, 50))
+                            }
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            _ => Self::truncate_details(&v.to_string(), 50),
+                        };
+                        format!("{}={}", k, val_str)
+                    })
+                    .collect();
+                return formatted.join(", ");
+            }
+        }
+        // Fallback: just show truncated raw details
+        Self::truncate_details(details, 120)
+    }
+
+    /// Truncate string with ellipsis if too long.
+    fn truncate_details(s: &str, max_len: usize) -> String {
+        if s.len() <= max_len {
+            s.to_string()
+        } else {
+            format!("{}...", &s[..max_len])
+        }
     }
 
     /// Handle tool confirmation response.
@@ -3304,13 +3359,13 @@ impl WorkspaceState {
 
             if approved {
                 self.push_block(ConversationBlock::request(format!(
-                    "✓ Tool '{}' approved",
-                    confirmation.tool_name
+                    "✓ Tool '{}' approved (ID: {})",
+                    confirmation.tool_name, confirmation.tool_call_id
                 )));
             } else {
                 self.push_block(ConversationBlock::error(format!(
-                    "✗ Tool '{}' denied",
-                    confirmation.tool_name
+                    "✗ Tool '{}' denied (ID: {}) — tool will not execute",
+                    confirmation.tool_name, confirmation.tool_call_id
                 )));
             }
         }
@@ -3323,8 +3378,8 @@ impl WorkspaceState {
             self.restore_text_input();
 
             self.push_block(ConversationBlock::error(format!(
-                "✗ Tool '{}' confirmation failed: {}",
-                confirmation.tool_name, error
+                "✗ Tool '{}' confirmation failed (ID: {}): {}\n  The tool will not execute for safety.",
+                confirmation.tool_name, confirmation.tool_call_id, error
             )));
         }
     }
@@ -4023,5 +4078,157 @@ mod tool_confirmation_tests {
         // State should be cleared
         assert!(state.prompt_input.is_none());
         assert!(state.pending_tool_confirmation.is_none());
+    }
+
+    #[test]
+    fn test_show_tool_confirmation_displays_tool_name_and_id() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-12345".to_string(),
+            tool_name: "shell".to_string(),
+            details: serde_json::json!({"command": "ls -la /tmp"}).to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Verify prompt_input is set with correct title
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert!(prompt.title.contains("shell"));
+        assert!(prompt.title.contains("requires confirmation"));
+
+        // Verify help text contains tool name and ID
+        assert!(prompt.help.contains("shell"));
+        assert!(prompt.help.contains("tc-12345"));
+    }
+
+    #[test]
+    fn test_show_tool_confirmation_formats_json_args() {
+        let mut state = WorkspaceState::new(vec![]);
+        let details = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "content": "hello world",
+            "overwrite": true
+        })
+        .to_string();
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-args".to_string(),
+            tool_name: "write_file".to_string(),
+            details,
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Should have a conversation block with formatted args
+        let blocks = &state.blocks;
+        let last_block = blocks.last().unwrap();
+        let content = &last_block.content;
+        assert!(content.contains("write_file"));
+        assert!(content.contains("tc-args"));
+        assert!(content.contains("path="));
+        assert!(content.contains("/tmp/test.txt"));
+    }
+
+    #[test]
+    fn test_complete_tool_confirmation_shows_tool_call_id_for_approve() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-approve-test".to_string(),
+            tool_name: "shell".to_string(),
+            details: "echo test".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+        state.complete_tool_confirmation(true);
+
+        // Verify the approve block shows tool_call_id
+        let blocks = &state.blocks;
+        let last_block = blocks.last().unwrap();
+        assert!(last_block.content.contains("✓"));
+        assert!(last_block.content.contains("shell"));
+        assert!(last_block.content.contains("tc-approve-test"));
+    }
+
+    #[test]
+    fn test_complete_tool_confirmation_shows_tool_call_id_for_deny() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-deny-test".to_string(),
+            tool_name: "edit_file".to_string(),
+            details: "find: old, replace: new".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+        state.complete_tool_confirmation(false);
+
+        // Verify the deny block shows tool_call_id and "will not execute"
+        let blocks = &state.blocks;
+        let last_block = blocks.last().unwrap();
+        assert!(last_block.content.contains("✗"));
+        assert!(last_block.content.contains("edit_file"));
+        assert!(last_block.content.contains("tc-deny-test"));
+        assert!(last_block.content.contains("will not execute"));
+    }
+
+    #[test]
+    fn test_fail_tool_confirmation_shields_error_details() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-fail".to_string(),
+            tool_name: "shell".to_string(),
+            details: "rm -rf /".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+        state.fail_tool_confirmation("internal channel error".to_string());
+
+        // Verify error message is user-friendly, not raw internal details
+        let blocks = &state.blocks;
+        let last_block = blocks.last().unwrap();
+        assert!(last_block.content.contains("✗"));
+        assert!(last_block.content.contains("shell"));
+        assert!(last_block.content.contains("tc-fail"));
+        assert!(last_block.content.contains("internal channel error"));
+        assert!(last_block.content.contains("will not execute"));
+        // Should NOT expose raw stack traces
+        assert!(!last_block.content.contains("backtrace"));
+        assert!(!last_block.content.contains("thread"));
+    }
+
+    #[test]
+    fn test_format_tool_args_pretty_prints_json() {
+        let details = serde_json::json!({
+            "command": "ls -la",
+            "timeout": 30
+        })
+        .to_string();
+        let formatted = WorkspaceState::format_tool_args(&details);
+        assert!(formatted.contains("command=\"ls -la\""));
+        assert!(formatted.contains("timeout=30"));
+    }
+
+    #[test]
+    fn test_format_tool_args_handles_non_json() {
+        let details = "raw string details without JSON";
+        let formatted = WorkspaceState::format_tool_args(details);
+        assert_eq!(formatted, details);
+    }
+
+    #[test]
+    fn test_truncate_details_short_string() {
+        let result = WorkspaceState::truncate_details("short", 100);
+        assert_eq!(result, "short");
+    }
+
+    #[test]
+    fn test_truncate_details_long_string() {
+        let long = "a".repeat(200);
+        let result = WorkspaceState::truncate_details(&long, 100);
+        assert_eq!(result.len(), 103); // 100 + "..."
+        assert!(result.ends_with("..."));
     }
 }
