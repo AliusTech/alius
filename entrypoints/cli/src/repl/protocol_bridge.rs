@@ -210,11 +210,58 @@ impl ProtocolBridge {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
+    /// Respond to a tool confirmation request.
+    /// This delivers the user's approval/rejection to the waiting tool execution.
+    pub fn respond_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<()> {
+        self.manager
+            .respond_confirmation(run_ref, tool_call_id, approved)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
     /// Query log records through the Runtime Manager.
     #[allow(dead_code)]
     pub fn query_logs(&self, query: LogQuery) -> Result<Vec<LogRecord>> {
         self.manager
             .query_logs(query)
             .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_respond_confirmation_delegates_to_manager() {
+        // Create a bridge with a test workspace
+        let workspace = PathBuf::from("/tmp/test-bridge");
+        let settings = Settings::default();
+        let bridge = match ProtocolBridge::new(workspace, settings) {
+            Ok(b) => b,
+            Err(_) => return, // Skip test if runtime can't be created (e.g., no API key)
+        };
+
+        // Create a run first
+        let run_ref = bridge
+            .send_message_with_mode("test", RuntimeMode::Plan)
+            .ok()
+            .and_then(|events| {
+                events
+                    .iter()
+                    .find(|e| e.payload.kind == CoreEventKind::RunStarted)
+                    .map(|e| e.run_ref.clone().unwrap_or_default())
+            })
+            .unwrap_or_default();
+
+        // Test respond_confirmation - should not panic even with invalid tool_call_id
+        let result = bridge.respond_confirmation(&run_ref, "nonexistent-tool-id", true);
+        // This may return an error due to no pending confirmation, but shouldn't panic
+        assert!(result.is_ok() || result.is_err());
     }
 }

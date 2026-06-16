@@ -134,6 +134,19 @@ where
         self.send(envelope)
     }
 
+    /// Convenience command for responding to a tool confirmation request.
+    pub fn respond_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), ProtocolError> {
+        let context = self.context_for_run(run_ref)?;
+        let command = CoreCommand::respond_confirmation(run_ref.clone(), tool_call_id, approved);
+        let envelope = self.command_envelope(&context, command);
+        self.send(envelope)
+    }
+
     /// Return stored protocol context for a run.
     pub fn run_context(&self, run_ref: &RunRef) -> Result<ProtocolRunContext, ProtocolError> {
         self.context_for_run(run_ref)

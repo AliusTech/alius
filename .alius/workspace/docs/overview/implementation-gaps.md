@@ -48,6 +48,26 @@ A2A should be documented as an architecture direction and partial config/protoco
 
 MCP server config, connection, and tool listing are implemented. MCP auto-initialization requires all of: (1) `mcp` Cargo feature enabled, (2) `.alius/config/tools.toml` has `registry.mcp_tools = true`, `mcp.load_on_workspace_start = true`, `mcp.register_as_tools = true`, (3) `~/.alius/mcp/servers.toml` exists. When conditions are met, MCP tools register into the shared `ToolRegistry` via `McpToolAdapter` and are visible through `CoreRuntimeManager::tool_list()` and JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization runs in the background and does not block runtime startup.
 
+## Tool Confirmation Flow
+
+Plan mode tool confirmation is now implemented end-to-end:
+
+1. When a tool's `preview_confirmation()` returns `true` (e.g., high-risk shell commands, file writes in Plan mode), `tool_step::execute_tools()` emits a `ToolConfirmationRequired` event and blocks on a oneshot channel.
+
+2. The TUI streaming event loop receives this event and displays a confirmation prompt with Approve/Deny choices.
+
+3. User input is sent back to the runtime via `ProtocolBridge::respond_confirmation()` → `CoreRuntimeManager::respond_confirmation()` → `CoreRuntime::send()` → `SessionManager::deliver_confirmation()`.
+
+4. The loop engine resumes: approved tools execute normally, denied tools produce `ToolCallCompleted(success=false, denied=true)`.
+
+5. Cancel/drop of the confirmation sender is treated as denial (fail-closed).
+
+Tools that trigger confirmation in Plan mode:
+- Shell commands (high-risk)
+- File write operations
+- File edit operations
+- MCP tools (all in Plan mode)
+
 Remaining gaps:
 - MCP tool execution via LoopEngine is tested with a fake MCP-source tool (`mcp_echo`) registered in the shared ToolRegistry, confirming that `execute_tools` dispatches MCP tools correctly, produces correct output, and emits proper events. Real MCP server end-to-end execution (with actual MCP protocol) is not yet tested.
 - `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.

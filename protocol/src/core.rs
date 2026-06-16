@@ -536,6 +536,23 @@ impl CoreCommand {
             },
         }
     }
+
+    /// Create a command to respond to a tool confirmation request.
+    pub fn respond_confirmation(
+        target_run: RunRef,
+        tool_call_id: impl Into<String>,
+        approved: bool,
+    ) -> Self {
+        Self {
+            command_id: CommandId::new(),
+            kind: CoreCommandKind::RespondToolConfirmation {
+                tool_call_id: tool_call_id.into(),
+                approved,
+            },
+            target_run,
+            metadata: CommandMetadata::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

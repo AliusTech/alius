@@ -555,6 +555,16 @@ impl CoreRuntimeApi for CoreRuntime {
                 self.session_manager
                     .update_run_status(&command.target_run, RunStatus::Running)?;
             }
+            CoreCommandKind::RespondToolConfirmation {
+                ref tool_call_id,
+                approved,
+            } => {
+                self.session_manager.deliver_confirmation(
+                    &command.target_run,
+                    tool_call_id,
+                    approved,
+                )?;
+            }
             _ => {}
         }
 

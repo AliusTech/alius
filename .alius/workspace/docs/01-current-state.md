@@ -25,7 +25,7 @@ This file summarizes the current implementation state of Alius in this checkout.
 
 | Area | State |
 | --- | --- |
-| Plan mode tool execution | Plan mode can use a tool registry through `LoopEngine`, but end-to-end tool approval and evidence handling are still developing. |
+| Plan mode tool execution | Plan mode can use a tool registry through `LoopEngine`. Tool confirmation flow is now implemented: `ToolConfirmationRequired` events trigger UI prompts in the TUI, and user approval/denial is sent back to the runtime via `respond_confirmation()`. |
 | Tool permissions | Permission structures and Shell Gate exist, but enforcement is not uniform across every default execution path. |
 | Model router | Router types exist, but product paths should be checked before assuming tier routing is active. |
 | Config schema | Rich project config views exist, while some older settings paths remain for compatibility. |

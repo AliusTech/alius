@@ -180,6 +180,19 @@ impl CoreRuntimeManager {
         self.interface.cancel(run_ref, reason)
     }
 
+    /// Respond to a tool confirmation request.
+    /// This sends a `RespondToolConfirmation` command through the protocol interface,
+    /// which delivers the user's approval/rejection to the waiting tool execution.
+    pub fn respond_confirmation(
+        &self,
+        run_ref: &RunRef,
+        tool_call_id: &str,
+        approved: bool,
+    ) -> Result<(), ProtocolError> {
+        self.interface
+            .respond_confirmation(run_ref, tool_call_id, approved)
+    }
+
     /// Read current runtime configuration.
     pub fn config_read(&self) -> Result<ConfigSnapshot, ProtocolError> {
         self.interface.config_read(&self.protocol_context())

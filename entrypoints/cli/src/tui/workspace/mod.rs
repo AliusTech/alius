@@ -18,7 +18,7 @@ use crossterm::event::{
 };
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
-use protocol_interface::core::{CoreEventKind, CoreEventPayload, RuntimeMode};
+use protocol_interface::core::{CoreEventKind, CoreEventPayload, RunRef, RuntimeMode};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use runtime_config::ModelAssignmentRole;
@@ -858,6 +858,17 @@ async fn handle_submit(
     state: &mut WorkspaceState,
     input: String,
 ) -> Result<()> {
+    // Handle tool confirmation response
+    if let Some((run_ref, tool_call_id, approved)) = state.handle_tool_confirmation_response(&input)
+    {
+        if let Some(bridge) = session.bridge.as_ref() {
+            bridge
+                .respond_confirmation(&run_ref, &tool_call_id, approved)
+                .map_err(|e| anyhow::anyhow!("Failed to respond to tool confirmation: {}", e))?;
+        }
+        return Ok(());
+    }
+
     if state.config_task.is_some() {
         state.submit_config_answer(session, input)?;
         return Ok(());
@@ -985,10 +996,12 @@ fn config_task_cancelled_message(kind: ConfigTaskKind) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ExecutionInputAction {
     None,
     InterruptConfirmed,
+    /// User responded to a tool confirmation prompt (value = "approve" or "deny").
+    ToolConfirmationResponse(String),
 }
 
 fn handle_execution_key(state: &mut WorkspaceState, key: KeyEvent) -> ExecutionInputAction {
@@ -998,6 +1011,17 @@ fn handle_execution_key(state: &mut WorkspaceState, key: KeyEvent) -> ExecutionI
 
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return ExecutionInputAction::InterruptConfirmed;
+    }
+
+    // If there's a pending tool confirmation, route keys to the prompt handler.
+    if state.pending_tool_confirmation.is_some() && state.prompt_input.is_some() {
+        match state.handle_prompt_input_key(key) {
+            WorkspaceAction::Submit(value) => {
+                return ExecutionInputAction::ToolConfirmationResponse(value);
+            }
+            WorkspaceAction::None => return ExecutionInputAction::None,
+            _ => return ExecutionInputAction::None,
+        }
     }
 
     match &mut state.interaction {
@@ -1083,6 +1107,24 @@ async fn execute_goal(
                                 ) => {
                                     state.record_tool_call_completed(value);
                                 }
+                                (
+                                    CoreEventKind::ToolConfirmationRequired,
+                                    CoreEventPayload::ToolConfirmation {
+                                        tool_call_id,
+                                        tool_name,
+                                        details,
+                                    },
+                                ) => {
+                                    // Store confirmation state and wait for user response
+                                    let confirmation = ToolConfirmationState {
+                                        tool_call_id: tool_call_id.clone(),
+                                        tool_name: tool_name.clone(),
+                                        details: details.clone(),
+                                        run_ref: run_ref.clone(),
+                                    };
+                                    state.show_tool_confirmation(confirmation);
+                                    // Don't break the loop yet - wait for user response
+                                }
                                 (CoreEventKind::FinalResult, _) => {
                                     done = true;
                                 }
@@ -1103,15 +1145,32 @@ async fn execute_goal(
                     // Non-blocking check for UI events while execution is running.
                     if event::poll(Duration::from_millis(30))? {
                         if let Event::Key(key) = event::read()? {
-                            if handle_execution_key(state, key)
-                                == ExecutionInputAction::InterruptConfirmed
-                            {
-                                let _ = bridge.cancel(
-                                    &run_ref,
-                                    Some("user interrupted execution".to_string()),
-                                );
-                                interrupted = true;
-                                done = true;
+                            match handle_execution_key(state, key) {
+                                ExecutionInputAction::InterruptConfirmed => {
+                                    let _ = bridge.cancel(
+                                        &run_ref,
+                                        Some("user interrupted execution".to_string()),
+                                    );
+                                    interrupted = true;
+                                    done = true;
+                                }
+                                ExecutionInputAction::ToolConfirmationResponse(response) => {
+                                    // User responded to tool confirmation
+                                    if let Some(confirmation) =
+                                        state.pending_tool_confirmation.take()
+                                    {
+                                        let approved = response == "approve";
+                                        let _ = bridge.respond_confirmation(
+                                            &confirmation.run_ref,
+                                            &confirmation.tool_call_id,
+                                            approved,
+                                        );
+                                        // Clear the prompt input and restore state
+                                        state.prompt_input = None;
+                                        state.restore_text_input();
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -1419,6 +1478,22 @@ async fn execute_plan_step(
                     (CoreEventKind::ToolCallCompleted, CoreEventPayload::Json { value }) => {
                         state.record_tool_call_completed(value);
                     }
+                    (
+                        CoreEventKind::ToolConfirmationRequired,
+                        CoreEventPayload::ToolConfirmation {
+                            tool_call_id,
+                            tool_name,
+                            details,
+                        },
+                    ) => {
+                        let confirmation = ToolConfirmationState {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: tool_name.clone(),
+                            details: details.clone(),
+                            run_ref: run_ref.clone(),
+                        };
+                        state.show_tool_confirmation(confirmation);
+                    }
                     (CoreEventKind::FinalResult, _) => {
                         done = true;
                     }
@@ -1438,10 +1513,26 @@ async fn execute_plan_step(
 
         if event::poll(Duration::from_millis(30))? {
             if let Event::Key(key) = event::read()? {
-                if handle_execution_key(state, key) == ExecutionInputAction::InterruptConfirmed {
-                    let _ = bridge.cancel(&run_ref, Some("user interrupted execution".to_string()));
-                    interrupted = true;
-                    done = true;
+                match handle_execution_key(state, key) {
+                    ExecutionInputAction::InterruptConfirmed => {
+                        let _ =
+                            bridge.cancel(&run_ref, Some("user interrupted execution".to_string()));
+                        interrupted = true;
+                        done = true;
+                    }
+                    ExecutionInputAction::ToolConfirmationResponse(response) => {
+                        if let Some(confirmation) = state.pending_tool_confirmation.take() {
+                            let approved = response == "approve";
+                            let _ = bridge.respond_confirmation(
+                                &confirmation.run_ref,
+                                &confirmation.tool_call_id,
+                                approved,
+                            );
+                            state.prompt_input = None;
+                            state.restore_text_input();
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2263,7 +2354,15 @@ impl PlanDraft {
 // WorkspaceState
 // ---------------------------------------------------------------------------
 
+/// Pending tool confirmation state.
 #[derive(Debug, Clone)]
+pub struct ToolConfirmationState {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub details: String,
+    pub run_ref: RunRef,
+}
+
 struct WorkspaceState {
     mode: InteractionMode,
     active_tab: MainTab,
@@ -2275,6 +2374,7 @@ struct WorkspaceState {
     input_history_cursor: Option<usize>,
     input_history_draft: String,
     prompt_input: Option<PromptInputState>,
+    pending_tool_confirmation: Option<ToolConfirmationState>,
     config_side_panel: Option<ConfigSidePanel>,
     interaction: InteractionUi,
     config_task: Option<ConfigTask>,
@@ -2329,6 +2429,7 @@ impl WorkspaceState {
             input_history_cursor: None,
             input_history_draft: String::new(),
             prompt_input: None,
+            pending_tool_confirmation: None,
             config_side_panel: None,
             interaction: InteractionUi::TextInput,
             config_task: None,
@@ -3099,6 +3200,65 @@ impl WorkspaceState {
         }
     }
 
+    /// Show tool confirmation prompt to user.
+    /// Creates a PromptInputState with Approve/Deny choices.
+    fn show_tool_confirmation(&mut self, confirmation: ToolConfirmationState) {
+        let title = format!("Tool '{}' requires confirmation", confirmation.tool_name);
+        let help = format!(
+            "Tool: {} | ID: {} | Args: {}",
+            confirmation.tool_name, confirmation.tool_call_id, confirmation.details
+        );
+
+        let choices = vec![
+            PromptChoice::new("Approve", "approve"),
+            PromptChoice::new("Deny", "deny"),
+        ];
+
+        let prompt_input =
+            PromptInputState::new(title, PromptInputKind::SingleSelect, choices, help);
+
+        self.pending_tool_confirmation = Some(confirmation);
+        self.prompt_input = Some(prompt_input);
+        self.input.clear();
+        self.focus_zone = FocusZone::Input;
+    }
+
+    /// Handle tool confirmation response.
+    fn handle_tool_confirmation_response(
+        &mut self,
+        response: &str,
+    ) -> Option<(RunRef, String, bool)> {
+        let approved = match response {
+            "approve" => true,
+            "deny" => false,
+            _ => return None,
+        };
+
+        let confirmation = self.pending_tool_confirmation.take()?;
+        let run_ref = confirmation.run_ref.clone();
+        let tool_call_id = confirmation.tool_call_id.clone();
+
+        // Clear the prompt input
+        self.prompt_input = None;
+        self.pending_tool_confirmation = None;
+        self.restore_text_input();
+
+        // Add confirmation result to conversation
+        if approved {
+            self.push_block(ConversationBlock::request(format!(
+                "✓ Tool '{}' approved",
+                confirmation.tool_name
+            )));
+        } else {
+            self.push_block(ConversationBlock::error(format!(
+                "✗ Tool '{}' denied",
+                confirmation.tool_name
+            )));
+        }
+
+        Some((run_ref, tool_call_id, approved))
+    }
+
     fn begin_plan_draft(&mut self, goal: &str) {
         self.pending_goal = Some(goal.to_string());
         self.plans.clear();
@@ -3634,5 +3794,132 @@ impl WorkspaceState {
         } else {
             self.expanded_blocks.insert(block_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_confirmation_tests {
+    use super::*;
+    use protocol_interface::core::RunRef;
+
+    #[test]
+    fn test_tool_confirmation_state_creation() {
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "test-123".to_string(),
+            tool_name: "shell".to_string(),
+            details: "ls -la".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        assert_eq!(confirmation.tool_call_id, "test-123");
+        assert_eq!(confirmation.tool_name, "shell");
+        assert_eq!(confirmation.details, "ls -la");
+    }
+
+    #[test]
+    fn test_show_tool_confirmation_sets_prompt_input() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-1".to_string(),
+            tool_name: "write_file".to_string(),
+            details: "path: /tmp/test.txt".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Should have prompt_input set
+        assert!(state.prompt_input.is_some());
+
+        // Should have pending_tool_confirmation set
+        assert!(state.pending_tool_confirmation.is_some());
+        assert_eq!(
+            state.pending_tool_confirmation.as_ref().unwrap().tool_name,
+            "write_file"
+        );
+    }
+
+    #[test]
+    fn test_handle_tool_confirmation_response_approve() {
+        let mut state = WorkspaceState::new(vec![]);
+        let run_ref = RunRef::new();
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-2".to_string(),
+            tool_name: "shell".to_string(),
+            details: "echo hello".to_string(),
+            run_ref: run_ref.clone(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Simulate approve response
+        let result = state.handle_tool_confirmation_response("approve");
+        assert!(result.is_some());
+
+        let (returned_run_ref, tool_call_id, approved) = result.unwrap();
+        assert_eq!(returned_run_ref, run_ref);
+        assert_eq!(tool_call_id, "tc-2");
+        assert!(approved);
+
+        // State should be cleared
+        assert!(state.prompt_input.is_none());
+        assert!(state.pending_tool_confirmation.is_none());
+    }
+
+    #[test]
+    fn test_handle_tool_confirmation_response_deny() {
+        let mut state = WorkspaceState::new(vec![]);
+        let run_ref = RunRef::new();
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-3".to_string(),
+            tool_name: "edit_file".to_string(),
+            details: "find: old, replace: new".to_string(),
+            run_ref: run_ref.clone(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Simulate deny response
+        let result = state.handle_tool_confirmation_response("deny");
+        assert!(result.is_some());
+
+        let (returned_run_ref, tool_call_id, approved) = result.unwrap();
+        assert_eq!(returned_run_ref, run_ref);
+        assert_eq!(tool_call_id, "tc-3");
+        assert!(!approved);
+
+        // State should be cleared
+        assert!(state.prompt_input.is_none());
+        assert!(state.pending_tool_confirmation.is_none());
+    }
+
+    #[test]
+    fn test_handle_tool_confirmation_response_invalid() {
+        let mut state = WorkspaceState::new(vec![]);
+        let confirmation = ToolConfirmationState {
+            tool_call_id: "tc-4".to_string(),
+            tool_name: "shell".to_string(),
+            details: "ls".to_string(),
+            run_ref: RunRef::new(),
+        };
+
+        state.show_tool_confirmation(confirmation);
+
+        // Invalid response should return None
+        let result = state.handle_tool_confirmation_response("invalid");
+        assert!(result.is_none());
+
+        // State should remain (confirmation still pending)
+        assert!(state.prompt_input.is_some());
+        assert!(state.pending_tool_confirmation.is_some());
+    }
+
+    #[test]
+    fn test_handle_tool_confirmation_no_pending() {
+        let mut state = WorkspaceState::new(vec![]);
+
+        // No pending confirmation
+        let result = state.handle_tool_confirmation_response("approve");
+        assert!(result.is_none());
     }
 }
