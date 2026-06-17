@@ -1988,5 +1988,55 @@ mod tests {
         assert!(records.len() <= 1);
     }
 
+    // ── config_update: all supported keys ────────────────────────────
+
+    #[test]
+    fn test_config_update_provider() {
+        let rt = test_runtime();
+        let result = rt.config_update("llm.provider", serde_json::json!("deepseek"));
+        assert!(result.is_ok());
+        let config = rt.config_read().unwrap();
+        assert_eq!(config.provider, "deepseek");
+    }
+
+    #[test]
+    fn test_config_update_base_url() {
+        let rt = test_runtime();
+        let result = rt.config_update("llm.base_url", serde_json::json!("https://custom.api.com"));
+        assert!(result.is_ok());
+        let config = rt.config_read().unwrap();
+        assert_eq!(config.base_url, Some("https://custom.api.com".to_string()));
+    }
+
+    #[test]
+    fn test_config_update_base_url_null() {
+        let rt = test_runtime();
+        let result = rt.config_update("llm.base_url", serde_json::Value::Null);
+        // May fail on save (no project dir) but the in-memory update should work
+        // Verify the key is accepted (not "unsupported config key")
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("unsupported config key"),
+                "base_url should be a supported key"
+            );
+        }
+    }
+
+    // ── review_start ────────────────────────────────────────────────
+
+    #[test]
+    fn test_review_start_no_assistant_returns_error() {
+        let rt = test_runtime();
+        let session = rt.session_manager().create_session();
+        let result = rt.review_start(&session.session_ref);
+        // With no conversation history, should return "no assistant response" error
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("no assistant response") || msg.contains("assistant"),
+            "expected 'no assistant response' error, got: {msg}"
+        );
+    }
+
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

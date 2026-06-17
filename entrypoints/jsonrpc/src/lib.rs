@@ -1103,6 +1103,31 @@ mod tests {
         assert_eq!(resp.error.as_ref().unwrap().code, ERR_RUNTIME);
     }
 
+    #[test]
+    fn test_run_confirm_tool_valid_params_reaches_runtime() {
+        // Verify dispatch reaches runtime (not param validation) when all params present
+        let manager = test_manager();
+        let mut req = make_request("run_confirm_tool");
+        req.params = serde_json::json!({
+            "run_ref": "rr-test-123",
+            "tool_call_id": "tc-1",
+            "approved": true
+        });
+        let resp = dispatch_with_runtime(&req, &manager);
+        // All params valid → should reach runtime, not return -32602
+        if let Some(err) = &resp.error {
+            assert_ne!(
+                err.code, ERR_INVALID_PARAMS,
+                "should not fail on param validation"
+            );
+            assert_eq!(
+                err.code, ERR_RUNTIME,
+                "should fail on runtime (no pending confirmation)"
+            );
+        }
+        // Either success or runtime error is acceptable — both prove dispatch worked
+    }
+
     // ── Malformed request contract ────────────────────────────────────
 
     #[test]
