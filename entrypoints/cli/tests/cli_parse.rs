@@ -157,3 +157,77 @@ fn core_subcommands_exist() {
         );
     }
 }
+
+// ============================================================================
+// Root flags tests
+// ============================================================================
+
+#[test]
+fn root_help_shows_model_flag() {
+    let output = alius_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to execute alius --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--model") || stdout.contains("-m"),
+        "help should mention --model flag"
+    );
+}
+
+#[test]
+fn root_help_shows_provider_flag() {
+    let output = alius_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to execute alius --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--provider") || stdout.contains("-p"),
+        "help should mention --provider flag"
+    );
+}
+
+#[test]
+fn root_help_shows_workspace_flag() {
+    let output = alius_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to execute alius --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--workspace"),
+        "help should mention --workspace flag"
+    );
+}
+
+#[test]
+fn root_help_shows_config_flag() {
+    let output = alius_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to execute alius --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--config") || stdout.contains("-c"),
+        "help should mention --config flag"
+    );
+}
+
+#[test]
+fn root_help_shows_verbose_flag() {
+    let output = alius_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to execute alius --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--verbose") || stdout.contains("-v"),
+        "help should mention --verbose flag"
+    );
+}

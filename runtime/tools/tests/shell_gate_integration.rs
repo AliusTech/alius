@@ -601,3 +601,42 @@ async fn test_execute_git_status_succeeds_in_chat() {
         "git status should succeed in Chat mode"
     );
 }
+
+// ============================================================================
+// Scope analysis: shell metacharacters
+// ============================================================================
+
+#[test]
+fn test_pipe_to_external_path_detected() {
+    let mut req = make_request("/workspace", "/workspace", "cat file | tee /tmp/out");
+    req.args = vec!["/tmp/out".to_string()];
+    let analysis = analyze_scope(&req);
+    assert!(
+        analysis.external_paths.contains(&PathBuf::from("/tmp/out")),
+        "Pipe to external path should be detected"
+    );
+}
+
+#[test]
+fn testsemicolon_with_external_command_detected() {
+    let mut req = make_request("/workspace", "/workspace", "ls; cat /etc/passwd");
+    req.args = vec!["/etc/passwd".to_string()];
+    let analysis = analyze_scope(&req);
+    assert!(
+        analysis
+            .external_paths
+            .contains(&PathBuf::from("/etc/passwd")),
+        "Semicolon with external path should be detected"
+    );
+}
+
+#[test]
+fn test_output_short_flag_external_path_detected() {
+    let mut req = make_request("/workspace", "/workspace", "command -o /tmp/out");
+    req.args = vec!["-o".to_string(), "/tmp/out".to_string()];
+    let analysis = analyze_scope(&req);
+    assert!(
+        analysis.external_paths.contains(&PathBuf::from("/tmp/out")),
+        "Short -o flag with external path should be detected"
+    );
+}
