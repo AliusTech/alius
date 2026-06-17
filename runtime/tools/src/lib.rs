@@ -7,6 +7,10 @@ pub mod shell_gate;
 pub mod traits;
 pub mod wasm_host;
 
+/// Test utilities (gated behind `testing` feature or `#[cfg(test)]`).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 #[cfg(feature = "mcp")]
 pub mod mcp_bridge;
 

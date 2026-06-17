@@ -10,6 +10,9 @@ description = "Alius CLI entrypoint"
 name = "alius"
 path = "src/main.rs"
 
+[features]
+testing = ["dep:tempfile"]
+
 [dependencies]
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -57,5 +60,11 @@ flate2 = { workspace = true }
 tar = { workspace = true }
 zip = { workspace = true }
 
+# Optional: for testing feature
+tempfile = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
+core-runtime = { workspace = true, features = ["testing"] }
+runtime-model = { workspace = true, features = ["testing"] }
+runtime-tools = { workspace = true, features = ["testing"] }

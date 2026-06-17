@@ -9,6 +9,7 @@ description = "Tool system for Alius runtime"
 [features]
 default = ["mcp"]
 mcp = ["dep:runtime-mcp"]
+testing = ["protocol-interface/testing"]
 
 [dependencies]
 serde = { workspace = true }

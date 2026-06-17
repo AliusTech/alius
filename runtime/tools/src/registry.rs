@@ -115,34 +115,8 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use crate::native;
-    use async_trait::async_trait;
+    use crate::testing::FakeTool;
     use protocol_interface::core::ToolSource;
-    use protocol_interface::AliusError;
-
-    /// A fake tool for testing name-conflict rejection.
-    struct FakeTool {
-        name: &'static str,
-    }
-
-    #[async_trait]
-    impl crate::traits::AliusTool for FakeTool {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn description(&self) -> &'static str {
-            "fake"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: crate::traits::ToolContext,
-        ) -> Result<crate::traits::ToolResult, AliusError> {
-            unimplemented!()
-        }
-    }
 
     #[test]
     fn test_native_tools_registered() {
@@ -192,7 +166,7 @@ mod tests {
 
         // Attempting to register a tool with the same name as a native tool
         // must fail — this prevents WASM plugins from shadowing built-in tools.
-        let result = registry.register(FakeTool { name: "shell" });
+        let result = registry.register(FakeTool::new("shell"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already registered"));
 
@@ -207,7 +181,7 @@ mod tests {
         native::register_native_tools(&registry);
 
         for name in &["shell", "read_file", "write_file", "list_dir", "edit_file"] {
-            let result = registry.register(FakeTool { name });
+            let result = registry.register(FakeTool::new(name));
             assert!(result.is_err(), "duplicate '{}' must be rejected", name);
         }
     }
@@ -220,7 +194,7 @@ mod tests {
         native::register_native_tools(&registry);
 
         // Register an extra tool via Arc reference.
-        let result = registry.register(FakeTool { name: "extra_tool" });
+        let result = registry.register(FakeTool::new("extra_tool"));
         assert!(result.is_ok());
         assert!(registry.has("extra_tool"));
         assert!(registry.has("shell")); // native tools still present
@@ -249,40 +223,12 @@ mod tests {
         }
     }
 
-    /// A fake tool that reports as MCP source.
-    struct FakeMcpTool {
-        name: &'static str,
-    }
-
-    #[async_trait]
-    impl crate::traits::AliusTool for FakeMcpTool {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn description(&self) -> &'static str {
-            "fake mcp tool"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-        fn source(&self) -> ToolSource {
-            ToolSource::Mcp
-        }
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: crate::traits::ToolContext,
-        ) -> Result<crate::traits::ToolResult, AliusError> {
-            unimplemented!()
-        }
-    }
-
     #[test]
     fn test_mcp_tool_has_mcp_source() {
         let registry = ToolRegistry::new();
         native::register_native_tools(&registry);
         registry
-            .register(FakeMcpTool { name: "mcp_search" })
+            .register(FakeTool::new("mcp_search").as_mcp())
             .unwrap();
 
         let infos = registry.to_tool_infos();
@@ -302,10 +248,10 @@ mod tests {
         let registry = ToolRegistry::new();
         native::register_native_tools(&registry);
         registry
-            .register(FakeMcpTool { name: "mcp_tool_1" })
+            .register(FakeTool::new("mcp_tool_1").as_mcp())
             .unwrap();
         registry
-            .register(FakeMcpTool { name: "mcp_tool_2" })
+            .register(FakeTool::new("mcp_tool_2").as_mcp())
             .unwrap();
 
         let infos = registry.to_tool_infos();
@@ -324,7 +270,7 @@ mod tests {
         native::register_native_tools(&registry);
 
         // MCP tool with same name as native tool should be rejected.
-        let result = registry.register(FakeMcpTool { name: "shell" });
+        let result = registry.register(FakeTool::new("shell").as_mcp());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already registered"));
 

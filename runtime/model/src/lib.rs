@@ -56,3 +56,7 @@ pub use conversation::*;
 pub use events::*;
 pub use provider::{ChatStream, LlmProvider, ToolResponse};
 pub use retry::*;
+
+/// Test utilities (gated behind `testing` feature or `#[cfg(test)]`).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

@@ -45,7 +45,20 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked --all -- --test-threads=1
+        run: cargo test --locked --all --features testing -- --test-threads=1
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        run: |
+          SCAN=$(strings target/release/alius | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            strings target/release/alius | grep -E 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit'
+            exit 1
+          fi
+          echo "Release binary clean — no test symbols found"
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2

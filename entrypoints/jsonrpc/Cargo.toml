@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "JSON-RPC 2.0 server entrypoint for Alius"
 
+[features]
+testing = []
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -18,3 +21,4 @@ runtime-config = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 runtime-tools = { workspace = true }
+core-runtime = { workspace = true, features = ["testing"] }

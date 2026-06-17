@@ -9,6 +9,9 @@ mod plans;
 mod status_bar;
 mod top_bar;
 
+// Re-export for testing module access
+pub(crate) use events::WorkspaceAction;
+
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -34,7 +37,7 @@ use crate::tui::TuiApp;
 use config_task::{
     ConfigPrompt, ConfigSaveTarget, ConfigSidePanel, ConfigTask, ConfigTaskKind, ConfigTaskOutcome,
 };
-use events::{CommandOutcome, DecisionKind, ExecutionMode, WorkspaceAction};
+use events::{CommandOutcome, DecisionKind, ExecutionMode};
 use helpers::{sanitize_for_tui, truncate_chars};
 use interaction::{
     DecisionState, InputBuffer, InteractionState, InteractionUi, PromptChoice, PromptInputAction,
@@ -2415,7 +2418,7 @@ pub struct ToolConfirmationState {
     pub run_ref: RunRef,
 }
 
-struct WorkspaceState {
+pub(crate) struct WorkspaceState {
     mode: InteractionMode,
     active_tab: MainTab,
     blocks: Vec<ConversationBlock>,
@@ -2652,7 +2655,7 @@ impl WorkspaceState {
         self.interaction.height(total_height)
     }
 
-    fn handle_key(&mut self, key: KeyEvent, models: &[String]) -> WorkspaceAction {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent, models: &[String]) -> WorkspaceAction {
         if self.quit_requested {
             return WorkspaceAction::Quit;
         }

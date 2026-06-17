@@ -1413,138 +1413,17 @@ mod tests {
         TraceId,
         LoopContext,
     ) {
-        use protocol_interface::core::ToolSource;
-        use runtime_model::{ChatEvent, ChatStream, LlmProvider, ToolCall};
-        use runtime_tools::AliusTool;
-        use std::future::Future;
-        use std::pin::Pin;
-
-        /// Fake MCP tool: echoes input, source = Mcp.
-        /// preview_confirmation respects the `require_confirm` flag.
-        struct McpEchoTool {
-            require_confirm: bool,
-        }
-
-        #[async_trait::async_trait]
-        impl AliusTool for McpEchoTool {
-            fn name(&self) -> &'static str {
-                "mcp_echo"
-            }
-            fn description(&self) -> &'static str {
-                "fake MCP echo tool"
-            }
-            fn input_schema(&self) -> serde_json::Value {
-                json!({"type": "object", "properties": {"message": {"type": "string"}}})
-            }
-            fn source(&self) -> ToolSource {
-                ToolSource::Mcp
-            }
-            fn preview_confirmation(&self, _args: &serde_json::Value, mode: RuntimeMode) -> bool {
-                // In Plan mode, require confirmation (same as real McpToolAdapter).
-                self.require_confirm && mode == RuntimeMode::Plan
-            }
-            async fn execute(
-                &self,
-                args: serde_json::Value,
-                _ctx: runtime_tools::ToolContext,
-            ) -> Result<runtime_tools::ToolResult, protocol_interface::AliusError> {
-                let msg = args
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("no message");
-                Ok(runtime_tools::ToolResult {
-                    output: format!("mcp_echo: {msg}"),
-                    success: true,
-                    metadata: None,
-                })
-            }
-        }
-
-        /// Fake provider: returns a tool call for "mcp_echo".
-        struct McpToolCallProvider;
-
-        impl LlmProvider for McpToolCallProvider {
-            fn chat_stream<'a>(
-                &'a self,
-                _conversation: &'a runtime_model::Conversation,
-            ) -> Pin<Box<dyn Future<Output = anyhow::Result<ChatStream>> + Send + 'a>> {
-                Box::pin(async {
-                    let stream: ChatStream =
-                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
-                            full_response: String::new(),
-                        })]));
-                    Ok(stream)
-                })
-            }
-            fn chat_once<'a>(
-                &'a self,
-                _prompt: &'a str,
-                _system: Option<&'a str>,
-            ) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + 'a>> {
-                Box::pin(async { Ok(String::new()) })
-            }
-            fn list_models<'a>(
-                &'a self,
-            ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>
-            {
-                Box::pin(async { Ok(Vec::new()) })
-            }
-            fn chat_stream_with_tools<'a>(
-                &'a self,
-                _conversation: &'a runtime_model::Conversation,
-                _tools: &'a [protocol_interface::ToolDef],
-            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
-            {
-                Box::pin(async {
-                    let stream: ChatStream = Box::pin(futures::stream::iter(vec![
-                        Ok(ChatEvent::Delta {
-                            text: "calling mcp tool".to_string(),
-                        }),
-                        Ok(ChatEvent::Done {
-                            full_response: "calling mcp tool".to_string(),
-                        }),
-                    ]));
-                    let tool_calls = vec![ToolCall::new(
-                        "tc-mcp-1".to_string(),
-                        "mcp_echo".to_string(),
-                        json!({"message": "hello from mcp"}),
-                    )];
-                    Ok((stream, Some(tool_calls)))
-                })
-            }
-            fn continue_with_tool_results<'a>(
-                &'a self,
-                _conversation: &'a runtime_model::Conversation,
-                tool_results: &'a [(String, String, String)],
-                _assistant_tool_calls: &'a [ToolCall],
-                _tools: &'a [protocol_interface::ToolDef],
-            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
-            {
-                // Echo back tool results as model text so final_content includes them.
-                let echoed: String = tool_results
-                    .iter()
-                    .map(|(_, name, output)| format!("- {name}: {output}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Box::pin(async move {
-                    let stream: ChatStream = Box::pin(futures::stream::iter(vec![
-                        Ok(ChatEvent::Delta { text: echoed }),
-                        Ok(ChatEvent::Done {
-                            full_response: String::new(),
-                        }),
-                    ]));
-                    Ok((stream, None))
-                })
-            }
-        }
+        use crate::testing::{FakeMcpEchoTool, FakeMcpToolCallProvider};
 
         let registry = std::sync::Arc::new({
             let reg = runtime_tools::ToolRegistry::new();
             runtime_tools::native::register_native_tools(&reg);
-            reg.register(McpEchoTool {
-                require_confirm: plan_requires_confirmation,
-            })
-            .unwrap();
+            let echo_tool = if plan_requires_confirmation {
+                FakeMcpEchoTool::with_confirm()
+            } else {
+                FakeMcpEchoTool::new()
+            };
+            reg.register(echo_tool).unwrap();
             reg
         });
 
@@ -1555,7 +1434,7 @@ mod tests {
         let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
 
         let client = std::sync::Arc::new(runtime_model::LlmClient::new_with_provider_for_test(
-            Box::new(McpToolCallProvider),
+            Box::new(FakeMcpToolCallProvider),
             "mock-model",
             protocol_interface::ProviderType::Openai,
         ));

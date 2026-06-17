@@ -21,3 +21,7 @@ pub use manager::{CoreRuntimeManager, RuntimeManagerContext};
 pub use runtime::{CoreRuntime, CoreRuntimeBuilder};
 pub use runtime_model::LlmClient;
 pub use session::SessionManager;
+
+/// Test utilities (gated behind `testing` feature or `#[cfg(test)]`).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

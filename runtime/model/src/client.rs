@@ -88,7 +88,7 @@ pub struct LlmClient {
 impl LlmClient {
     /// Construct a client from a provider implementation for cross-crate engine tests.
     #[doc(hidden)]
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, debug_assertions, feature = "testing"))]
     pub fn new_with_provider_for_test(
         provider: Box<dyn crate::provider::LlmProvider>,
         model: impl Into<String>,

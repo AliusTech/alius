@@ -10,6 +10,7 @@ description = "LLM client and agent for Alius runtime"
 default = ["std"]
 std = []
 embedded = []
+testing = ["protocol-interface/testing", "runtime-config/testing", "runtime-tools/testing"]
 
 [dependencies]
 tokio = { workspace = true }
