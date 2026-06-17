@@ -1931,10 +1931,8 @@ mod tests {
         let result = rt.close_session(&session_ref);
         assert!(result.is_ok());
 
-        // Closing again should return error (already closed)
-        let result2 = rt.close_session(&session_ref);
-        // Note: close() may succeed even if already closed (idempotent)
-        // or return an error depending on implementation
+        // Closing again should succeed (idempotent)
+        let _result2 = rt.close_session(&session_ref);
     }
 
     #[test]
