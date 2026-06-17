@@ -34,7 +34,7 @@
 ## Execution Modes
 
 - `"chat"` — Tool steps execute without confirmation prompts
-- `"plan"` — Tool steps that require confirmation (e.g., high-risk shell commands) will prompt the user
+- `"plan"` — Tool steps that require confirmation (e.g., high-risk shell commands) will fail closed with an error, since workflows have no interactive confirmation channel
 
 ## Variable Interpolation
 

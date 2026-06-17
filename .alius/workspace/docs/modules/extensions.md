@@ -90,7 +90,7 @@ Six host functions are registered under the `"alius_host"` Wasmtime namespace. E
 | `list_dir` | List directory entries relative to workspace | Workspace boundary enforcement |
 | `env_get` | Read an environment variable | Env var name validation; values are never logged in audit |
 | `shell` | Execute a shell command | Permission matcher gate; stdout/stderr are never logged in audit |
-| `fetch` | HTTP fetch | Deny-by-default; permission check runs but real HTTP execution is **not yet implemented** |
+| `fetch` | HTTP fetch | HTTPS-only; permission-gated; 10s timeout; 1MB response limit; audit logging |
 
 Each import returns a packed `(ptr, len)` i64 to WASM memory containing a JSON response with `{ok: true, data}` or `{ok: false, error, code}`.
 

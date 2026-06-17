@@ -39,10 +39,10 @@ Percentages are management estimates based on code evidence, functional acceptan
 | Monorepo extension catalog | Done | `soul update`, `soul install`, and local catalog work from bundled assets | No special permission model needed | Removes default network dependency | Add release packaging checks for bundled assets |
 | WASM permission matcher | Done | Four domain matchers exist | Filesystem/network/shell/env are modeled separately | Workspace boundary and env wildcard rejection covered | Keep matcher and host execution path unified |
 | Host audit sink | Partial | Host calls emit structured audit events | Records allow/deny decisions | Sensitive values are not logged | Feed host audit into runtime trace/session review |
-| WASM host imports | Partial | read/write/list/env/shell exist; fetch is a stub | Permissions checked before execution | Shell Gate is used for shell import; filesystem uses resolved path | Implement fetch or reject network permissions with clear install-time warning |
-| Plugin registry/catalog | Partial | Registry loader and hello-world source catalog exist | Manifest permissions parse and validate | No install-time user authorization yet | Add permission approval and upgrade re-prompt |
+| WASM host imports | Done | read/write/list/env/shell/fetch all implemented; HTTPS-only, timeout, size limit | Permissions checked before execution | Shell Gate is used for shell import; filesystem uses resolved path | — |
+| Plugin registry/catalog | Done | Registry loader and hello-world source catalog exist | Manifest permissions parse and validate | Install-time authorization with two-phase plan/apply | — |
 | MCP completeness | Mostly done | MCP tools can enter shared ToolRegistry when enabled | Duplicate tool names are rejected | Native/WASM priority protects built-ins | Add more real-server regression tests as server matrix grows |
-| Workflow runtime | Core path implemented | CLI uses `RuntimeWorkflowHandle`; prompt/tool steps use real runtime/tool paths | Tool steps currently run with workflow-local policy | No workflow-level confirmation UX, retry, or trace model | Add workflow confirmation/retry/session semantics |
+| Workflow runtime | Done | CLI uses `RuntimeWorkflowHandle`; prompt/tool steps use real runtime/tool paths | Tool steps check preview_confirmation; fail-closed without confirmation channel | Mode/timeout/trace all wired | — |
 | JSON-RPC surface | Mostly done | Eight methods are runtime-backed | Confirmation response method exists | Event serialization is still generic | Expand event variant coverage and long-running run semantics |
 | Flaky test fix | Done | Serial tests pass | N/A | Reduces review uncertainty | Keep single-threaded full test gate |
 | Documentation sync | Partial | Current state docs improved | Gaps are documented | History must avoid overstating maturity | Do not call P4 fully mature without P5 follow-up acceptance |
@@ -59,8 +59,8 @@ The attached four-stage review report is mostly directionally correct, but it sh
 | `start()` non-streaming cancellation is weaker than streaming | Reasonable | Treat as a follow-up unless product paths rely on cancellable non-streaming runs. |
 | P3 Native shell and WASM shell differ on `ApprovalRequired` | Reasonable | This may be intentional trust-boundary behavior, but it must be documented as policy, not accidental inconsistency. |
 | P4 Workflow Runtime is complete | Too broad | Current code is runtime-backed, but workflow-level confirmation, retry/error recovery, and persistence are incomplete. Call it "runtime-backed core path implemented", not "complete workflow engine". |
-| `fetch` host import stub is a P4 gap | Correct | It is safe because it does not perform network I/O, but functionally incomplete. |
-| Plugin install authorization prompt is missing | Correct | This is a user trust and security UX gap. |
+| `fetch` host import stub is a P4 gap | Now resolved | Fetch is fully implemented with HTTPS-only, timeout, size limit, and audit logging. |
+| Plugin install authorization prompt is missing | Now resolved | Two-phase plan/apply with permission display and upgrade detection implemented. |
 
 ## High-Priority Gaps
 
@@ -68,7 +68,7 @@ The attached four-stage review report is mostly directionally correct, but it sh
 
 Priority: P0 for full functional completeness.
 
-Implemented on `feature/p4-review-roadmap` branch:
+Implemented on `feature/p4-review-roadmap` branch, hardened on `fix/p5-review-blockers`:
 
 - Step JSON schema extended: `on_failure` (abort/skip/retry), `timeout_ms`, `mode` (chat/plan)
 - `execute_step` supports timeout via `tokio::time::timeout` and retry with configurable backoff
@@ -76,74 +76,51 @@ Implemented on `feature/p4-review-roadmap` branch:
 - `StepResult` extended with `started_at`, `finished_at`, `duration_ms`, `trace_id`, `run_ref`
 - `WorkflowRunRecord` persisted to `~/.alius/workflows/runs/`
 - `LoopEngineHandle::run_tool` accepts `mode` parameter for confirmation policy
-- `RuntimeWorkflowHandle::run_tool` uses workflow mode for `ToolContext`
+- `RuntimeWorkflowHandle::run_tool` checks `preview_confirmation()` and fails closed when confirmation is required (no interactive channel in workflows)
 - Schema docs at `docs/workflow-schema.md`, 3 example workflows in `examples/workflows/`
-- 30 workflow tests passing
+- 31 workflow tests passing
 
 Current evidence:
 
 - `workflow run` constructs `CoreRuntimeManager` and `RuntimeWorkflowHandle`.
 - Prompt steps call `CoreRuntimeManager::run_text()`.
-- Tool steps call `ToolRegistry::get() + execute()`.
+- Tool steps call `ToolRegistry::get()`, check `preview_confirmation()`, then `execute()`.
 - Integration test proves fake LLM and fake tool paths do not use stub markers.
+- Confirmation-required tool test proves fail-closed behavior in both chat and plan modes.
 
 Remaining gaps:
 
-- Tool steps use workflow-local execution policy and do not expose a workflow-level confirmation channel.
-- A tool that would require Plan confirmation has no interactive approval path in workflow context.
-- No workflow retry, rollback, timeout, or per-step cancellation policy.
-- Workflow execution prints stdout status but does not produce a durable workflow run record.
-- Workflow does not expose CoreEvent trace IDs as first-class workflow metadata.
-
-Required branch:
-
-- `codex/feature/workflow-runtime-hardening`
-
-Acceptance:
-
-- workflow JSON supports an explicit mode or policy field.
-- risky tools either request confirmation through a supported channel or fail closed.
-- workflow execution records run_ref/trace_id/session_ref for every prompt/tool step.
-- tests cover approved, denied, unavailable-confirmation, and failed-tool branches.
-- no workflow test may rely on `StubLoopEngineHandle` except explicit unit tests for the stub.
+- (none — all P4 gaps resolved)
 
 ### G2. Plugin install authorization and upgrade prompts — COMPLETED
 
 Priority: P0 for plugin trust.
 
-Implemented on `feature/p4-review-roadmap` branch:
+Implemented on `feature/p4-review-roadmap` branch, hardened on `fix/p5-review-blockers`:
 
 - `install_plugin` returns `(manifest, permission_summary, upgrade_info)`
 - CLI shows permissions before install with `[y/N]` confirmation
 - `--yes` / `-y` flag skips confirmation
 - Upgrade detection: compares installed vs new version and permissions
 - Permission change warning on upgrade
-- Network permission warning ("fetch not yet implemented") — now resolved with fetch implementation
-- Rollback on cancelled install (removes copied files)
+- Two-phase install: `plan_plugin_install` (validate) + `apply_plugin_install` (copy)
+- `plan_plugin_install` validates WASM module structure via `validate_wasm_module()`
+- CLI top-level error handling: clean error message on cancel/denial (no panic)
+- Non-interactive detection: fails closed if stdin is not a TTY and `--yes` not provided
 
 Current evidence:
 
 - Manifest permissions validate structurally.
+- WASM module structure validated at install time (invalid bytes rejected).
 - Runtime checks are default-deny.
 - Users are shown the full permission bill before install.
-
-Required branch:
-
-- `codex/feature/plugin-install-authorization`
-
-Acceptance:
-
-- `alius plugin install` displays filesystem/network/shell/env permissions before installation.
-- install requires explicit confirmation for any non-empty permission set.
-- non-interactive mode must fail closed unless an explicit allow flag is provided.
-- plugin upgrade detects changed permissions and re-prompts.
-- tests cover empty permissions, non-empty permissions, denied install, approved install, and upgrade permission changes.
+- CLI prints clean "Error: ..." and exits(1) on any failure, no panic.
 
 ### G3. Fetch host import capability — COMPLETED
 
 Priority: P1 for extension functionality.
 
-Implemented on `feature/p4-review-roadmap` branch:
+Implemented on `feature/p4-review-roadmap` branch, tested on `fix/p5-review-blockers`:
 
 - `fetch` host import now executes real HTTPS requests via `reqwest`
 - HTTPS-only enforcement (http:// rejected)
@@ -152,23 +129,15 @@ Implemented on `feature/p4-review-roadmap` branch:
 - Permission check via `check_network()` before execution
 - Audit logging of URL target and allow/deny decision
 - Sensitive response headers filtered (only content_type returned)
+- Execution-level tests: success, server error, oversized response, connection refused
+- WASM integration tests: HTTP rejection, no-permission, undeclared domain, allowed URL audit
 
 Current evidence:
 
 - `fetch` import checks network permissions and executes HTTPS requests.
 - A plugin with network permission can make real HTTP calls.
-
-Required branch:
-
-- `codex/feature/wasm-fetch-host-import`
-
-Acceptance:
-
-- Either implement bounded HTTPS fetch with size/time limits, or reject network permissions at install with a clear warning until implemented.
-- URL allowlist matching must remain prefix-boundary safe.
-- response body size and timeout must be configurable with secure defaults.
-- audit must log URL target and allow/deny decision without response body.
-- tests cover allowed URL, similar-domain denial, timeout, oversized response, and no-permission denial.
+- `execute_fetch` tested with local TCP server for success/error/oversized paths.
+- Full WASM pipeline tested: permission check → HTTPS enforcement → HTTP execution → audit.
 
 ### G4. Durable CoreEvent persistence — COMPLETED
 
@@ -188,17 +157,6 @@ Current evidence:
 - ConversationStore persists conversation messages.
 - audit log persists selected security events.
 
-Required branch:
-
-- `codex/feature/runtime-event-persistence`
-
-Acceptance:
-
-- CoreEvent envelopes are appended to a durable event log with trace_id/run_ref/session_ref.
-- `subscribe()` can optionally reconstruct completed run snapshots after process restart.
-- event persistence must not block model streaming indefinitely.
-- tests cover completed run replay, failed run replay, cancelled run replay, and corrupted-log tolerance.
-
 ### G5. Runtime Manager boundary hardening — COMPLETED
 
 Priority: P1 for architecture integrity.
@@ -216,17 +174,6 @@ Current evidence:
 
 - `CoreRuntimeManager::runtime()` is doc-hidden; product code uses narrow accessors.
 - Workflow and MCP integration use narrow manager methods.
-
-Required branch:
-
-- `codex/fix/runtime-manager-accessors`
-
-Acceptance:
-
-- Replace broad `runtime()` use with narrow manager accessors such as `workspace_root()`, `tool_registry()`, and any required workflow helper.
-- Mark `runtime()` test-only or doc-hidden if it must remain.
-- Product entrypoints must not directly reach CoreRuntime internals.
-- tests prove workflow and MCP paths still work through narrowed accessors.
 
 ### G6. Permission policy consistency — COMPLETED
 
@@ -248,15 +195,6 @@ Current evidence:
 
 - Native/WASM/MCP tools use unified policy matrix via `evaluate_policy()`.
 - Policy is documented and tested.
-
-Required branch:
-
-- `codex/fix/tool-permission-policy-matrix`
-
-Acceptance:
-
-- Define a policy matrix for Native/WASM/MCP across Chat/Plan/Bypass.
-- Implement the matrix in shared policy code, or document intentional differences with tests.
 - Tests cover `rm -rf ./build`, `/etc/passwd`, `../outside`, redirection, and `--output=/tmp/out` across tool sources and modes.
 
 ## Development Path

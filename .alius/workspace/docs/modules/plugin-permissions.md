@@ -255,7 +255,7 @@ on both paths.
 
 - `read_file`, `write_file`, `list_dir`, `env_get`, `shell`, `fetch` imports registered in the WASM linker.
 - Each import routes through the permission matcher before reaching the OS.
-- `fetch` is deny-by-default (real HTTP execution not yet wired; see Remaining gaps).
+- `fetch` enforces HTTPS-only, permission-gated, 10s timeout, 1MB response limit, audit logging.
 
 **Implemented** (host audit sink) — DONE:
 
@@ -265,7 +265,5 @@ on both paths.
 
 **Remaining gaps**:
 
-- `fetch` real HTTP execution not yet implemented (currently deny-by-default).
-- Install-time authorization prompt (render permission list and ask user to confirm) is not yet implemented.
-- Upgrade re-prompt for plugins with changed permissions is not yet implemented.
 - Audit records feeding into the trace system for per-session review is not yet implemented.
+- Workflow tool steps fail-closed when `preview_confirmation()` returns true (no interactive confirmation channel in workflows).

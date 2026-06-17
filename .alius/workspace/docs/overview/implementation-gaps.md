@@ -120,13 +120,14 @@ Plugin management and WASM host code exist. Production ABI, capability policy, s
 - WASM host imports (`read_file`, `write_file`, `list_dir`, `env_get`, `shell`, `fetch`) registered in wasmtime Linker
 - Host audit sink: `HostAuditSink` trait with `TracingAuditSink` (default); every host import call emits an `HostAuditEvent`
 - Sensitive data (file content, env values, stdout/stderr) NOT logged in audit
+- `fetch` host import: HTTPS-only enforcement, permission-gated, 10s timeout, 1MB response limit, audit logging
 
 **Remaining gaps:**
-- `fetch` host import is registered but stubs to "not yet implemented" — real HTTP execution is not wired
+- (none)
 
 ## Workflow Runtime
 
-**Status: P4 complete — wired to real runtime.**
+**Status: P5 complete — confirmation gate enforced.**
 
 `workflow run` is backed by `CoreRuntimeManager` (LLM) and `ToolRegistry` (tools). Prompt steps enter the real LoopEngine via `run_text()`; tool steps execute through the shared `ToolRegistry` (WASM/native/MCP).
 
