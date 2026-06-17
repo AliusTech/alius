@@ -35,11 +35,9 @@ impl AliusTool for Shell {
         PermissionLevel::Execute
     }
 
-    fn preview_confirmation(&self, args: &Value, mode: RuntimeMode) -> bool {
-        // Plan mode + Shell Gate "ApprovalRequired" (High/Critical risk) → pause.
-        if mode != RuntimeMode::Plan {
-            return false;
-        }
+    fn preview_confirmation(&self, args: &Value, _mode: RuntimeMode) -> bool {
+        // Both Chat and Plan modes: Shell Gate "ApprovalRequired" (High/Critical risk) → pause.
+        // This matches the policy matrix: Native Chat High = Confirm, Native Plan High = Confirm.
         let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
         if command.is_empty() {
             return false;

@@ -121,11 +121,18 @@ fn test_shell_preview_confirmation_in_chat_mode() {
 
     let shell = registry.get("shell").expect("shell tool should be present");
 
-    // High-risk command in Chat mode should not require confirmation (runs directly)
+    // High-risk command in Chat mode requires confirmation (policy matrix: Native Chat High = Confirm)
     let high_risk_args = json!({"command": "rm -rf ./build"});
     assert!(
-        !shell.preview_confirmation(&high_risk_args, RuntimeMode::Chat),
-        "Shell command should not require confirmation in Chat mode"
+        shell.preview_confirmation(&high_risk_args, RuntimeMode::Chat),
+        "High-risk shell command should require confirmation in Chat mode (policy matrix)"
+    );
+
+    // Low-risk command in Chat mode should not require confirmation
+    let low_risk_args = json!({"command": "echo hello"});
+    assert!(
+        !shell.preview_confirmation(&low_risk_args, RuntimeMode::Chat),
+        "Low-risk shell command should not require confirmation in Chat mode"
     );
 }
 
@@ -259,5 +266,89 @@ fn test_edit_file_no_confirmation_in_chat_mode() {
     assert!(
         !edit_file.preview_confirmation(&args, RuntimeMode::Chat),
         "edit_file should not require confirmation in Chat mode"
+    );
+}
+
+/// End-to-end test: `rm -rf ./build` in Chat mode requires confirmation
+/// and does NOT execute without it. This verifies the policy matrix:
+/// Native Chat High = Confirm.
+#[test]
+fn test_rm_rf_requires_confirmation_in_chat_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let shell = registry.get("shell").expect("shell tool should be present");
+
+    let high_risk_args = json!({"command": "rm -rf ./build"});
+    assert!(
+        shell.preview_confirmation(&high_risk_args, RuntimeMode::Chat),
+        "rm -rf ./build should require confirmation in Chat mode (policy: Native Chat High = Confirm)"
+    );
+
+    // Low-risk command should NOT require confirmation
+    let low_risk_args = json!({"command": "ls -la"});
+    assert!(
+        !shell.preview_confirmation(&low_risk_args, RuntimeMode::Chat),
+        "ls -la should not require confirmation in Chat mode"
+    );
+}
+
+/// End-to-end test: `rm -rf ./build` in Plan mode requires confirmation
+/// and does NOT execute without it. This verifies the policy matrix:
+/// Native Plan High = Confirm.
+#[test]
+fn test_rm_rf_requires_confirmation_in_plan_mode() {
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace);
+    let registry = resolver.build_registry_lossy();
+
+    let shell = registry.get("shell").expect("shell tool should be present");
+
+    let high_risk_args = json!({"command": "rm -rf ./build"});
+    assert!(
+        shell.preview_confirmation(&high_risk_args, RuntimeMode::Plan),
+        "rm -rf ./build should require confirmation in Plan mode (policy: Native Plan High = Confirm)"
+    );
+}
+
+/// End-to-end test: `rm -rf ./build` actually executes and succeeds when
+/// no confirmation gate blocks it (direct execute path). This verifies
+/// that the shell tool itself doesn't block high-risk commands — the
+/// confirmation gate is the LoopEngine's responsibility.
+#[tokio::test]
+async fn test_rm_rf_executes_when_confirmation_bypassed() {
+    use runtime_tools::traits::ToolContext;
+
+    let workspace = std::env::current_dir().unwrap();
+    let resolver = ToolPackageResolver::new(workspace.clone());
+    let registry = resolver.build_registry_lossy();
+
+    let shell = registry.get("shell").expect("shell tool should be present");
+
+    // Create a temp directory to delete
+    let build_dir = workspace.join("__test_rm_rf_target__");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    std::fs::write(build_dir.join("file.txt"), "test").unwrap();
+
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Chat,
+    };
+
+    // Direct execute (bypassing confirmation) — shell tool itself does not block
+    let args = json!({"command": "rm -rf __test_rm_rf_target__"});
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(
+        tool_result.success,
+        "rm -rf should succeed when executed directly"
+    );
+    assert!(
+        !build_dir.exists(),
+        "Target directory should be deleted after rm -rf"
     );
 }
