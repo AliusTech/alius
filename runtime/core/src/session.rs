@@ -796,4 +796,201 @@ mod tests {
         // Verify receiver got the approval signal
         assert!(rx.await.unwrap());
     }
+
+    // ===== Durable CoreEvent persistence tests =====
+
+    /// Helper: create a SessionManager with a LogWriter event sink in a temp directory.
+    fn mgr_with_sink(tmp: &std::path::Path) -> SessionManager {
+        let log_dir = tmp.join(".alius").join("logs");
+        let writer = crate::logging::LogWriter::new(&log_dir).unwrap();
+        let mut mgr = SessionManager::new(WorkspaceRef::new(tmp));
+        mgr.set_event_sink(Arc::new(Mutex::new(writer)));
+        mgr
+    }
+
+    #[tokio::test]
+    async fn restart_replay_completed_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_ref;
+        let trace_id;
+
+        // Phase 1: create manager, session, run, push events.
+        {
+            let mgr = mgr_with_sink(tmp.path());
+            let session = mgr.create_session();
+            let (_turn, rr, tid) = mgr.create_turn(&session.session_ref).unwrap();
+            run_ref = rr;
+            trace_id = tid;
+
+            let event = CoreEvent::new(
+                run_ref.clone(),
+                trace_id.clone(),
+                1,
+                protocol_interface::core::CoreEventKind::FinalResult,
+                protocol_interface::core::CoreEventPayload::Final {
+                    content: "completed output".to_string(),
+                    success: true,
+                },
+            );
+            mgr.push_event(&run_ref, event).unwrap();
+        }
+
+        // Phase 2: fresh manager over same workspace — read events from disk.
+        {
+            let mgr = SessionManager::new(WorkspaceRef::new(tmp.path()));
+            let events = mgr.get_events(&run_ref).unwrap();
+            assert_eq!(events.len(), 1);
+            match &events[0].payload {
+                protocol_interface::core::CoreEventPayload::Final { content, success } => {
+                    assert_eq!(content, "completed output");
+                    assert!(*success);
+                }
+                other => panic!("expected Final payload, got {:?}", other),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_replay_failed_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_ref;
+        let trace_id;
+
+        {
+            let mgr = mgr_with_sink(tmp.path());
+            let session = mgr.create_session();
+            let (_turn, rr, tid) = mgr.create_turn(&session.session_ref).unwrap();
+            run_ref = rr;
+            trace_id = tid;
+
+            let event = CoreEvent::new(
+                run_ref.clone(),
+                trace_id.clone(),
+                1,
+                protocol_interface::core::CoreEventKind::FinalResult,
+                protocol_interface::core::CoreEventPayload::Final {
+                    content: "something failed".to_string(),
+                    success: false,
+                },
+            );
+            mgr.push_event(&run_ref, event).unwrap();
+        }
+
+        {
+            let mgr = SessionManager::new(WorkspaceRef::new(tmp.path()));
+            let events = mgr.get_events(&run_ref).unwrap();
+            assert_eq!(events.len(), 1);
+            match &events[0].payload {
+                protocol_interface::core::CoreEventPayload::Final { content, success } => {
+                    assert_eq!(content, "something failed");
+                    assert!(!(*success));
+                }
+                other => panic!("expected Final payload, got {:?}", other),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_replay_cancelled_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_ref;
+        let trace_id;
+
+        {
+            let mgr = mgr_with_sink(tmp.path());
+            let session = mgr.create_session();
+            let (_turn, rr, tid) = mgr.create_turn(&session.session_ref).unwrap();
+            run_ref = rr;
+            trace_id = tid;
+
+            // Write a started event (cancelled runs may have partial events).
+            let event = CoreEvent::new(
+                run_ref.clone(),
+                trace_id.clone(),
+                1,
+                protocol_interface::core::CoreEventKind::ToolCallStarted,
+                protocol_interface::core::CoreEventPayload::Text {
+                    text: "shell: ls".to_string(),
+                },
+            );
+            mgr.push_event(&run_ref, event).unwrap();
+        }
+
+        {
+            let mgr = SessionManager::new(WorkspaceRef::new(tmp.path()));
+            let events = mgr.get_events(&run_ref).unwrap();
+            assert_eq!(events.len(), 1);
+            match &events[0].payload {
+                protocol_interface::core::CoreEventPayload::Text { text } => {
+                    assert_eq!(text, "shell: ls");
+                }
+                other => panic!("expected Text payload, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn corrupted_jsonl_lines_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_dir = tmp.path().join(".alius").join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        let run_ref = protocol_interface::RunRef::new();
+        let trace_id = protocol_interface::TraceId::new();
+
+        // Write mixed valid and corrupted lines directly to events.jsonl.
+        let events_path = log_dir.join("events.jsonl");
+        let valid_event = CoreEvent::new(
+            run_ref.clone(),
+            trace_id.clone(),
+            1,
+            protocol_interface::core::CoreEventKind::FinalResult,
+            protocol_interface::core::CoreEventPayload::Final {
+                content: "valid event".to_string(),
+                success: true,
+            },
+        );
+        let valid_line = serde_json::to_string(&valid_event).unwrap();
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&events_path)
+            .unwrap();
+        use std::io::Write;
+        // Corrupted line (not valid JSON)
+        writeln!(file, "{{{{not valid json").unwrap();
+        // Valid line
+        writeln!(file, "{}", valid_line).unwrap();
+        // Another corrupted line
+        writeln!(file, "just some random text").unwrap();
+        // Another valid line with different run_ref (should not be returned)
+        let other_run = protocol_interface::RunRef::new();
+        let other_event = CoreEvent::new(
+            other_run.clone(),
+            trace_id.clone(),
+            2,
+            protocol_interface::core::CoreEventKind::FinalResult,
+            protocol_interface::core::CoreEventPayload::Final {
+                content: "other run".to_string(),
+                success: true,
+            },
+        );
+        writeln!(file, "{}", serde_json::to_string(&other_event).unwrap()).unwrap();
+        // Yet another corrupted line (empty)
+        writeln!(file).unwrap();
+        drop(file);
+
+        // Fresh manager reads back — corrupted lines are skipped, valid events returned.
+        let mgr = SessionManager::new(WorkspaceRef::new(tmp.path()));
+        let events = mgr.get_events(&run_ref).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0].payload {
+            protocol_interface::core::CoreEventPayload::Final { content, success } => {
+                assert_eq!(content, "valid event");
+                assert!(*success);
+            }
+            other => panic!("expected Final payload, got {:?}", other),
+        }
+    }
 }
