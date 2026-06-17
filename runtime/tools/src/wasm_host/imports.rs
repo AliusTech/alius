@@ -6,7 +6,7 @@
 //! - `list_dir` — list directory entries relative to workspace
 //! - `env_get` — read an environment variable
 //! - `shell` — execute a shell command (must also pass Shell Gate)
-//! - `fetch` — HTTP fetch (deny-by-default, not yet implemented)
+//! - `fetch` — HTTPS-only HTTP fetch (deny-by-default, permission-gated)
 //!
 //! Each import follows the pipeline:
 //! 1. Parse WASM memory parameters (JSON)
@@ -109,6 +109,69 @@ fn extract_string(
         bail!("WASM memory out of bounds");
     }
     Ok(std::str::from_utf8(&data[ptr..ptr + len])?.to_string())
+}
+
+/// Validate a fetch URL against permission and protocol rules.
+///
+/// Returns Ok(()) if the URL is allowed, Err(reason) if denied.
+/// This is extracted from the fetch import closure for testability.
+fn validate_fetch_url(url: &str, permissions: &ResolvedPluginPermissions) -> Result<(), String> {
+    // HTTPS-only enforcement (check first, before permission matching)
+    if !url.starts_with("https://") {
+        return Err("only https:// URLs are allowed".to_string());
+    }
+
+    // Permission check
+    let decision = permissions.check_network(url);
+    if !decision.is_allowed() {
+        let reason = match &decision {
+            PermissionDecision::Deny { reason } => reason.clone(),
+            _ => "denied".to_string(),
+        };
+        return Err(reason);
+    }
+
+    Ok(())
+}
+
+const FETCH_MAX_BYTES: usize = 1_048_576; // 1 MB
+
+/// Execute an HTTPS fetch with timeout and size limits.
+///
+/// Returns the response JSON on success, or an error string on failure.
+/// This is extracted from the fetch import closure for testability.
+async fn execute_fetch(url: &str) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("client build: {}", e))?;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
+
+    let status = resp.status().as_u16();
+    let content_length = resp.content_length().unwrap_or(0);
+    if content_length > FETCH_MAX_BYTES as u64 {
+        return Err(format!(
+            "response too large: {} bytes (max 1MB)",
+            content_length
+        ));
+    }
+
+    let body = resp.text().await.map_err(|e| format!("body read: {}", e))?;
+
+    if body.len() > FETCH_MAX_BYTES {
+        return Err("response body exceeds 1MB limit".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "status": status,
+        "content_type": "text/plain",
+        "body": body,
+    }))
 }
 
 /// Build a wasmtime Linker with all host imports registered.
@@ -510,68 +573,31 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
 
             let state = caller.data();
 
-            // Permission check
-            let decision = state.permissions.check_network(&url);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
+            // Validate URL (permission + protocol)
+            if let Err(reason) = validate_fetch_url(&url, &state.permissions) {
                 state.emit_audit("fetch", &url, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
+                let code = if reason.contains("not permitted") || reason.contains("no network") {
+                    "permission_denied"
+                } else {
+                    "denied"
+                };
+                return write_json_result(&memory, &mut caller, &err_response(code, &reason));
             }
 
-            // HTTPS-only enforcement
-            if !url.starts_with("https://") {
-                state.emit_audit("fetch", &url, false, "only https:// URLs are allowed");
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("denied", "only https:// URLs are allowed"),
-                );
-            }
-
-            // Execute HTTP request synchronously via tokio runtime handle
-            let rt_handle = tokio::runtime::Handle::current();
-            let result = rt_handle.block_on(async {
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(10))
+            // Execute HTTP request synchronously. We cannot use
+            // Handle::block_on() here because WASM host functions may be called
+            // from within an existing tokio runtime (where block_on panics).
+            // Instead, spawn a dedicated thread with its own runtime.
+            let url_clone = url.clone();
+            let result = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
                     .build()
-                    .map_err(|e| format!("client build: {}", e))?;
-
-                let resp = client
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| format!("request failed: {}", e))?;
-
-                let status = resp.status().as_u16();
-                let content_length = resp.content_length().unwrap_or(0);
-                if content_length > 1_048_576 {
-                    return Err(format!(
-                        "response too large: {} bytes (max 1MB)",
-                        content_length
-                    ));
-                }
-
-                let body = resp.text().await.map_err(|e| format!("body read: {}", e))?;
-
-                if body.len() > 1_048_576 {
-                    return Err("response body exceeds 1MB limit".to_string());
-                }
-
-                // Filter sensitive headers
-                let content_type = "text/plain"; // simplified
-                Ok(serde_json::json!({
-                    "status": status,
-                    "content_type": content_type,
-                    "body": body,
-                }))
-            });
+                    .map_err(|e| format!("runtime: {}", e))?;
+                rt.block_on(execute_fetch(&url_clone))
+            })
+            .join()
+            .unwrap_or_else(|_| Err("fetch thread panicked".to_string()));
 
             match result {
                 Ok(json) => {
@@ -1003,6 +1029,434 @@ mod tests {
         let audit_events = events.lock().unwrap();
         assert!(!audit_events.is_empty());
         assert!(!audit_events[0].allowed);
+
+        cleanup_workspace(&ws);
+    }
+
+    // ===== Fetch validation tests =====
+
+    #[test]
+    fn test_fetch_no_network_permission_denied() {
+        let perms = ResolvedPluginPermissions::default();
+        let result = validate_fetch_url("https://api.example.com/data", &perms);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no network permissions"));
+    }
+
+    #[test]
+    fn test_fetch_http_url_denied() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let result = validate_fetch_url("http://api.example.com/data", &perms);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only https://"));
+    }
+
+    #[test]
+    fn test_fetch_similar_domain_denied() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let result = validate_fetch_url("https://api.example.com.evil.com/data", &perms);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not permitted"));
+    }
+
+    #[test]
+    fn test_fetch_allowed_url_passes_validation() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let result = validate_fetch_url("https://api.example.com/data", &perms);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fetch_exact_url_passes_validation() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com/v1".to_string()],
+            ..Default::default()
+        };
+        let result = validate_fetch_url("https://api.example.com/v1", &perms);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fetch_undeclared_domain_denied() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let result = validate_fetch_url("https://other.example.com/data", &perms);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not permitted"));
+    }
+
+    // ===== execute_fetch execution-level tests =====
+
+    /// Start a local TCP listener that responds with a canned HTTP response.
+    /// Returns the URL to connect to (http://127.0.0.1:{port}).
+    /// The returned JoinHandle must be kept alive to prevent the server from
+    /// being dropped before the test completes.
+    async fn start_test_server(response: String) -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{}", port);
+
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        // Give the spawned task a moment to start accepting.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        (handle, url)
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_success() {
+        let body = r#"{"status":"ok"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (_handle, url) = start_test_server(response).await;
+
+        let result = execute_fetch(&url).await;
+        assert!(result.is_ok(), "Expected success — got: {:?}", result.err());
+        let json = result.unwrap();
+        assert_eq!(json["status"], 200);
+        assert_eq!(json["body"].as_str().unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_server_error() {
+        let body = "Internal Server Error";
+        let response = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (_handle, url) = start_test_server(response).await;
+
+        let result = execute_fetch(&url).await;
+        // execute_fetch returns Ok with the status code, not an Err
+        assert!(result.is_ok());
+        let json = result.unwrap();
+        assert_eq!(json["status"], 500);
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_oversized_content_length() {
+        // Respond with Content-Length exceeding 1MB
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            FETCH_MAX_BYTES + 1
+        );
+        let (_handle, url) = start_test_server(response).await;
+
+        let result = execute_fetch(&url).await;
+        assert!(result.is_err(), "Should reject oversized response");
+        assert!(result.unwrap_err().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_connection_refused() {
+        // Use a non-routable port (nothing listening)
+        let result = execute_fetch("http://127.0.0.1:1").await;
+        assert!(result.is_err(), "Should fail on connection refused");
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_timeout() {
+        // Start a server that accepts but never responds (triggers timeout)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{}", port);
+
+        let _handle = tokio::spawn(async move {
+            // Accept the connection but never send a response
+            if let Ok((_stream, _)) = listener.accept().await {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let result = execute_fetch(&url).await;
+        assert!(result.is_err(), "Should fail on timeout");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("request failed") || err.contains("timeout") || err.contains("timed out"),
+            "Error should indicate timeout — got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_fetch_oversized_body() {
+        // Start a server that returns a body exceeding 1MB
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{}", port);
+
+        let _handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                // Return a body larger than FETCH_MAX_BYTES (1MB)
+                let big_body = "x".repeat(FETCH_MAX_BYTES + 100);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    big_body.len(),
+                    big_body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let result = execute_fetch(&url).await;
+        assert!(result.is_err(), "Should reject oversized body");
+        assert!(
+            result.unwrap_err().contains("1MB"),
+            "Error should mention 1MB limit"
+        );
+    }
+
+    // ===== Fetch host import integration tests =====
+
+    /// Helper: WAT module that imports all 6 host functions and exports
+    /// `call_fetch` which calls the fetch import with a JSON url parameter
+    /// written at memory offset 0.
+    fn make_fetch_wasm(url_json: &str) -> Vec<u8> {
+        let mut wat = String::from(
+            r#"
+            (module
+                (import "alius_host" "read_file" (func $read_file (param i32 i32) (result i64)))
+                (import "alius_host" "write_file" (func $write_file (param i32 i32) (result i64)))
+                (import "alius_host" "list_dir" (func $list_dir (param i32 i32) (result i64)))
+                (import "alius_host" "env_get" (func $env_get (param i32 i32) (result i64)))
+                (import "alius_host" "shell" (func $shell (param i32 i32) (result i64)))
+                (import "alius_host" "fetch" (func $fetch (param i32 i32) (result i64)))
+                (memory (export "memory") 1)
+                (func $call_fetch (result i64)
+            "#,
+        );
+        for (i, b) in url_json.bytes().enumerate() {
+            wat.push_str(&format!(
+                "                    (i32.store8 (i32.const {}) (i32.const {}))\n",
+                i, b
+            ));
+        }
+        wat.push_str(&format!(
+            "                    (call $fetch (i32.const 0) (i32.const {}))\n",
+            url_json.len()
+        ));
+        wat.push_str(
+            r#"
+                )
+                (export "call_fetch" (func $call_fetch))
+            )
+        "#,
+        );
+        wat::parse_str(&wat).unwrap()
+    }
+
+    /// Execute the fetch WASM import and return the parsed JSON result.
+    fn execute_fetch_wasm(
+        permissions: ResolvedPluginPermissions,
+        url_json: &str,
+    ) -> serde_json::Value {
+        let ws = make_test_workspace();
+        let (sink, _events) = RecordingSink::new();
+        let state = WasmHostState::new(
+            permissions,
+            "test-plugin".to_string(),
+            ws.clone(),
+            "tr-fetch".to_string(),
+        )
+        .with_audit(Arc::new(sink));
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::from_binary(&engine, &make_fetch_wasm(url_json)).unwrap();
+        let linker = build_linker(&engine).unwrap();
+        let mut store = wasmtime::Store::new(&engine, state);
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        let call_fn = instance
+            .get_typed_func::<(), i64>(&mut store, "call_fetch")
+            .unwrap();
+        let result = call_fn.call(&mut store, ()).unwrap();
+
+        let ptr = (result >> 32) as usize;
+        let len = (result & 0xFFFFFFFF) as usize;
+        assert!(len > 0, "fetch should return a result");
+
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let data = memory.data(&store);
+        let json_bytes = &data[ptr..ptr + len];
+        let json_str = std::str::from_utf8(&json_bytes[4..]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        cleanup_workspace(&ws);
+        v
+    }
+
+    #[test]
+    fn test_fetch_import_rejects_http_url() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:http://example.com".to_string()],
+            ..Default::default()
+        };
+        let url_json = r#"{"url":"http://example.com/data"}"#;
+        let v = execute_fetch_wasm(perms, url_json);
+        assert_eq!(v["ok"], json!(false), "HTTP URL should be rejected");
+        assert_eq!(v["code"], "denied");
+        assert!(v["error"].as_str().unwrap().contains("only https://"));
+    }
+
+    #[test]
+    fn test_fetch_import_rejects_no_permission() {
+        let perms = ResolvedPluginPermissions::default(); // no network perms
+        let url_json = r#"{"url":"https://example.com/data"}"#;
+        let v = execute_fetch_wasm(perms, url_json);
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], "permission_denied");
+    }
+
+    #[test]
+    fn test_fetch_import_rejects_undeclared_domain() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let url_json = r#"{"url":"https://evil.com/steal"}"#;
+        let v = execute_fetch_wasm(perms, url_json);
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], "permission_denied");
+    }
+
+    // These tests use #[tokio::test] because the fetch WASM host import calls
+    // tokio::runtime::Handle::current().block_on() internally, which requires
+    // an active tokio runtime.
+
+    #[tokio::test]
+    async fn test_fetch_import_allowed_url_attempts_request() {
+        // URL passes validation (HTTPS + allowed domain), but the actual HTTP
+        // request will fail because the host doesn't exist. This verifies the
+        // full pipeline: permission check → HTTPS enforcement → HTTP execution.
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let url_json = r#"{"url":"https://api.example.com/data"}"#;
+        let v = execute_fetch_wasm(perms, url_json);
+        // Should NOT be a permission/protocol rejection
+        assert_ne!(v["code"], json!("permission_denied"));
+        assert_ne!(v["code"], json!("denied"));
+        // Will be a fetch_error because the host doesn't resolve
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], json!("fetch_error"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_import_audit_on_allowed_url() {
+        let ws = make_test_workspace();
+        let (sink, events) = RecordingSink::new();
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let state = WasmHostState::new(
+            perms,
+            "test-plugin".to_string(),
+            ws.clone(),
+            "tr-fetch-audit".to_string(),
+        )
+        .with_audit(Arc::new(sink));
+
+        let engine = wasmtime::Engine::default();
+        let url_json = r#"{"url":"https://api.example.com/data"}"#;
+        let module = wasmtime::Module::from_binary(&engine, &make_fetch_wasm(url_json)).unwrap();
+        let linker = build_linker(&engine).unwrap();
+        let mut store = wasmtime::Store::new(&engine, state);
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        let call_fn = instance
+            .get_typed_func::<(), i64>(&mut store, "call_fetch")
+            .unwrap();
+        let _result = call_fn.call(&mut store, ()).unwrap();
+
+        // Verify audit was emitted (fetch attempt logged even on network failure)
+        let audit_events = events.lock().unwrap();
+        assert!(!audit_events.is_empty(), "fetch should emit an audit event");
+        assert_eq!(audit_events[0].action, "fetch");
+        assert_eq!(audit_events[0].target, "https://api.example.com/data");
+
+        cleanup_workspace(&ws);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_import_audit_on_network_error() {
+        let ws = make_test_workspace();
+        let (sink, events) = RecordingSink::new();
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let state = WasmHostState::new(
+            perms,
+            "test-plugin".to_string(),
+            ws.clone(),
+            "tr-fetch-error-audit".to_string(),
+        )
+        .with_audit(Arc::new(sink));
+
+        let engine = wasmtime::Engine::default();
+        let url_json = r#"{"url":"https://api.example.com/data"}"#;
+        let module = wasmtime::Module::from_binary(&engine, &make_fetch_wasm(url_json)).unwrap();
+        let linker = build_linker(&engine).unwrap();
+        let mut store = wasmtime::Store::new(&engine, state);
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        let call_fn = instance
+            .get_typed_func::<(), i64>(&mut store, "call_fetch")
+            .unwrap();
+        let result = call_fn.call(&mut store, ()).unwrap();
+
+        // Parse the result — should be an error
+        let ptr = (result >> 32) as usize;
+        let len = (result & 0xFFFFFFFF) as usize;
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let data = memory.data(&store);
+        let json_bytes = &data[ptr..ptr + len];
+        let json_str = std::str::from_utf8(&json_bytes[4..]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(v["ok"], json!(false), "Network error should return error");
+        assert_eq!(v["code"], "fetch_error");
+
+        // Verify audit was emitted with allowed=false (network failure is logged as denied)
+        let audit_events = events.lock().unwrap();
+        assert!(
+            audit_events
+                .iter()
+                .any(|e| e.action == "fetch" && !e.allowed),
+            "Network error should emit audit event with allowed=false — got: {:?}",
+            audit_events
+                .iter()
+                .map(|e| (&e.action, e.allowed, &e.reason))
+                .collect::<Vec<_>>()
+        );
 
         cleanup_workspace(&ws);
     }
