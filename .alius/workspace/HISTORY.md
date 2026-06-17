@@ -22,6 +22,10 @@ All entries use the format:
 [2026-06-17 18:00]: entrypoints/cli/tests/ - Created 30 CLI integration tests (parse, config, extensions, run)
 [2026-06-17 18:00]: docs/01-current-state.md - Updated with testing infrastructure status
 [2026-06-17 18:00]: docs/overview/implementation-gaps.md - Added testing infrastructure section
+[2026-06-17 18:30]: entrypoints/jsonrpc/src/lib.rs - Added 7 tests: run_confirm_tool contract, malformed request, nonexistent run_ref
+[2026-06-17 18:30]: runtime/tools/tests/shell_gate_integration.rs - Added 5 tests: low-risk success, bypass mode, authorization
+[2026-06-17 18:30]: runtime/core/src/runtime.rs - Added 3 tests: close_session, clear_conversation, nonexistent session
+[2026-06-17 18:30]: entrypoints/cli/src/workflow/mod.rs - Added 5 tests: load_workflow from disk, load_workflows directory
 
 ## 2026-06-17
 
