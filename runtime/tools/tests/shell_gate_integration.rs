@@ -519,3 +519,85 @@ fn test_authorize_echo_internal_allows() {
         decision
     );
 }
+
+// ============================================================================
+// Medium-risk tests
+// ============================================================================
+
+#[test]
+fn test_authorize_git_status_is_low_risk() {
+    let req = make_request("/workspace", "/workspace", "git status");
+    let config = ShellGateConfig::default();
+    let (decision, risk) = authorize(&req, &config);
+    assert!(
+        matches!(risk, runtime_tools::shell_gate::inspector::RiskLevel::Low),
+        "git status should be low risk, got: {:?}",
+        risk
+    );
+    assert!(
+        matches!(decision, ShellGateDecision::Allow),
+        "git status inside workspace should be allowed, got: {:?}",
+        decision
+    );
+}
+
+#[test]
+fn test_authorize_git_push_is_medium_risk() {
+    let req = make_request("/workspace", "/workspace", "git push");
+    let config = ShellGateConfig::default();
+    let (decision, risk) = authorize(&req, &config);
+    assert!(
+        matches!(
+            risk,
+            runtime_tools::shell_gate::inspector::RiskLevel::Medium
+        ),
+        "git push should be medium risk, got: {:?}",
+        risk
+    );
+    assert!(
+        matches!(decision, ShellGateDecision::Allow),
+        "git push inside workspace should be allowed, got: {:?}",
+        decision
+    );
+}
+
+#[test]
+fn test_authorize_mkdir_internal_is_medium_risk() {
+    let req = make_request("/workspace", "/workspace", "mkdir newdir");
+    let config = ShellGateConfig::default();
+    let (decision, risk) = authorize(&req, &config);
+    assert!(
+        matches!(
+            risk,
+            runtime_tools::shell_gate::inspector::RiskLevel::Medium
+        ),
+        "mkdir should be medium risk, got: {:?}",
+        risk
+    );
+    assert!(
+        matches!(decision, ShellGateDecision::Allow),
+        "mkdir inside workspace should be allowed, got: {:?}",
+        decision
+    );
+}
+
+#[tokio::test]
+async fn test_execute_git_status_succeeds_in_chat() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Chat,
+    };
+    let args = json!({"command": "git status"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(
+        tool_result.success,
+        "git status should succeed in Chat mode"
+    );
+}

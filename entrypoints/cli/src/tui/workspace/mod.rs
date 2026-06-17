@@ -121,6 +121,40 @@ mod tests {
     }
 
     #[test]
+    fn backtab_toggles_plan_to_bypass_mode() {
+        let mut state = WorkspaceState::new(Vec::new());
+        assert_eq!(state.mode, InteractionMode::Plan);
+
+        let action = state.handle_key(key(KeyCode::BackTab), &[]);
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.mode, InteractionMode::Bypass);
+    }
+
+    #[test]
+    fn backtab_toggles_bypass_to_plan_mode() {
+        let mut state = WorkspaceState::new(Vec::new());
+        // First toggle to Bypass
+        state.handle_key(key(KeyCode::BackTab), &[]);
+        assert_eq!(state.mode, InteractionMode::Bypass);
+
+        // Toggle back to Plan
+        let action = state.handle_key(key(KeyCode::BackTab), &[]);
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.mode, InteractionMode::Plan);
+    }
+
+    #[test]
+    fn mode_toggle_preserves_input_text() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, "hello world");
+        assert_eq!(state.input.value(), "hello world");
+
+        state.handle_key(key(KeyCode::BackTab), &[]);
+        assert_eq!(state.input.value(), "hello world");
+        assert_eq!(state.mode, InteractionMode::Bypass);
+    }
+
+    #[test]
     fn conversation_updates_stick_scroll_to_latest() {
         let mut state = WorkspaceState::new(Vec::new());
 
