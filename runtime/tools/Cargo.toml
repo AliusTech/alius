@@ -25,3 +25,4 @@ runtime-mcp = { workspace = true, optional = true }
 
 [dev-dependencies]
 wat = "1"
+tempfile = { workspace = true }

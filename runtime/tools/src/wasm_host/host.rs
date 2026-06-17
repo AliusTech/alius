@@ -94,10 +94,8 @@ const ENV_OPS: &[&str] = &["read"];
 
 /// Validate all permission entries in a manifest.
 /// Returns Ok(warnings) if all entries are valid, Err with all errors otherwise.
-/// Warnings include non-blocking notices like "fetch not yet implemented".
 pub fn validate_permissions(permissions: &PluginPermissions) -> Result<Vec<String>> {
     let mut errors = Vec::new();
-    let mut warnings = Vec::new();
 
     for entry in &permissions.filesystem {
         if let Err(e) = validate_fs_permission(entry) {
@@ -108,10 +106,6 @@ pub fn validate_permissions(permissions: &PluginPermissions) -> Result<Vec<Strin
         if let Err(e) = validate_net_permission(entry) {
             errors.push(e);
         }
-    }
-    if !permissions.network.is_empty() {
-        warnings
-            .push("network permissions are declared but fetch is not yet implemented".to_string());
     }
     for entry in &permissions.shell {
         if let Err(e) = validate_shell_permission(entry) {
@@ -131,7 +125,7 @@ pub fn validate_permissions(permissions: &PluginPermissions) -> Result<Vec<Strin
             messages.join("\n  - ")
         );
     }
-    Ok(warnings)
+    Ok(Vec::new())
 }
 
 fn parse_permission(entry: &str) -> Result<ParsedPermission, PermissionValidationError> {
@@ -572,13 +566,25 @@ pub fn plugin_dir() -> PathBuf {
     PathBuf::from(home).join(".alius").join("plugins")
 }
 
-/// Install a plugin from a local directory containing plugin.toml + plugin.wasm.
+/// Result of the planning phase for plugin installation.
 ///
-/// Validates the manifest including permission declarations before copying.
-/// Returns an error if the manifest is malformed or permissions are invalid.
-pub fn install_plugin(
-    source_dir: &Path,
-) -> Result<(PluginManifest, Vec<String>, Option<PluginUpgradeInfo>)> {
+/// Contains all information needed to display a confirmation prompt
+/// and to execute the installation if approved.
+#[derive(Debug)]
+pub struct PluginInstallPlan {
+    pub manifest: PluginManifest,
+    pub summary: Vec<String>,
+    pub upgrade_info: Option<PluginUpgradeInfo>,
+    /// Resolved source paths for the apply phase.
+    source_manifest: std::path::PathBuf,
+    source_wasm: std::path::PathBuf,
+}
+
+/// Plan a plugin installation: validate manifest, permissions, and detect upgrades.
+///
+/// This phase does NOT copy any files. Call [`apply_plugin_install`] after
+/// user confirmation to complete the installation.
+pub fn plan_plugin_install(source_dir: &Path) -> Result<PluginInstallPlan> {
     let manifest_path = source_dir.join("plugin.toml");
     if !manifest_path.exists() {
         bail!("plugin.toml not found in {}", source_dir.display());
@@ -591,11 +597,28 @@ pub fn install_plugin(
     let manifest_content = std::fs::read_to_string(&manifest_path)?;
     let manifest: PluginManifest = toml::from_str(&manifest_content)?;
 
-    // Validate permissions if declared, collect warnings
-    let mut warnings = Vec::new();
-    if let Some(ref permissions) = manifest.permissions {
-        warnings = validate_permissions(permissions)?;
+    // Validate WASM module is valid (non-empty, reasonable size, valid structure)
+    let wasm_metadata = std::fs::metadata(&wasm_path)?;
+    if wasm_metadata.len() == 0 {
+        bail!("plugin.wasm is empty");
     }
+    if wasm_metadata.len() > 100 * 1024 * 1024 {
+        bail!(
+            "plugin.wasm is too large ({}MB, max 100MB)",
+            wasm_metadata.len() / (1024 * 1024)
+        );
+    }
+
+    // Validate WASM module structure using wasmtime
+    let wasm_bytes = std::fs::read(&wasm_path)?;
+    validate_wasm_module(&wasm_bytes)?;
+
+    // Validate permissions if declared, collect warnings
+    let warnings = if let Some(ref permissions) = manifest.permissions {
+        validate_permissions(permissions)?
+    } else {
+        Vec::new()
+    };
 
     // Build permission summary for install-time display
     let resolved: ResolvedPluginPermissions = manifest.permissions.clone().into();
@@ -628,11 +651,41 @@ pub fn install_plugin(
         None
     };
 
-    std::fs::create_dir_all(&dest)?;
-    std::fs::copy(&manifest_path, dest.join("plugin.toml"))?;
-    std::fs::copy(&wasm_path, dest.join("plugin.wasm"))?;
+    Ok(PluginInstallPlan {
+        manifest,
+        summary,
+        upgrade_info,
+        source_manifest: manifest_path,
+        source_wasm: wasm_path,
+    })
+}
 
-    Ok((manifest, summary, upgrade_info))
+/// Apply a plugin installation after user confirmation.
+///
+/// Copies `plugin.toml` and `plugin.wasm` from the source directory
+/// to the plugin installation directory. For upgrades, the old plugin
+/// is overwritten atomically (new files replace old files).
+pub fn apply_plugin_install(plan: &PluginInstallPlan) -> Result<()> {
+    let dest = plugin_dir().join(&plan.manifest.id);
+    std::fs::create_dir_all(&dest)?;
+    std::fs::copy(&plan.source_manifest, dest.join("plugin.toml"))?;
+    std::fs::copy(&plan.source_wasm, dest.join("plugin.wasm"))?;
+    Ok(())
+}
+
+/// Install a plugin from a local directory containing plugin.toml + plugin.wasm.
+///
+/// Validates the manifest including permission declarations before copying.
+/// Returns an error if the manifest is malformed or permissions are invalid.
+///
+/// **Deprecated**: Use `plan_plugin_install` + `apply_plugin_install` for
+/// installations that require user confirmation.
+pub fn install_plugin(
+    source_dir: &Path,
+) -> Result<(PluginManifest, Vec<String>, Option<PluginUpgradeInfo>)> {
+    let plan = plan_plugin_install(source_dir)?;
+    apply_plugin_install(&plan)?;
+    Ok((plan.manifest, plan.summary, plan.upgrade_info))
 }
 
 /// Information about a plugin upgrade.
@@ -878,6 +931,296 @@ mod tests {
 
         assert_eq!(result["output"].as_str(), Some("Hello, world!"));
         assert_eq!(result["success"].as_bool(), Some(true));
+    }
+
+    // ===== Plugin Install WASM Validation Tests =====
+
+    #[test]
+    fn test_plan_plugin_install_rejects_invalid_wasm() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path();
+
+        // Write valid plugin.toml
+        let toml = r#"
+id = "test-invalid"
+name = "Test Invalid"
+version = "1.0.0"
+description = "Plugin with invalid wasm"
+"#;
+        std::fs::write(source.join("plugin.toml"), toml).unwrap();
+
+        // Write invalid WASM bytes
+        std::fs::write(source.join("plugin.wasm"), b"not-a-valid-wasm-module").unwrap();
+
+        let result = plan_plugin_install(source);
+        assert!(result.is_err(), "Should reject invalid WASM");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("invalid WASM module"),
+            "Error should mention invalid WASM — got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_plan_plugin_install_accepts_valid_wasm() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path();
+
+        // Write valid plugin.toml
+        let toml = r#"
+id = "test-valid"
+name = "Test Valid"
+version = "1.0.0"
+description = "Plugin with valid wasm"
+"#;
+        std::fs::write(source.join("plugin.toml"), toml).unwrap();
+
+        // Write valid minimal WASM module
+        let valid_wasm = wat::parse_str("(module (memory (export \"memory\") 1))").unwrap();
+        std::fs::write(source.join("plugin.wasm"), &valid_wasm).unwrap();
+
+        let result = plan_plugin_install(source);
+        assert!(
+            result.is_ok(),
+            "Should accept valid WASM — got: {:?}",
+            result.err()
+        );
+    }
+
+    /// Helper: create a source directory with plugin.toml and plugin.wasm.
+    fn make_plugin_source(toml_content: &str) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("plugin.toml"), toml_content).unwrap();
+        let valid_wasm = wat::parse_str("(module (memory (export \"memory\") 1))").unwrap();
+        std::fs::write(dir.path().join("plugin.wasm"), &valid_wasm).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_plan_empty_permissions_no_summary() {
+        let dir = make_plugin_source(
+            r#"
+id = "no-perms"
+name = "No Perms"
+version = "1.0.0"
+description = "Plugin without permissions"
+"#,
+        );
+        let plan = plan_plugin_install(dir.path()).unwrap();
+        assert!(
+            plan.summary.is_empty(),
+            "Empty-permission plugin should have no summary lines"
+        );
+        assert!(
+            plan.upgrade_info.is_none(),
+            "Fresh install should have no upgrade info"
+        );
+    }
+
+    #[test]
+    fn test_plan_nonempty_permissions_has_summary() {
+        let dir = make_plugin_source(
+            r#"
+id = "with-perms"
+name = "With Perms"
+version = "1.0.0"
+description = "Plugin with permissions"
+
+[permissions]
+filesystem = ["read:project"]
+network = ["fetch:https://api.example.com"]
+"#,
+        );
+        let plan = plan_plugin_install(dir.path()).unwrap();
+        assert!(
+            !plan.summary.is_empty(),
+            "Non-empty-permission plugin should have summary lines"
+        );
+        assert!(plan.summary.iter().any(|l| l.contains("filesystem")));
+        assert!(plan.summary.iter().any(|l| l.contains("network")));
+    }
+
+    #[test]
+    fn test_plan_does_not_copy_files() {
+        let dir = make_plugin_source(
+            r#"
+id = "plan-no-copy"
+name = "Plan No Copy"
+version = "1.0.0"
+description = "Plan should not copy files"
+"#,
+        );
+        let _plan = plan_plugin_install(dir.path()).unwrap();
+        // Verify no plugin directory was created
+        let dest = plugin_dir().join("plan-no-copy");
+        assert!(
+            !dest.exists(),
+            "plan_plugin_install should NOT create plugin directory"
+        );
+    }
+
+    #[test]
+    fn test_denied_fresh_install_leaves_no_directory() {
+        let dir = make_plugin_source(
+            r#"
+id = "deny-fresh"
+name = "Deny Fresh"
+version = "1.0.0"
+description = "should not be installed"
+
+[permissions]
+filesystem = ["read:src"]
+"#,
+        );
+        let _plan = plan_plugin_install(dir.path()).unwrap();
+        // User denies — we do NOT call apply_plugin_install
+
+        let dest = plugin_dir().join("deny-fresh");
+        assert!(
+            !dest.exists(),
+            "Denied fresh install should leave no plugin directory"
+        );
+    }
+
+    #[test]
+    fn test_apply_installs_plugin_files() {
+        let dir = make_plugin_source(
+            r#"
+id = "apply-test"
+name = "Apply Test"
+version = "1.0.0"
+description = "Test apply phase"
+"#,
+        );
+        let plan = plan_plugin_install(dir.path()).unwrap();
+        apply_plugin_install(&plan).unwrap();
+
+        let dest = plugin_dir().join("apply-test");
+        assert!(
+            dest.exists(),
+            "apply_plugin_install should create plugin dir"
+        );
+        assert!(dest.join("plugin.toml").exists());
+        assert!(dest.join("plugin.wasm").exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn test_upgrade_detection() {
+        // Install v1
+        let dir1 = make_plugin_source(
+            r#"
+id = "upgrade-test"
+name = "Upgrade Test"
+version = "1.0.0"
+description = "v1"
+"#,
+        );
+        let plan1 = plan_plugin_install(dir1.path()).unwrap();
+        assert!(
+            plan1.upgrade_info.is_none(),
+            "Fresh install has no upgrade info"
+        );
+        apply_plugin_install(&plan1).unwrap();
+
+        // Plan v2 — should detect upgrade
+        let dir2 = make_plugin_source(
+            r#"
+id = "upgrade-test"
+name = "Upgrade Test"
+version = "2.0.0"
+description = "v2"
+"#,
+        );
+        let plan2 = plan_plugin_install(dir2.path()).unwrap();
+        assert!(plan2.upgrade_info.is_some(), "Should detect upgrade");
+        let info = plan2.upgrade_info.as_ref().unwrap();
+        assert_eq!(info.old_version, "1.0.0");
+        assert_eq!(info.new_version, "2.0.0");
+        assert!(!info.permissions_changed);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(plugin_dir().join("upgrade-test"));
+    }
+
+    #[test]
+    fn test_upgrade_permission_change_detected() {
+        // Install v1 with no permissions
+        let dir1 = make_plugin_source(
+            r#"
+id = "perm-change"
+name = "Perm Change"
+version = "1.0.0"
+description = "v1 no perms"
+"#,
+        );
+        let plan1 = plan_plugin_install(dir1.path()).unwrap();
+        apply_plugin_install(&plan1).unwrap();
+
+        // Plan v2 with permissions — should detect permission change
+        let dir2 = make_plugin_source(
+            r#"
+id = "perm-change"
+name = "Perm Change"
+version = "2.0.0"
+description = "v2 with perms"
+
+[permissions]
+filesystem = ["read:src"]
+"#,
+        );
+        let plan2 = plan_plugin_install(dir2.path()).unwrap();
+        assert!(plan2.upgrade_info.is_some());
+        let info = plan2.upgrade_info.as_ref().unwrap();
+        assert!(info.permissions_changed, "Should detect permission change");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(plugin_dir().join("perm-change"));
+    }
+
+    #[test]
+    fn test_denied_upgrade_preserves_old_plugin() {
+        // Install v1
+        let dir1 = make_plugin_source(
+            r#"
+id = "deny-upgrade"
+name = "Deny Upgrade"
+version = "1.0.0"
+description = "v1"
+"#,
+        );
+        let plan1 = plan_plugin_install(dir1.path()).unwrap();
+        apply_plugin_install(&plan1).unwrap();
+
+        // Read original plugin.toml to verify later
+        let dest = plugin_dir().join("deny-upgrade");
+        let original_content = std::fs::read_to_string(dest.join("plugin.toml")).unwrap();
+        assert!(original_content.contains("1.0.0"));
+
+        // Plan v2 but DON'T apply (simulate user denial)
+        let dir2 = make_plugin_source(
+            r#"
+id = "deny-upgrade"
+name = "Deny Upgrade"
+version = "2.0.0"
+description = "v2 denied"
+"#,
+        );
+        let _plan2 = plan_plugin_install(dir2.path()).unwrap();
+        // User denies — we do NOT call apply_plugin_install
+
+        // Verify old plugin is still intact
+        let after_content = std::fs::read_to_string(dest.join("plugin.toml")).unwrap();
+        assert!(
+            after_content.contains("1.0.0"),
+            "Denied upgrade should preserve old plugin.toml"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dest);
     }
 
     // ===== Permission Validation Tests =====

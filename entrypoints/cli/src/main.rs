@@ -477,44 +477,67 @@ fn handle_plugin(cmd: PluginCommand) -> Result<()> {
         }
         PluginCommand::Install { path, yes } => {
             let source = std::path::PathBuf::from(&path);
-            let (manifest, permissions, upgrade) = crate::plugin::install_plugin(&source)?;
+
+            // Phase 1: Plan — validate manifest, permissions, detect upgrade.
+            // No files are copied yet; old plugin remains intact on denial.
+            let plan = crate::plugin::plan_plugin_install(&source)?;
 
             // Show upgrade info if applicable
-            if let Some(ref info) = upgrade {
+            if let Some(ref info) = plan.upgrade_info {
                 println!(
                     "Upgrading '{}' from v{} to v{}",
-                    manifest.id, info.old_version, info.new_version
+                    plan.manifest.id, info.old_version, info.new_version
                 );
                 if info.permissions_changed {
                     println!("  WARNING: Permissions have changed!");
                 }
             }
 
-            if !permissions.is_empty() && !yes {
-                if upgrade.is_some() && upgrade.as_ref().unwrap().permissions_changed {
+            // Show permissions and prompt for confirmation if needed.
+            let needs_prompt = !plan.summary.is_empty() && !yes;
+            if needs_prompt {
+                if plan.upgrade_info.is_some()
+                    && plan.upgrade_info.as_ref().unwrap().permissions_changed
+                {
                     println!("New permissions:");
-                } else if upgrade.is_none() {
+                } else if plan.upgrade_info.is_none() {
                     println!(
                         "Plugin '{}' v{} requests the following permissions:",
-                        manifest.id, manifest.version
+                        plan.manifest.id, plan.manifest.version
                     );
                 }
-                for line in &permissions {
+                for line in &plan.summary {
                     println!("{}", line);
                 }
+
+                // Non-interactive detection: if stdin is not a TTY and --yes was not
+                // provided, fail closed rather than silently defaulting to "no".
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!(
+                        "Plugin requires permissions but no terminal detected. \
+                         Re-run with --yes to approve."
+                    );
+                }
+
                 print!("Install this plugin? [y/N] ");
                 use std::io::Write;
                 std::io::stdout().flush().ok();
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input).ok();
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    let dest = runtime_tools::wasm_host::plugin_dir().join(&manifest.id);
-                    let _ = std::fs::remove_dir_all(&dest);
+                    // No files were copied — old plugin is intact.
                     anyhow::bail!("Installation cancelled by user");
                 }
             }
 
-            println!("Installed plugin '{}' v{}", manifest.id, manifest.version);
+            // Phase 2: Apply — copy files after confirmation.
+            crate::plugin::apply_plugin_install(&plan)?;
+
+            println!(
+                "Installed plugin '{}' v{}",
+                plan.manifest.id, plan.manifest.version
+            );
         }
         PluginCommand::Info { id } => match crate::plugin::find_plugin(&id)? {
             Some(p) => {
@@ -774,5 +797,8 @@ fn main() {
         .enable_all()
         .build()
         .expect("Failed to create runtime");
-    rt.block_on(run()).expect("Failed to run");
+    if let Err(e) = rt.block_on(run()) {
+        eprintln!("Error: {:#}", e);
+        std::process::exit(1);
+    }
 }
