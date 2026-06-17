@@ -1955,5 +1955,38 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_query_logs_returns_empty_for_no_runs() {
+        let rt = test_runtime();
+        let query = LogQuery {
+            workspace_ref: None,
+            session_ref: None,
+            run_ref: None,
+            trace_id: None,
+            min_level: None,
+            limit: 100,
+        };
+        let result = rt.query_logs(query);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_query_logs_with_limit() {
+        let rt = test_runtime();
+        let query = LogQuery {
+            workspace_ref: None,
+            session_ref: None,
+            run_ref: None,
+            trace_id: None,
+            min_level: None,
+            limit: 1,
+        };
+        let result = rt.query_logs(query);
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        assert!(records.len() <= 1);
+    }
+
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
