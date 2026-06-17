@@ -19,6 +19,8 @@ pub struct ToolPackageManifest {
     pub version: String,
     pub description: String,
     pub author: Option<String>,
+    /// Resolved permissions from the plugin manifest.
+    pub permissions: wasm_host::ResolvedPluginPermissions,
 }
 
 impl From<PluginManifest> for ToolPackageManifest {
@@ -29,6 +31,7 @@ impl From<PluginManifest> for ToolPackageManifest {
             version: manifest.version,
             description: manifest.description,
             author: manifest.author,
+            permissions: manifest.permissions.into(),
         }
     }
 }

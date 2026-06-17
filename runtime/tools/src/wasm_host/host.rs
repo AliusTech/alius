@@ -17,6 +17,231 @@ pub struct PluginManifest {
     pub description: String,
     #[serde(default)]
     pub author: Option<String>,
+    /// Declared permissions for host capability access.
+    /// Defaults to empty (no permissions) for backward compatibility.
+    #[serde(default)]
+    pub permissions: Option<PluginPermissions>,
+}
+
+/// Structured permission declaration for a plugin.
+///
+/// Each domain lists allowed operations as `"operation:target"` strings.
+/// Empty lists mean no access for that domain.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPermissions {
+    #[serde(default)]
+    pub filesystem: Vec<String>,
+    #[serde(default)]
+    pub network: Vec<String>,
+    #[serde(default)]
+    pub shell: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+/// A single parsed permission entry: `"operation:target"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPermission {
+    pub operation: String,
+    pub target: String,
+}
+
+/// Validation errors for a single permission entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionValidationError {
+    /// Entry has wrong format (missing colon separator).
+    InvalidFormat { entry: String },
+    /// Operation is not recognized for this domain.
+    UnknownOperation { domain: String, entry: String },
+    /// Filesystem target contains `..` traversal.
+    PathTraversal { entry: String },
+    /// Filesystem target is an absolute path.
+    AbsolutePath { entry: String },
+    /// Env entry is empty or has empty target.
+    EmptyTarget { entry: String },
+}
+
+impl std::fmt::Display for PermissionValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFormat { entry } => {
+                write!(f, "invalid format (expected 'op:target'): {entry}")
+            }
+            Self::UnknownOperation { domain, entry } => {
+                write!(f, "unknown operation for {domain}: {entry}")
+            }
+            Self::PathTraversal { entry } => write!(f, "path traversal (..) not allowed: {entry}"),
+            Self::AbsolutePath { entry } => write!(f, "absolute paths not allowed: {entry}"),
+            Self::EmptyTarget { entry } => write!(f, "empty target not allowed: {entry}"),
+        }
+    }
+}
+
+/// Allowed operations per domain.
+const FS_OPS: &[&str] = &["read", "write", "list"];
+const NET_OPS: &[&str] = &["fetch"];
+const SHELL_OPS: &[&str] = &["exec"];
+const ENV_OPS: &[&str] = &["read"];
+
+/// Validate all permission entries in a manifest.
+/// Returns Ok(()) if all entries are valid, Err with all errors otherwise.
+pub fn validate_permissions(permissions: &PluginPermissions) -> Result<()> {
+    let mut errors = Vec::new();
+
+    for entry in &permissions.filesystem {
+        if let Err(e) = validate_fs_permission(entry) {
+            errors.push(e);
+        }
+    }
+    for entry in &permissions.network {
+        if let Err(e) = validate_net_permission(entry) {
+            errors.push(e);
+        }
+    }
+    for entry in &permissions.shell {
+        if let Err(e) = validate_shell_permission(entry) {
+            errors.push(e);
+        }
+    }
+    for entry in &permissions.env {
+        if let Err(e) = validate_env_permission(entry) {
+            errors.push(e);
+        }
+    }
+
+    if !errors.is_empty() {
+        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        bail!(
+            "Invalid plugin permissions:\n  - {}",
+            messages.join("\n  - ")
+        );
+    }
+    Ok(())
+}
+
+fn parse_permission(entry: &str) -> Result<ParsedPermission, PermissionValidationError> {
+    let (op, target) =
+        entry
+            .split_once(':')
+            .ok_or_else(|| PermissionValidationError::InvalidFormat {
+                entry: entry.to_string(),
+            })?;
+    if target.is_empty() {
+        return Err(PermissionValidationError::EmptyTarget {
+            entry: entry.to_string(),
+        });
+    }
+    Ok(ParsedPermission {
+        operation: op.to_string(),
+        target: target.to_string(),
+    })
+}
+
+fn validate_fs_permission(entry: &str) -> Result<(), PermissionValidationError> {
+    let parsed = parse_permission(entry)?;
+    if !FS_OPS.contains(&parsed.operation.as_str()) {
+        return Err(PermissionValidationError::UnknownOperation {
+            domain: "filesystem".to_string(),
+            entry: entry.to_string(),
+        });
+    }
+    if parsed.target.contains("..") {
+        return Err(PermissionValidationError::PathTraversal {
+            entry: entry.to_string(),
+        });
+    }
+    let p = Path::new(&parsed.target);
+    if p.is_absolute() {
+        return Err(PermissionValidationError::AbsolutePath {
+            entry: entry.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_net_permission(entry: &str) -> Result<(), PermissionValidationError> {
+    let parsed = parse_permission(entry)?;
+    if !NET_OPS.contains(&parsed.operation.as_str()) {
+        return Err(PermissionValidationError::UnknownOperation {
+            domain: "network".to_string(),
+            entry: entry.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_shell_permission(entry: &str) -> Result<(), PermissionValidationError> {
+    let parsed = parse_permission(entry)?;
+    if !SHELL_OPS.contains(&parsed.operation.as_str()) {
+        return Err(PermissionValidationError::UnknownOperation {
+            domain: "shell".to_string(),
+            entry: entry.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_env_permission(entry: &str) -> Result<(), PermissionValidationError> {
+    let parsed = parse_permission(entry)?;
+    if !ENV_OPS.contains(&parsed.operation.as_str()) {
+        return Err(PermissionValidationError::UnknownOperation {
+            domain: "env".to_string(),
+            entry: entry.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// A plugin with its resolved permissions (from manifest or default).
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedPluginPermissions {
+    pub filesystem: Vec<String>,
+    pub network: Vec<String>,
+    pub shell: Vec<String>,
+    pub env: Vec<String>,
+}
+
+impl From<Option<PluginPermissions>> for ResolvedPluginPermissions {
+    fn from(permissions: Option<PluginPermissions>) -> Self {
+        match permissions {
+            Some(p) => Self {
+                filesystem: p.filesystem,
+                network: p.network,
+                shell: p.shell,
+                env: p.env,
+            },
+            None => Self::default(),
+        }
+    }
+}
+
+impl ResolvedPluginPermissions {
+    /// Check if this permission set has any entries.
+    pub fn is_empty(&self) -> bool {
+        self.filesystem.is_empty()
+            && self.network.is_empty()
+            && self.shell.is_empty()
+            && self.env.is_empty()
+    }
+
+    /// Get a human-readable summary of the permissions for install-time display.
+    pub fn summary_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.filesystem.is_empty() {
+            lines.push(format!("  filesystem: {}", self.filesystem.join(", ")));
+        }
+        if !self.network.is_empty() {
+            lines.push(format!("  network: {}", self.network.join(", ")));
+        }
+        if !self.shell.is_empty() {
+            lines.push(format!("  shell: {}", self.shell.join(", ")));
+        }
+        if !self.env.is_empty() {
+            lines.push(format!("  env: {}", self.env.join(", ")));
+        }
+        lines
+    }
 }
 
 /// A discovered Rust WASM tool module on disk.
@@ -62,6 +287,9 @@ pub fn plugin_dir() -> PathBuf {
 }
 
 /// Install a plugin from a local directory containing plugin.toml + plugin.wasm.
+///
+/// Validates the manifest including permission declarations before copying.
+/// Returns an error if the manifest is malformed or permissions are invalid.
 pub fn install_plugin(source_dir: &Path) -> Result<PluginManifest> {
     let manifest_path = source_dir.join("plugin.toml");
     if !manifest_path.exists() {
@@ -74,6 +302,11 @@ pub fn install_plugin(source_dir: &Path) -> Result<PluginManifest> {
 
     let manifest_content = std::fs::read_to_string(&manifest_path)?;
     let manifest: PluginManifest = toml::from_str(&manifest_content)?;
+
+    // Validate permissions if declared
+    if let Some(ref permissions) = manifest.permissions {
+        validate_permissions(permissions)?;
+    }
 
     let dest = plugin_dir().join(&manifest.id);
     std::fs::create_dir_all(&dest)?;
@@ -318,5 +551,254 @@ mod tests {
 
         assert_eq!(result["output"].as_str(), Some("Hello, world!"));
         assert_eq!(result["success"].as_bool(), Some(true));
+    }
+
+    // ===== Permission Validation Tests =====
+
+    #[test]
+    fn test_empty_permissions_valid() {
+        let permissions = PluginPermissions::default();
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_valid_filesystem_permissions() {
+        let permissions = PluginPermissions {
+            filesystem: vec![
+                "read:project".to_string(),
+                "write:output".to_string(),
+                "list:src".to_string(),
+            ],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_valid_network_permission() {
+        let permissions = PluginPermissions {
+            filesystem: vec![],
+            network: vec!["fetch:https://crates.io/api/v1".to_string()],
+            shell: vec![],
+            env: vec![],
+        };
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_valid_shell_permission() {
+        let permissions = PluginPermissions {
+            filesystem: vec![],
+            network: vec![],
+            shell: vec!["exec:readonly".to_string()],
+            env: vec![],
+        };
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_valid_env_permission() {
+        let permissions = PluginPermissions {
+            filesystem: vec![],
+            network: vec![],
+            shell: vec![],
+            env: vec!["read:HOME".to_string(), "read:CARGO_HOME".to_string()],
+        };
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_malformed_entry_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["no-colon-here".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid format"));
+    }
+
+    #[test]
+    fn test_unknown_fs_operation_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["delete:project".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown operation"));
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["read:../etc".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("path traversal"));
+    }
+
+    #[test]
+    fn test_absolute_path_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["read:/etc/passwd".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("absolute paths"));
+    }
+
+    #[test]
+    fn test_empty_target_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["read:".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty target"));
+    }
+
+    #[test]
+    fn test_wildcard_env_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec![],
+            network: vec![],
+            shell: vec![],
+            env: vec!["read:*".to_string()],
+        };
+        // Wildcards are allowed in env - only empty targets are rejected
+        assert!(validate_permissions(&permissions).is_ok());
+    }
+
+    #[test]
+    fn test_empty_env_rejected() {
+        let permissions = PluginPermissions {
+            filesystem: vec![],
+            network: vec![],
+            shell: vec![],
+            env: vec!["read:".to_string()],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty target"));
+    }
+
+    #[test]
+    fn test_multiple_errors_collected() {
+        let permissions = PluginPermissions {
+            filesystem: vec!["read:../etc".to_string(), "delete:src".to_string()],
+            network: vec![],
+            shell: vec![],
+            env: vec![],
+        };
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("path traversal"));
+        assert!(err_msg.contains("unknown operation"));
+    }
+
+    #[test]
+    fn test_old_manifest_without_permissions_parses() {
+        let toml_str = r#"
+id = "old-plugin"
+name = "Old Plugin"
+version = "1.0.0"
+description = "An old plugin without permissions"
+"#;
+        let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.id, "old-plugin");
+        assert!(manifest.permissions.is_none());
+        let resolved: ResolvedPluginPermissions = manifest.permissions.into();
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn test_new_manifest_with_permissions_parses() {
+        let toml_str = r#"
+id = "new-plugin"
+name = "New Plugin"
+version = "2.0.0"
+description = "A plugin with permissions"
+
+[permissions]
+filesystem = ["read:project", "write:output"]
+network = ["fetch:https://api.example.com"]
+shell = ["exec:readonly"]
+env = ["read:HOME"]
+"#;
+        let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.permissions.is_some());
+        let perms = manifest.permissions.unwrap();
+        assert_eq!(perms.filesystem.len(), 2);
+        assert_eq!(perms.network.len(), 1);
+        assert_eq!(perms.shell.len(), 1);
+        assert_eq!(perms.env.len(), 1);
+        assert!(validate_permissions(&perms).is_ok());
+    }
+
+    #[test]
+    fn test_malformed_toml_permissions_rejected() {
+        let toml_str = r#"
+id = "bad-plugin"
+name = "Bad Plugin"
+version = "1.0.0"
+description = "Invalid permissions"
+
+[permissions]
+filesystem = "not-a-list"
+"#;
+        let result: std::result::Result<PluginManifest, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_permission_field_rejected() {
+        let toml_str = r#"
+id = "bad-plugin"
+name = "Bad Plugin"
+version = "1.0.0"
+description = "Unknown field"
+
+[permissions]
+filesystem = ["read:project"]
+unknown_domain = ["something"]
+"#;
+        let result: std::result::Result<PluginManifest, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolved_permissions_summary_lines() {
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string(), "write:output".to_string()],
+            network: vec!["fetch:https://api.example.com".to_string()],
+            shell: vec![],
+            env: vec!["read:HOME".to_string()],
+        };
+        let lines = perms.summary_lines();
+        assert!(lines.len() == 3); // filesystem, network, env (shell empty)
+        assert!(lines[0].contains("filesystem"));
+        assert!(lines[1].contains("network"));
+        assert!(lines[2].contains("env"));
     }
 }

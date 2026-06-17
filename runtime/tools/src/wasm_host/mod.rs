@@ -8,7 +8,7 @@ pub mod tool_wrapper;
 
 pub use host::{
     call_plugin_tool, find_plugin, install_plugin, is_path_in_workspace, list_plugin_tools,
-    list_plugins, plugin_dir, remove_plugin, validate_wasm_module, Plugin, PluginManifest,
-    PluginToolDef, WasmHostConfig,
+    list_plugins, plugin_dir, remove_plugin, validate_permissions, Plugin, PluginManifest,
+    PluginPermissions, PluginToolDef, ResolvedPluginPermissions, WasmHostConfig,
 };
 pub use tool_wrapper::WasmPluginTool;

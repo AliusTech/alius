@@ -228,13 +228,22 @@ on both paths.
 
 ## Status
 
-Forward design — **not yet implemented**:
+**Implemented** (manifest permissions schema and install-time validation):
 
-- `wasm_host/host.rs` links only host→wasm exports today; no `Linker` imports
-  are registered.
-- `package.rs` manifest has no `permissions` field.
+- `PluginManifest` includes `permissions` field (optional, defaults to empty).
+- Structured permission model covers `filesystem`, `network`, `shell`, `env` domains.
+- Install-time validation rejects malformed entries (path traversal, absolute paths, unknown operations, empty targets).
+- `ToolPackageManifest` preserves permissions through `From<PluginManifest>` conversion.
+- `ResolvedPluginPermissions` provides programmatic access and summary display.
+- `validate_permissions()` performs full validation with error collection.
+- Old manifests without `permissions` field parse successfully with empty permissions.
+- Tests cover: empty permissions, valid entries, malformed entries, path traversal, absolute paths, env wildcards/empty, multiple errors, TOML parsing.
+
+**Not yet implemented** (wasm→host imports):
+
+- `wasm_host/host.rs` links only host→wasm exports today; no `Linker` imports are registered.
 - No audit sink for host-function calls.
+- Runtime host function calls do not yet check manifest permissions.
+- No host functions for `read_file`, `write_file`, `list_dir`, `fetch`, `shell`, `env_get`.
 
-The native `shell` tool (this work) is the first concrete use of the shared
-security primitives (Shell Gate). When host imports land, they will reuse the
-same primitives rather than re-implementing safety checks.
+The native `shell` tool is the first concrete use of the shared security primitives (Shell Gate). When host imports land, they will reuse the same primitives rather than re-implementing safety checks.

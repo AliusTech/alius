@@ -104,6 +104,19 @@ Remaining gaps:
 
 Plugin management and WASM host code exist. Production ABI, capability policy, sandboxing, and full runtime integration need more hardening.
 
+**Implemented:**
+- `PluginManifest` includes `permissions` field with structured permission model (`filesystem`, `network`, `shell`, `env` domains)
+- Install-time validation rejects malformed permissions (path traversal, absolute paths, unknown operations, empty targets)
+- `ToolPackageManifest` preserves permissions through conversion
+- `ResolvedPluginPermissions` for programmatic access
+- Tests cover all permission validation scenarios
+
+**Not yet implemented:**
+- `wasm→host` imports (read_file, write_file, list_dir, fetch, shell, env_get)
+- Runtime host function calls do not yet check manifest permissions
+- No audit sink for host-function calls
+- No runtime enforcement of declared permissions
+
 ## Workflow Runtime
 
 Workflow command surfaces and parsing exist. Prompt and tool steps should not be described as a complete automated runtime unless they call the actual model and tool subsystems on the path being documented.
