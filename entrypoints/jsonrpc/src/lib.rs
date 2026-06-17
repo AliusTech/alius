@@ -430,37 +430,12 @@ mod tests {
 
     /// Build a CoreRuntimeManager with native + fake MCP tools in the registry.
     fn test_manager_with_mcp_tools() -> CoreRuntimeManager {
-        use async_trait::async_trait;
-        use protocol_interface::core::ToolSource;
-        use runtime_tools::{AliusTool, ToolContext as RtToolContext, ToolRegistry, ToolResult};
-
-        struct FakeMcpTool;
-        #[async_trait]
-        impl AliusTool for FakeMcpTool {
-            fn name(&self) -> &'static str {
-                "mcp_search"
-            }
-            fn description(&self) -> &'static str {
-                "fake mcp search"
-            }
-            fn input_schema(&self) -> serde_json::Value {
-                serde_json::json!({})
-            }
-            fn source(&self) -> ToolSource {
-                ToolSource::Mcp
-            }
-            async fn execute(
-                &self,
-                _: serde_json::Value,
-                _: RtToolContext,
-            ) -> Result<ToolResult, protocol_interface::AliusError> {
-                unimplemented!()
-            }
-        }
+        use runtime_tools::testing::FakeTool;
+        use runtime_tools::ToolRegistry;
 
         let registry = std::sync::Arc::new(ToolRegistry::new());
         runtime_tools::native::register_native_tools(&registry);
-        registry.register(FakeMcpTool).unwrap();
+        registry.register(FakeTool::new("mcp_search").as_mcp()).unwrap();
 
         let settings = runtime_config::Settings::default();
         let llm_settings = runtime_config::LlmSettings {
