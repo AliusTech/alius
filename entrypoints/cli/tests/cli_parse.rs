@@ -39,13 +39,7 @@ fn root_help_shows_usage() {
 #[test]
 fn subcommand_help_shows_usage() {
     for subcmd in &[
-        "config",
-        "core",
-        "soul",
-        "plugin",
-        "mcp",
-        "workflow",
-        "update",
+        "config", "core", "soul", "plugin", "mcp", "workflow", "update",
     ] {
         let output = alius_bin()
             .args([subcmd, "--help"])

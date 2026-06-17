@@ -435,7 +435,9 @@ mod tests {
 
         let registry = std::sync::Arc::new(ToolRegistry::new());
         runtime_tools::native::register_native_tools(&registry);
-        registry.register(FakeTool::new("mcp_search").as_mcp()).unwrap();
+        registry
+            .register(FakeTool::new("mcp_search").as_mcp())
+            .unwrap();
 
         let settings = runtime_config::Settings::default();
         let llm_settings = runtime_config::LlmSettings {

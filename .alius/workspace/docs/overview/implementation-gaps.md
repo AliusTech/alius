@@ -2,6 +2,23 @@
 
 This document lists known gaps that should not be described as complete features.
 
+## Testing Infrastructure
+
+**Status: Complete.**
+
+All 9 workspace crates have a `testing` feature flag with proper propagation through dev-dependencies. Shared testing modules provide reusable fake types:
+
+- `protocol::testing::TestRuntime` — minimal `CoreRuntimeApi` implementation
+- `runtime_tools::testing::{FakeTool, EchoTool, ConfirmationRequiredTool}` — configurable fake tools
+- `runtime_model::testing::{FakeProvider, NoOpProvider, FakeToolCallProvider}` — fake LLM providers
+- `core_runtime::testing::{CoreRuntimeHarness, FakeMcpEchoTool, FakeMcpToolCallProvider}` — isolated runtime environment
+- `alius_cli::testing::{CwdGuard, enter_temp_cwd, temp_workspace}` — filesystem isolation
+- `alius_cli::tui::testing::{key, key_with, type_text, submit_input}` — TUI key helpers
+
+All testing modules gated with `#[cfg(any(test, feature = "testing"))]`. Release binary verified clean of test symbols via CI symbol scan. ~783 tests total across the workspace.
+
+**Remaining gaps:** (none for infrastructure; individual module coverage gaps noted below)
+
 ## Runtime Manager Boundary
 
 `CoreRuntimeManager` is the target local entrypoint for default execution. CLI, TUI, and JSON-RPC should route conversation, Plan, one-shot run, memory, tool listing, review, and health operations through:

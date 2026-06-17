@@ -28,10 +28,7 @@ fn run_requires_prompt_argument() {
         .expect("failed to execute alius run");
 
     // Should fail without the -p argument
-    assert!(
-        !output.status.success(),
-        "run without -p should fail"
-    );
+    assert!(!output.status.success(), "run without -p should fail");
 }
 
 #[test]

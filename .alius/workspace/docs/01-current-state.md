@@ -6,6 +6,8 @@ This file summarizes the current implementation state of Alius in this checkout.
 
 | Area | State |
 | --- | --- |
+| Testing infrastructure | `testing` feature flag on all 9 crates. Shared testing modules in `protocol`, `runtime-tools`, `runtime-model`, `core-runtime`, `entrypoints/cli`. `FakeProvider`, `FakeTool`, `EchoTool`, `ConfirmationRequiredTool`, `FakeMcpEchoTool`, `FakeMcpToolCallProvider`, `CoreRuntimeHarness`, `CwdGuard`, TUI key helpers. Release binary symbol scan in CI. ~783 tests total. |
+| CLI integration tests | 30 integration tests covering all CLI commands: parse, config, core, soul, plugin, mcp, workflow, run. Isolated HOME/workspace via `tempfile::TempDir`. |
 | CLI binary | `alius` is built from `entrypoints/cli` and uses `clap` command definitions. |
 | Project init | `alius init` resets project config and opens the TUI init wizard. |
 | TUI workspace | The default interactive path enters the Ratatui workspace unless `ALIUS_LEGACY_REPL=1` is set. |

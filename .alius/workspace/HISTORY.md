@@ -8,6 +8,23 @@ All entries use the format:
 
 ## 2026-06-17
 
+[2026-06-17 18:00]: test infrastructure - Added `testing` feature flag to all 9 workspace crates with proper feature propagation
+[2026-06-17 18:00]: protocol/src/testing.rs - Created shared TestRuntime (CoreRuntimeApi impl)
+[2026-06-17 18:00]: runtime/tools/src/testing.rs - Created shared FakeTool, EchoTool, ConfirmationRequiredTool
+[2026-06-17 18:00]: runtime/model/src/testing.rs - Created shared FakeProvider, NoOpProvider, FakeToolCallProvider
+[2026-06-17 18:00]: runtime/core/src/testing.rs - Created CoreRuntimeHarness, FakeMcpEchoTool, FakeMcpToolCallProvider
+[2026-06-17 18:00]: entrypoints/cli/src/testing.rs - Created CwdGuard, enter_temp_cwd, temp_workspace helpers
+[2026-06-17 18:00]: entrypoints/cli/src/tui/testing.rs - Created key, key_with, type_text, submit_input helpers
+[2026-06-17 18:00]: runtime/tools/src/registry.rs - Migrated inline FakeTool/FakeMcpTool to shared testing module
+[2026-06-17 18:00]: runtime/core/src/loop_engine/engine.rs - Migrated inline McpEchoTool/McpToolCallProvider to shared testing module
+[2026-06-17 18:00]: entrypoints/jsonrpc/src/lib.rs - Migrated inline FakeMcpTool to shared testing module
+[2026-06-17 18:00]: .github/workflows/ci.yml - Added --features testing, release build, symbol scan
+[2026-06-17 18:00]: entrypoints/cli/tests/ - Created 30 CLI integration tests (parse, config, extensions, run)
+[2026-06-17 18:00]: docs/01-current-state.md - Updated with testing infrastructure status
+[2026-06-17 18:00]: docs/overview/implementation-gaps.md - Added testing infrastructure section
+
+## 2026-06-17
+
 [2026-06-17 23:59] Reviewer: .alius/workspace/docs/products/tui-workspace.md + .alius/workspace/docs/standards/validation.md + .alius/workspace/HISTORY.md - Renamed CI reporting language, replaced provider-network terminology with selected-provider smoke testing, clarified DeepSeek/default-provider configuration coverage, and expanded TUI state-machine test requirements.
 
 [2026-06-17 23:59] Reviewer: .alius/workspace/docs/products/cli.md + .alius/workspace/docs/standards/validation.md + .alius/workspace/HISTORY.md - Added functional test surface requirements for every CLI command family and documented deterministic functional tests, mocked network tests, selected-provider smoke tests, secret handling, and trusted-context CI policy.
