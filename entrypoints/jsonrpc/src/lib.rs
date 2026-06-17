@@ -1058,4 +1058,84 @@ mod tests {
         let events = result["events"].as_array().unwrap();
         assert!(!events.is_empty(), "should have events from the run");
     }
+
+    // ── run_confirm_tool contract ─────────────────────────────────────
+
+    #[test]
+    fn test_run_confirm_tool_missing_run_ref() {
+        let manager = test_manager();
+        let mut req = make_request("run_confirm_tool");
+        req.params = serde_json::json!({"tool_call_id": "tc-1", "approved": true});
+        let resp = dispatch_with_runtime(&req, &manager);
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[test]
+    fn test_run_confirm_tool_missing_tool_call_id() {
+        let manager = test_manager();
+        let mut req = make_request("run_confirm_tool");
+        req.params = serde_json::json!({"run_ref": "rr-1", "approved": true});
+        let resp = dispatch_with_runtime(&req, &manager);
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[test]
+    fn test_run_confirm_tool_missing_approved() {
+        let manager = test_manager();
+        let mut req = make_request("run_confirm_tool");
+        req.params = serde_json::json!({"run_ref": "rr-1", "tool_call_id": "tc-1"});
+        let resp = dispatch_with_runtime(&req, &manager);
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_INVALID_PARAMS);
+    }
+
+    #[test]
+    fn test_run_confirm_tool_invalid_run_ref_returns_runtime_error() {
+        let manager = test_manager();
+        let mut req = make_request("run_confirm_tool");
+        req.params =
+            serde_json::json!({"run_ref": "nonexistent", "tool_call_id": "tc-1", "approved": true});
+        let resp = dispatch_with_runtime(&req, &manager);
+        // Should return a runtime error (run not found)
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_RUNTIME);
+    }
+
+    // ── Malformed request contract ────────────────────────────────────
+
+    #[test]
+    fn test_malformed_request_missing_method() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonValue::Number(1.into())),
+            method: String::new(),
+            params: JsonValue::Null,
+        };
+        let resp = dispatch(&req);
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_run_subscribe_nonexistent_run_ref_returns_error() {
+        let manager = test_manager();
+        let mut req = make_request("run_subscribe");
+        req.params = serde_json::json!({"run_ref": "nonexistent-run-ref"});
+        let resp = dispatch_with_runtime(&req, &manager);
+        // Should return a runtime error (run not found)
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_RUNTIME);
+    }
+
+    #[test]
+    fn test_run_cancel_nonexistent_run_ref_returns_runtime_error() {
+        let manager = test_manager();
+        let mut req = make_request("run_cancel");
+        req.params = serde_json::json!({"run_ref": "nonexistent-run-ref"});
+        let resp = dispatch_with_runtime(&req, &manager);
+        // Should return a runtime error
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.as_ref().unwrap().code, ERR_RUNTIME);
+    }
 }

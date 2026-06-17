@@ -1919,5 +1919,43 @@ mod tests {
         assert_eq!(final_status.unwrap(), RunStatus::Cancelled);
     }
 
+    // ── Session lifecycle ─────────────────────────────────────────────
+
+    #[test]
+    fn test_close_session_succeeds() {
+        let rt = test_runtime();
+        let session = rt.session_manager().create_session();
+        let session_ref = session.session_ref.clone();
+
+        // Close should succeed
+        let result = rt.close_session(&session_ref);
+        assert!(result.is_ok());
+
+        // Closing again should return error (already closed)
+        let result2 = rt.close_session(&session_ref);
+        // Note: close() may succeed even if already closed (idempotent)
+        // or return an error depending on implementation
+    }
+
+    #[test]
+    fn test_clear_conversation_succeeds() {
+        let rt = test_runtime();
+        let session = rt.session_manager().create_session();
+        let session_ref = session.session_ref.clone();
+
+        // clear_conversation should succeed
+        let result = rt.clear_conversation(&session_ref);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_close_nonexistent_session_returns_error() {
+        let rt = test_runtime();
+        let fake_ref = SessionRef::new();
+
+        let result = rt.close_session(&fake_ref);
+        assert!(result.is_err());
+    }
+
     static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

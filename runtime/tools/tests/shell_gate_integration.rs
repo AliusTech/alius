@@ -419,3 +419,103 @@ async fn test_execute_critical_risk_external_rejected_in_plan() {
         tool_result.output
     );
 }
+
+// ============================================================================
+// Low-risk success tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_execute_low_risk_ls_succeeds_in_chat() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Chat,
+    };
+    let args = json!({"command": "ls"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(
+        tool_result.success,
+        "ls inside workspace should succeed in Chat mode"
+    );
+}
+
+#[tokio::test]
+async fn test_execute_low_risk_echo_succeeds_in_chat() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Chat,
+    };
+    let args = json!({"command": "echo hello"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(tool_result.success, "echo should succeed in Chat mode");
+    assert!(
+        tool_result.output.contains("hello"),
+        "echo output should contain 'hello'"
+    );
+}
+
+// ============================================================================
+// Plan mode low-risk tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_execute_low_risk_ls_succeeds_in_plan() {
+    let shell = Shell;
+    let workspace = std::env::current_dir().unwrap();
+    let ctx = ToolContext {
+        workspace: workspace.clone(),
+        session_id: "test-session".to_string(),
+        working_directory: workspace,
+        mode: RuntimeMode::Plan,
+    };
+    let args = json!({"command": "ls"});
+
+    let result = shell.execute(args, ctx).await;
+    assert!(result.is_ok());
+    let tool_result = result.unwrap();
+    assert!(
+        tool_result.success,
+        "ls inside workspace should succeed in Plan mode"
+    );
+}
+
+// ============================================================================
+// Authorization: low-risk workspace-internal
+// ============================================================================
+
+#[test]
+fn test_authorize_low_risk_internal_allows() {
+    let req = make_request("/workspace", "/workspace", "ls");
+    let config = ShellGateConfig::default();
+    let (decision, _risk) = authorize(&req, &config);
+    assert!(
+        matches!(decision, ShellGateDecision::Allow),
+        "Low-risk workspace-internal command should be allowed, got: {:?}",
+        decision
+    );
+}
+
+#[test]
+fn test_authorize_echo_internal_allows() {
+    let req = make_request("/workspace", "/workspace", "echo hello");
+    let config = ShellGateConfig::default();
+    let (decision, _risk) = authorize(&req, &config);
+    assert!(
+        matches!(decision, ShellGateDecision::Allow),
+        "Echo inside workspace should be allowed, got: {:?}",
+        decision
+    );
+}

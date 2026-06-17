@@ -2212,4 +2212,85 @@ mod tests {
         assert_eq!(step_result.run_ref.as_deref(), Some("test-run-ref"));
         assert_eq!(step_result.trace_id.as_deref(), Some("test-trace-id"));
     }
+
+    // ── Disk persistence ─────────────────────────────────────────────
+
+    #[test]
+    fn test_load_workflow_from_disk() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_workflow.json");
+        let workflow = Workflow {
+            name: "disk-test".to_string(),
+            description: "a test workflow".to_string(),
+            steps: vec![Step {
+                id: "s1".to_string(),
+                step_type: StepType::Prompt,
+                prompt: Some("hello".to_string()),
+                tool: None,
+                args: None,
+                url: None,
+                method: None,
+                body: None,
+                on_failure: OnFailurePolicy::Abort,
+                timeout_ms: None,
+            }],
+            mode: "chat".to_string(),
+            timeout_ms: None,
+        };
+        let json = serde_json::to_string_pretty(&workflow).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        let loaded = load_workflow(&path).unwrap();
+        assert_eq!(loaded.name, "disk-test");
+        assert_eq!(loaded.steps.len(), 1);
+        assert_eq!(loaded.steps[0].id, "s1");
+    }
+
+    #[test]
+    fn test_load_workflow_rejects_invalid_json() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("bad_workflow.json");
+        std::fs::write(&path, "not valid json{{{").unwrap();
+
+        let result = load_workflow(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_workflows_from_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..3 {
+            let workflow = Workflow {
+                name: format!("wf-{i}"),
+                description: String::new(),
+                steps: vec![],
+                mode: "chat".to_string(),
+                timeout_ms: None,
+            };
+            let path = tmp.path().join(format!("wf-{i}.json"));
+            std::fs::write(&path, serde_json::to_string(&workflow).unwrap()).unwrap();
+        }
+        // Also create a non-JSON file that should be ignored
+        std::fs::write(tmp.path().join("readme.txt"), "not a workflow").unwrap();
+
+        let workflows = load_workflows(tmp.path()).unwrap();
+        assert_eq!(workflows.len(), 3);
+        // Should be sorted by name
+        assert_eq!(workflows[0].name, "wf-0");
+        assert_eq!(workflows[1].name, "wf-1");
+        assert_eq!(workflows[2].name, "wf-2");
+    }
+
+    #[test]
+    fn test_load_workflows_empty_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workflows = load_workflows(tmp.path()).unwrap();
+        assert!(workflows.is_empty());
+    }
+
+    #[test]
+    fn test_load_workflows_nonexistent_directory() {
+        let workflows = load_workflows(std::path::Path::new("/nonexistent/dir")).unwrap();
+        assert!(workflows.is_empty());
+    }
 }
