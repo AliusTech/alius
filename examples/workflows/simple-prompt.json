@@ -1,0 +1,11 @@
+{
+  "name": "simple-prompt",
+  "description": "Single prompt step example",
+  "steps": [
+    {
+      "id": "ask",
+      "type": "prompt",
+      "prompt": "Explain what Rust's ownership model is in 3 sentences."
+    }
+  ]
+}

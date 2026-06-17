@@ -147,7 +147,7 @@ pub async fn run() -> Result<()> {
         }
         // Workflow management
         Some(Command::Workflow { command }) => {
-            handle_workflow(command).await?;
+            handle_workflow(command, &settings).await?;
         }
         // CLI self-update
         Some(Command::Update { command }) => {
@@ -384,7 +384,7 @@ fn handle_core(cmd: CoreCommand) -> Result<()> {
 fn handle_soul(cmd: SoulCommand) -> Result<()> {
     match cmd {
         SoulCommand::Update => {
-            println!("Updating souls from alius-souls...");
+            println!("Updating souls...");
             let souls = crate::formula::sync_all_souls()?;
             println!(
                 "Synced {} souls to {}",
@@ -416,12 +416,22 @@ fn handle_soul(cmd: SoulCommand) -> Result<()> {
                 println!("Soul '{}' is already installed", id);
                 return Ok(());
             }
-            // Find formula in repo
-            let repo = crate::formula::official_repo_path();
-            if !repo.exists() {
-                println!("Repository not found. Run: alius soul update");
-                return Ok(());
-            }
+            // Resolve repo: bundled first, then legacy cache
+            let repo = crate::formula::bundled_souls_path().or_else(|| {
+                let legacy = crate::formula::official_repo_path();
+                if legacy.exists() {
+                    Some(legacy)
+                } else {
+                    None
+                }
+            });
+            let repo = match repo {
+                Some(r) => r,
+                None => {
+                    println!("Soul sources not found. Run: alius soul update");
+                    return Ok(());
+                }
+            };
             match crate::formula::find_formula(&repo, "souls", &id)? {
                 Some(formula) => {
                     let path = crate::formula::install_soul(&formula, &repo)?;
@@ -432,7 +442,7 @@ fn handle_soul(cmd: SoulCommand) -> Result<()> {
                         path.display()
                     );
                 }
-                None => println!("Soul not found: {}. Run: alius soul update", id),
+                None => println!("Soul not found: {}", id),
             }
         }
         SoulCommand::Current => match crate::formula::current_project_soul() {
@@ -465,9 +475,45 @@ fn handle_plugin(cmd: PluginCommand) -> Result<()> {
                 }
             }
         }
-        PluginCommand::Install { path } => {
+        PluginCommand::Install { path, yes } => {
             let source = std::path::PathBuf::from(&path);
-            let manifest = crate::plugin::install_plugin(&source)?;
+            let (manifest, permissions, upgrade) = crate::plugin::install_plugin(&source)?;
+
+            // Show upgrade info if applicable
+            if let Some(ref info) = upgrade {
+                println!(
+                    "Upgrading '{}' from v{} to v{}",
+                    manifest.id, info.old_version, info.new_version
+                );
+                if info.permissions_changed {
+                    println!("  WARNING: Permissions have changed!");
+                }
+            }
+
+            if !permissions.is_empty() && !yes {
+                if upgrade.is_some() && upgrade.as_ref().unwrap().permissions_changed {
+                    println!("New permissions:");
+                } else if upgrade.is_none() {
+                    println!(
+                        "Plugin '{}' v{} requests the following permissions:",
+                        manifest.id, manifest.version
+                    );
+                }
+                for line in &permissions {
+                    println!("{}", line);
+                }
+                print!("Install this plugin? [y/N] ");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    let dest = runtime_tools::wasm_host::plugin_dir().join(&manifest.id);
+                    let _ = std::fs::remove_dir_all(&dest);
+                    anyhow::bail!("Installation cancelled by user");
+                }
+            }
+
             println!("Installed plugin '{}' v{}", manifest.id, manifest.version);
         }
         PluginCommand::Info { id } => match crate::plugin::find_plugin(&id)? {
@@ -542,7 +588,7 @@ fn handle_mcp(cmd: McpCommand) -> Result<()> {
 }
 
 /// Handle workflow management subcommands.
-async fn handle_workflow(cmd: WorkflowCommand) -> Result<()> {
+async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings) -> Result<()> {
     match cmd {
         WorkflowCommand::List => {
             let dir = crate::workflow::workflows_dir();
@@ -575,7 +621,23 @@ async fn handle_workflow(cmd: WorkflowCommand) -> Result<()> {
                     .find(|w| w.name == name)
                     .ok_or_else(|| anyhow::anyhow!("Workflow not found: {}", name))?
             };
-            crate::workflow::execute_workflow(&workflow).await?;
+
+            // Build real CoreRuntimeManager and ToolRegistry for workflow execution.
+            let workspace_root = std::env::current_dir().unwrap_or_default();
+            let manager = CoreRuntimeManager::new_local(workspace_root, settings.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e))?;
+            let registry = manager
+                .tool_registry()
+                .ok_or_else(|| anyhow::anyhow!("No tool registry available"))?;
+            let handle = crate::workflow::RuntimeWorkflowHandle::new(manager, registry);
+            let (_ctx, record) =
+                crate::workflow::execute_workflow(&workflow, &handle, None).await?;
+            println!(
+                "Run record: status={:?}, duration={}ms, steps={}",
+                record.status,
+                record.duration_ms,
+                record.steps.len()
+            );
         }
         WorkflowCommand::Validate { path } => {
             let path = std::path::PathBuf::from(&path);

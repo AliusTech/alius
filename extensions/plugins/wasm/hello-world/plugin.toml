@@ -1,0 +1,9 @@
+id = "hello-world"
+name = "Hello World"
+version = "0.1.0"
+description = "Example WASM plugin for Alius demonstrating the plugin ABI"
+author = "Alius Team"
+
+[permissions]
+filesystem = ["read:data/"]
+env = ["read:HOME"]

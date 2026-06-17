@@ -110,16 +110,40 @@ Plugin management and WASM host code exist. Production ABI, capability policy, s
 - `ToolPackageManifest` preserves permissions through conversion
 - `ResolvedPluginPermissions` for programmatic access
 - Tests cover all permission validation scenarios and package conversion
+- Runtime permission matcher (`PermissionDecision` + four `check_*` methods on `ResolvedPluginPermissions`) — pure logic, no I/O, designed for direct use by host imports
+- Filesystem matcher: canonicalization, workspace boundary, prefix match, symlink escape detection
+- Network matcher: URL prefix match with domain-boundary enforcement
+- Shell matcher: `exec:readonly` read-only command set, `exec:<literal>` exact match
+- Env matcher: exact variable name match
+- Old manifests default-deny all runtime checks
+- `ToolPackageManifest.permissions` used directly in matcher integration tests
+- WASM host imports (`read_file`, `write_file`, `list_dir`, `env_get`, `shell`, `fetch`) registered in wasmtime Linker
+- Host audit sink: `HostAuditSink` trait with `TracingAuditSink` (default); every host import call emits an `HostAuditEvent`
+- Sensitive data (file content, env values, stdout/stderr) NOT logged in audit
 
-**Not yet implemented:**
-- `wasm→host` imports (read_file, write_file, list_dir, fetch, shell, env_get)
-- Runtime host function calls do not yet check manifest permissions
-- No audit sink for host-function calls
-- No runtime enforcement of declared permissions
+**Remaining gaps:**
+- `fetch` host import is registered but stubs to "not yet implemented" — real HTTP execution is not wired
 
 ## Workflow Runtime
 
-Workflow command surfaces and parsing exist. Prompt and tool steps should not be described as a complete automated runtime unless they call the actual model and tool subsystems on the path being documented.
+**Status: P4 complete — wired to real runtime.**
+
+`workflow run` is backed by `CoreRuntimeManager` (LLM) and `ToolRegistry` (tools). Prompt steps enter the real LoopEngine via `run_text()`; tool steps execute through the shared `ToolRegistry` (WASM/native/MCP).
+
+**Implemented:**
+- `LoopEngineHandle` async trait with `run_prompt` and `run_tool` methods
+- `RuntimeWorkflowHandle` delegates to `CoreRuntimeManager` (prompt) and `ToolRegistry` (tool)
+- CLI `workflow run` constructs real `CoreRuntimeManager` + `ToolRegistry` instead of stub
+- Prompt/tool/condition/HTTP step execution through the trait
+- Condition step with `contains`, `success`, and `failed` operators
+- `StubLoopEngineHandle` retained for unit tests only
+- 9 tests: 7 unit tests + 1 integration test proving real runtime paths + 1 stub test
+- Integration test uses fake LLM provider + fake tool, verifies output does NOT contain `[prompt]`/`[tool:*]` stub markers
+
+**Remaining for P5:**
+- Workflow-level tool confirmation handling (Plan mode tool confirmations in workflow context)
+- Workflow step retry/error recovery policies
+- Workflow variable persistence across sessions
 
 ## Google Provider
 
@@ -127,4 +151,17 @@ Google provider code exists, but support should be documented cautiously unless 
 
 ## JSON-RPC Surface
 
-The JSON-RPC package is lightweight and exposes a small method dispatcher. It does not yet represent the full Core Runtime request, command, and event protocol.
+The JSON-RPC package exposes a method dispatcher backed by `CoreRuntimeManager`.
+
+**Implemented methods:**
+- `health_check` → `CoreRuntimeManager::health_check()`
+- `config_read` → `CoreRuntimeManager::config_read()`
+- `model_list` → `CoreRuntimeManager::model_list()`
+- `tool_list` → `CoreRuntimeManager::tool_list()`
+- `run_start` → `CoreRuntimeManager::start_streaming()`
+- `run_subscribe` → `CoreRuntimeManager::subscribe()` (event snapshot polling)
+- `run_cancel` → `CoreRuntimeManager::cancel()`
+- `run_confirm_tool` → `CoreRuntimeManager::respond_confirmation()`
+
+**Remaining gaps:**
+- More complete event serialization (event kind/payload are serialized via `serde_json::to_value` but coverage of all event variants over JSON-RPC is not exhaustive)

@@ -1,0 +1,10 @@
+- Always ensure release processes are reversible; provide rollback procedures before any deployment
+- Manage infrastructure through code (Ansible, Terraform, Helm); avoid manual changes on production systems
+- Design for observability: metrics, logs, and traces are non-negotiable for any production service
+- Apply least-privilege principles: restrict SSH access, manage secrets securely, isolate networks
+- Configure alerting with severity levels and noise reduction; alert fatigue is a reliability risk
+- Conduct blameless postmortems after incidents: timeline → root cause → action items → owners
+- Use canary or blue-green deployments; never release to 100% traffic without progressive validation
+- Assess blast radius and rollback plan before every infrastructure or configuration change
+- Prefer idempotent operations and declarative configuration over imperative scripts
+- Automate repetitive tasks: if you do it twice, script it; if you do it three times, pipeline it

@@ -1,0 +1,11 @@
+id = "motion-control-engineer"
+name = "Motion Control Engineer"
+version = "0.1.0"
+type = "soul"
+description = "A motion-control-focused soul for robot locomotion, manipulation, trajectory planning, and real-time control systems"
+license = "MIT"
+
+[model]
+preferred_provider = "anthropic"
+preferred_main_model = "claude-sonnet-4-20250514"
+preferred_review_model = "claude-sonnet-4-20250514"

@@ -107,8 +107,13 @@ impl CoreRuntimeBuilder {
             }
         };
 
+        let mut session_manager = SessionManager::new(workspace_ref);
+        if let Some(ref writer) = log_writer {
+            session_manager.set_event_sink(Arc::clone(writer));
+        }
+
         Ok(CoreRuntime {
-            session_manager: Arc::new(SessionManager::new(workspace_ref)),
+            session_manager: Arc::new(session_manager),
             settings: Arc::new(RwLock::new(settings)),
             client: Arc::new(client),
             active_runs: Arc::new(RwLock::new(HashMap::new())),
@@ -279,6 +284,8 @@ impl CoreRuntime {
 impl CoreRuntimeApi for CoreRuntime {
     type EventStream = Vec<CoreEvent>;
 
+    /// Non-streaming execution. Does not support cancellation via CancellationToken.
+    /// Use `start_streaming()` for product paths that need cancellation.
     fn start(&self, envelope: ProtocolEnvelope<CoreRequest>) -> Result<RunRef, ProtocolError> {
         self.validate_envelope(&envelope)?;
 
@@ -1364,8 +1371,8 @@ mod tests {
 
         let (run_ref, mut rx) = rt.start_streaming(envelope).unwrap();
 
-        // Wait for first event
-        let first_event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        // Wait for first event with generous timeout
+        let first_event = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
         assert!(first_event.is_ok(), "Should receive at least one event");
 
         // Cancel the run
@@ -1374,10 +1381,10 @@ mod tests {
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), cancel_cmd);
         rt.send(cmd_envelope).unwrap();
 
-        // Collect remaining events and ensure no success=true FinalResult
+        // Collect remaining events with generous timeout — ensure no success=true FinalResult
         let mut found_success_final = false;
         while let Ok(Some(event)) =
-            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
         {
             if let CoreEventKind::FinalResult = event.kind {
                 if let CoreEventPayload::Final { success: true, .. } = event.payload {
@@ -1391,16 +1398,29 @@ mod tests {
             "Cancelled run should not emit success=true FinalResult"
         );
 
-        // Verify status is Cancelled
+        // Wait for status propagation — the cancel command may take time to
+        // be processed and update the run status.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Verify status is Cancelled — use expect() to fail loudly if missing
         let sessions = rt
             .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
             .unwrap();
-        if let Some(session) = sessions.first() {
-            let snapshot = rt.inspect(&session.session_ref).unwrap();
-            if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
-                assert_eq!(run.status, RunStatus::Cancelled);
-            }
-        }
+        let session = sessions
+            .first()
+            .expect("session must exist after streaming run");
+        let snapshot = rt.inspect(&session.session_ref).unwrap();
+        let run = snapshot
+            .runs
+            .iter()
+            .find(|r| r.run_ref == run_ref)
+            .expect("run must exist in session snapshot");
+        assert_eq!(
+            run.status,
+            RunStatus::Cancelled,
+            "Expected Cancelled, got {:?}",
+            run.status
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

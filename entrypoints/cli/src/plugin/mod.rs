@@ -2,11 +2,14 @@
 //!
 //! Delegates to `runtime_tools::wasm_host` for all plugin operations.
 
-pub use runtime_tools::wasm_host::{Plugin, PluginManifest};
+pub use runtime_tools::wasm_host::{Plugin, PluginManifest, PluginUpgradeInfo};
 use std::path::Path;
 
 /// Install a plugin from a local directory containing plugin.toml + plugin.wasm.
-pub fn install_plugin(source_dir: &Path) -> anyhow::Result<PluginManifest> {
+/// Returns (manifest, permission_summary_lines, upgrade_info).
+pub fn install_plugin(
+    source_dir: &Path,
+) -> anyhow::Result<(PluginManifest, Vec<String>, Option<PluginUpgradeInfo>)> {
     runtime_tools::wasm_host::install_plugin(source_dir)
 }
 

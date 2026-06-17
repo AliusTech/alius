@@ -8,6 +8,25 @@ All entries use the format:
 
 ## 2026-06-17
 
+[2026-06-17 15:02] Codex: .alius/workspace/status/development-roadmap.md + .alius/workspace/HISTORY.md - Added a living development roadmap and progress report for the current P4 candidate, including review-report cross-check, feature/permission/security completeness assessment, high-priority gaps, branch plan, and future review gates.
+
+[2026-06-17 06:00] Alius: entrypoints/cli/src/workflow/mod.rs + entrypoints/cli/src/main.rs - P4-7 Workflow Runtime wiring: LoopEngineHandle trait methods are now async (async_trait); added RuntimeWorkflowHandle that delegates run_prompt to CoreRuntimeManager::run_text (real LLM provider via LoopEngine) and run_tool to ToolRegistry::get + AliusTool::execute (real WASM/native/MCP tool path); CLI workflow run now constructs CoreRuntimeManager and ToolRegistry instead of StubLoopEngineHandle; added test_runtime_handle_uses_real_paths integration test with fake provider + fake tool proving real paths are exercised (output must not contain [prompt] or [tool:*] stub markers); StubLoopEngineHandle retained for unit tests only.
+
+[2026-06-17 03:00] Alius: runtime/tools/src/wasm_host/host.rs + runtime/tools/src/wasm_host/mod.rs + .alius/workspace/docs/modules/plugin-permissions.md + .alius/workspace/docs/overview/implementation-gaps.md + .alius/workspace/HISTORY.md - P4-3 Runtime Permission Matcher: added PermissionDecision enum (Allow/Deny{reason}) and four check_* methods on ResolvedPluginPermissions (check_filesystem, check_network, check_shell, check_env); filesystem matcher canonicalizes paths, enforces workspace boundary, matches declared prefix with directory-boundary semantics; network matcher does URL prefix match with domain-boundary enforcement (prevents api.example.com.evil.com matching api.example.com); shell matcher supports exec:readonly (read-only command set including git) and exec:literal (exact match); env matcher enforces exact variable name match; old manifests default-deny all checks; READONLY_SHELL_COMMANDS constant aligns with shell_gate/inspector.rs LOW_RISK_COMMANDS; normalize_lexical helper for path normalization fallback; 30+ new tests covering default deny, filesystem (allow/traversal/absolute/symlink escape/operation mismatch/prefix boundary), network (prefix/undeclared/similar domain), shell (readonly allow/deny/literal/dangerous), env (exact/empty/prefix/undeclared), ToolPackageManifest integration; exported PermissionDecision from mod.rs; updated docs to reflect matcher is implemented but wasm→host imports and audit sink are not.
+
+[2026-06-17 05:00] Alius: P4 Extension System Maturity — candidate checkpoint. 10 of 10 sub-goals completed.
+
+- P4-1: Monorepo Extension Catalog — DONE. extensions/ directory with registry.toml, 6 souls migrated, bundled_souls_path() resolver, OFFICIAL_REMOTE deprecated, 11 formula tests
+- P4-2: WASM Permission Matcher — DONE. PermissionDecision with resolved_path, 4 check_* methods, default-deny, 30+ matcher tests
+- P4-3: Host Function Audit Sink — DONE. HostAuditEvent/HostAuditSink, TracingAuditSink, sensitive data redaction, 5 audit tests
+- P4-4: WASM Host Imports — DONE. 6 host functions with permission matcher → Shell Gate → audit → execute pipeline, 7 integration tests
+- P4-5: Plugin Registry — DONE. ExtensionRegistry loader, hello-world sample plugin, build docs
+- P4-6: MCP Completeness — DONE. Duplicate tool regression, source tagging verified
+- P4-7: Workflow Runtime — DONE. RuntimeWorkflowHandle wires workflow run to CoreRuntimeManager (LLM) and ToolRegistry (tools); async trait; integration test proves real paths; 9 workflow tests total
+- P4-8: JSON-RPC Surface — DONE. run_confirm_tool added, 33 tests
+- P4-9: Flaky Test Fix — DONE. 3/3 consecutive passes
+- P4-10: Documentation Sync — DONE
+
 [2026-06-17 02:15] Alius: runtime/tools/src/wasm_host/host.rs + runtime/tools/src/wasm_host/mod.rs + runtime/tools/src/package.rs + .alius/workspace/docs/modules/plugin-permissions.md + .alius/workspace/docs/overview/implementation-gaps.md + .alius/workspace/HISTORY.md - P4-2 Review fix: validate_env_permission now rejects wildcard targets (*) and invalid env var names (must be [A-Za-z_][A-Za-z0-9_]*); added InvalidEnvVarName error variant; fixed test_wildcard_env_rejected to assert error; restored validate_wasm_module export in mod.rs; added package conversion tests (Some(permissions) preserves four domains, None yields empty); updated docs to reflect env wildcard and empty targets are rejected; updated implementation-gaps.md WASM status.
 
 [2026-06-17 02:00] Alius: runtime/tools/src/wasm_host/host.rs + runtime/tools/src/wasm_host/mod.rs + runtime/tools/src/package.rs + .alius/workspace/docs/modules/plugin-permissions.md + .alius/workspace/docs/overview/implementation-gaps.md - P4-2 WASM Plugin Manifest Permissions: added PluginManifest.permissions field (optional, empty default for backward compatibility); structured permission model covering filesystem/network/shell/env domains with "operation:target" format; install-time validation rejects malformed entries (path traversal, absolute paths, unknown operations, empty targets); ResolvedPluginPermissions with summary_lines() for install-time display; ToolPackageManifest preserves permissions via From<PluginManifest>; 17 new tests covering empty/valid/malformed permissions, path traversal, absolute paths, env wildcards/empty, multiple errors, TOML parsing, unknown fields; updated plugin-permissions.md status to reflect implemented manifest validation; updated implementation-gaps.md WASM section.
@@ -169,3 +188,19 @@ All entries use the format:
 [2026-06-11 00:00] Codex: .alius/workspace - Documented inline prompt input for /config options, custom values, and checkbox-capable future prompts.
 
 [2026-06-11 00:00] Codex: .alius/workspace - Documented the tool runtime rule that all tools are implemented as Rust WASM modules, plus the long-term ABI, Soul selection, approval, audit, and distribution roadmap.
+
+[2026-06-17 23:59] Codex: entrypoints/cli/src/workflow/mod.rs - G1 Workflow Runtime Hardening complete: on_failure policy (abort/skip/retry), timeout_ms, CancellationToken, StepResult timing metadata, WorkflowRunRecord persistence, tool mode propagation, schema docs, 3 example workflows, 30 tests.
+
+[2026-06-17 23:59] Codex: runtime/tools/src/wasm_host/host.rs - G2 Plugin Install Authorization complete: permission summary display, --yes flag, upgrade detection with permission change warning, install-time confirmation prompt.
+
+[2026-06-17 23:59] Codex: runtime/tools/src/wasm_host/imports.rs - G3 Fetch Host Import complete: real HTTPS execution via reqwest, HTTPS-only enforcement, 10s timeout, 1MB body limit, permission check, audit logging.
+
+[2026-06-17 23:59] Codex: runtime/core/src/session.rs, runtime/core/src/logging/log_writer.rs - G4 Event Persistence complete: CoreEvent auto-persisted to events.jsonl via LogWriter sink, get_events falls back to disk for restart recovery.
+
+[2026-06-17 23:59] Codex: runtime/core/src/manager.rs - G5 Manager Boundary Hardening complete: workspace_root() and tool_registry() narrow accessors, runtime() marked doc-hidden, workflow and MCP paths migrated.
+
+[2026-06-17 23:59] Codex: runtime/tools/src/policy.rs - G6 Permission Policy Matrix complete: evaluate_policy(source, mode, risk) unified function, 36-cell matrix for Native/WASM/MCP x Chat/Plan/Bypass, ShellGate authorize returns RiskLevel, docs/permissions.md, 11 tests.
+
+[2026-06-17 23:59] Codex: entrypoints/jsonrpc/src/lib.rs - E1 legacy dispatch() stub marked #[cfg(test)].
+
+[2026-06-17 23:59] Codex: runtime/core/src/runtime.rs - E2 start() method documented as non-cancellation-capable.

@@ -1,0 +1,11 @@
+id = "embedded-engineer"
+name = "Embedded Engineer"
+version = "0.1.0"
+type = "soul"
+description = "An embedded-focused soul for firmware, RTOS, and hardware-level development"
+license = "MIT"
+
+[model]
+preferred_provider = "anthropic"
+preferred_main_model = "claude-sonnet-4-20250514"
+preferred_review_model = "claude-sonnet-4-20250514"

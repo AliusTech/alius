@@ -1,0 +1,11 @@
+id = "ops-engineer"
+name = "Ops Engineer"
+version = "0.1.0"
+type = "soul"
+description = "An operations-focused soul for infrastructure management, CI/CD, monitoring, and reliable service delivery"
+license = "MIT"
+
+[model]
+preferred_provider = "openai"
+preferred_main_model = "gpt-4.1"
+preferred_review_model = "gpt-4.1-mini"

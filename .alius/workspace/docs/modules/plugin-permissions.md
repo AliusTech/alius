@@ -239,11 +239,33 @@ on both paths.
 - Old manifests without `permissions` field parse successfully with empty permissions.
 - Tests cover: empty permissions, valid entries, malformed entries, path traversal, absolute paths, env wildcard and empty targets rejected, multiple errors, TOML parsing.
 
-**Not yet implemented** (wasm→host imports):
+**Implemented** (runtime permission matcher — P4-2/P4-3) — DONE:
 
-- `wasm_host/host.rs` links only host→wasm exports today; no `Linker` imports are registered.
-- No audit sink for host-function calls.
-- Runtime host function calls do not yet check manifest permissions.
-- No host functions for `read_file`, `write_file`, `list_dir`, `fetch`, `shell`, `env_get`.
+- `PermissionDecision` enum (`Allow` / `Deny { reason }`) for testable permission checks.
+- `ResolvedPluginPermissions::check_filesystem(operation, path, workspace_root)` — canonicalizes path, verifies workspace boundary, matches declared `read/write/list` prefix.
+- `ResolvedPluginPermissions::check_network(url)` — URL prefix match against declared `fetch:` entries with domain-boundary enforcement.
+- `ResolvedPluginPermissions::check_shell(command)` — `exec:readonly` allows read-only command set (`ls`, `cat`, `grep`, `git`, etc.); `exec:<literal>` requires exact command match.
+- `ResolvedPluginPermissions::check_env(var_name)` — exact variable name match, rejects empty names.
+- All matchers are pure (no I/O) and designed for direct use by host imports.
+- Old manifests with no permissions default-deny all checks.
+- 30+ matcher tests covering: default deny, filesystem (allow, traversal, absolute, symlink escape, operation mismatch, prefix boundary), network (prefix match, undeclared, similar domain), shell (readonly allow/deny, literal match, dangerous commands), env (exact match, empty, prefix, undeclared).
+- `ToolPackageManifest.permissions` used directly in matcher integration test.
 
-The native `shell` tool is the first concrete use of the shared security primitives (Shell Gate). When host imports land, they will reuse the same primitives rather than re-implementing safety checks.
+**Implemented** (WASM host imports) — DONE:
+
+- `read_file`, `write_file`, `list_dir`, `env_get`, `shell`, `fetch` imports registered in the WASM linker.
+- Each import routes through the permission matcher before reaching the OS.
+- `fetch` is deny-by-default (real HTTP execution not yet wired; see Remaining gaps).
+
+**Implemented** (host audit sink) — DONE:
+
+- `HostAuditEvent` and `HostAuditSink` provide structured audit logging for every host-function call.
+- Allow and deny decisions are logged with `{trace_id, plugin_id, action, target, allowed, ts}`.
+- Sensitive data (file content, environment variable values, stdout/stderr) is NOT logged.
+
+**Remaining gaps**:
+
+- `fetch` real HTTP execution not yet implemented (currently deny-by-default).
+- Install-time authorization prompt (render permission list and ask user to confirm) is not yet implemented.
+- Upgrade re-prompt for plugins with changed permissions is not yet implemented.
+- Audit records feeding into the trace system for per-session review is not yet implemented.

@@ -51,10 +51,8 @@ impl AliusTool for Shell {
             origin: ShellOrigin::LocalCli,
             workspace_root: PathBuf::new(),
         };
-        matches!(
-            authorize(&req, &ShellGateConfig::default()),
-            ShellGateDecision::ApprovalRequired { .. }
-        )
+        let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
+        matches!(decision, ShellGateDecision::ApprovalRequired { .. })
     }
 
     fn input_schema(&self) -> Value {
@@ -96,7 +94,8 @@ impl AliusTool for Shell {
             origin: ShellOrigin::LocalCli,
             workspace_root: ctx.workspace.clone(),
         };
-        if let ShellGateDecision::Deny { reason } = authorize(&req, &ShellGateConfig::default()) {
+        let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
+        if let ShellGateDecision::Deny { reason } = decision {
             return Ok(ToolResult::error(format!("denied by Shell Gate: {reason}")));
         }
         // Allow + ApprovalRequired both proceed. Plan-mode confirmation is

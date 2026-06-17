@@ -1,0 +1,55 @@
+# Alius Extension Registry
+#
+# This file describes the official extensions bundled with the Alius CLI.
+# Extensions are resolved relative to this file's directory.
+
+[[extensions]]
+id = "backend-engineer"
+type = "soul"
+path = "souls/Formula/souls/backend-engineer.toml"
+version = "0.1.0"
+description = "Backend-focused soul for server-side development and system design"
+
+[[extensions]]
+id = "embedded-engineer"
+type = "soul"
+path = "souls/Formula/souls/embedded-engineer.toml"
+version = "0.1.0"
+description = "Embedded systems engineering soul"
+
+[[extensions]]
+id = "frontend-engineer"
+type = "soul"
+path = "souls/Formula/souls/frontend-engineer.toml"
+version = "0.1.0"
+description = "Frontend-focused soul for UI/UX development"
+
+[[extensions]]
+id = "motion-control-engineer"
+type = "soul"
+path = "souls/Formula/souls/motion-control-engineer.toml"
+version = "0.1.0"
+description = "Motion control and robotics engineering soul"
+
+[[extensions]]
+id = "ops-engineer"
+type = "soul"
+path = "souls/Formula/souls/ops-engineer.toml"
+version = "0.1.0"
+description = "Operations and infrastructure engineering soul"
+
+[[extensions]]
+id = "personal-tutor"
+type = "soul"
+path = "souls/Formula/souls/personal-tutor.toml"
+version = "0.1.0"
+description = "Personal tutoring and educational soul"
+
+# ── WASM Plugins ──────────────────────────────────────────────────────
+
+[[extensions]]
+id = "hello-world"
+type = "wasm_plugin"
+path = "plugins/wasm/hello-world/plugin.toml"
+version = "0.1.0"
+description = "Example WASM plugin demonstrating the plugin ABI"

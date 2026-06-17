@@ -30,6 +30,7 @@ All methods below are dispatched through `dispatch_with_runtime` backed by `Core
 | `run_start` | Starts a streaming run. Returns correlation IDs for subsequent subscribe/cancel. | `{"text": "...", "mode": "Chat"|"Plan"}` | `{"run_ref": "...", "trace_id": "...", "session_ref": "..."}` |
 | `run_subscribe` | Returns a snapshot of events for a run. Not a push/long-poll subscription. | `{"run_ref": "..."}` | `{"events": [{event with trace_id, run_ref, session_ref, turn_ref, kind, payload, sequence, created_at}]}` |
 | `run_cancel` | Cancels a running execution. | `{"run_ref": "...", "reason": "optional"}` | `{"success": true}` |
+| `run_confirm_tool` | Responds to a tool confirmation request. | `{"run_ref": "...", "tool_call_id": "...", "approved": bool}` | `{"success": true}` |
 
 ### Error Codes
 
@@ -44,6 +45,7 @@ All methods below are dispatched through `dispatch_with_runtime` backed by `Core
 - `run_start` returns immediately with `run_ref` and correlation IDs. The run executes asynchronously.
 - `run_subscribe` returns a point-in-time event snapshot. It does not push events or long-poll.
 - `run_cancel` triggers runtime cancellation. After cancellation, `run_subscribe` will show `RunCancelled` or terminal `FinalResult` events.
+- `run_confirm_tool` responds to a `ToolConfirmationRequired` event. The `tool_call_id` must match the one from the event payload. `approved: true` resumes execution; `approved: false` denies and fails the batch.
 - No server push, continuous subscription, or long-lived connections are supported.
 
 ## Runtime Maturity

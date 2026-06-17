@@ -18,8 +18,8 @@ This file summarizes the current implementation state of Alius in this checkout.
 | TUI Plan drafting | Plan mode asks the model to clarify task details before proposing a plan; the Plans panel appears only after user approval. |
 | Model providers | OpenAI-compatible, Anthropic, BigModel, and Custom paths exist through `runtime-model`. |
 | Stores | Session, conversation, memory, episodic, semantic, procedural, and retrieval modules exist under `runtime-store`. |
-| Tools | Rust WASM module loading, `ToolRegistry`, `AliusTool`, and Shell Gate modules exist under `runtime-tools`. |
-| JSON-RPC | A lightweight `jsonrpc` package exposes a small method dispatcher and TCP line server. |
+| Tools | Rust WASM module loading, `ToolRegistry`, `AliusTool`, Shell Gate, WASM host imports (read_file/write_file/list_dir/env_get/shell/fetch), and host audit sink exist under `runtime-tools`. |
+| JSON-RPC | A lightweight `jsonrpc` package exposes 8 methods (health_check, config_read, model_list, tool_list, run_start, run_subscribe, run_cancel, run_confirm_tool) and TCP line server. |
 
 ## Partially Wired
 
@@ -38,9 +38,9 @@ This file summarizes the current implementation state of Alius in this checkout.
 | --- | --- |
 | Agent Team | TUI state and view concepts exist, but live Agent Team or AgentNet traffic is not connected by default. |
 | A2A | Protocol concepts and config surfaces exist, but A2A runtime plumbing is not a live default feature. |
-| MCP tools | MCP server config, connection, and tool listing exist. MCP auto-initialization requires: (1) `mcp` Cargo feature enabled, (2) project config `.alius/config/tools.toml` has `registry.mcp_tools = true`, `mcp.load_on_workspace_start = true`, and `mcp.register_as_tools = true`, (3) user-level `~/.alius/mcp/servers.toml` exists. When all conditions are met, MCP tools register into the shared `ToolRegistry` and are visible via `tool_list` / JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization failure does not block runtime startup. |
-| Rust WASM module tools | Tool module loading and registration code exists, but capability policy and production ABI behavior need more hardening. |
-| Workflow runtime | Workflow commands and parsing exist, but prompt and tool steps should not be described as a complete automation engine. |
+| MCP tools | MCP server config, connection, and tool listing exist. MCP auto-initialization requires: (1) `mcp` Cargo feature enabled, (2) project config `.alius/config/tools.toml` has `registry.mcp_tools = true`, `mcp.load_on_workspace_start = true`, and `mcp.register_as_tools = true`, (3) user-level `~/.alius/mcp/servers.toml` exists. When all conditions are met, MCP tools register into the shared `ToolRegistry` and are visible via `tool_list` / JSON-RPC `tool_list` with `ToolSource::Mcp`. Native/WASM tools take priority on name conflicts. MCP initialization failure does not block runtime startup. E2E tests verified with stdio echo server. |
+| Rust WASM module tools | Tool module loading, `ToolRegistry` registration, WASM host imports (6 functions with permission matcher → Shell Gate → audit pipeline), and host audit sink are implemented. Remaining gaps (P5): fetch real HTTP execution (deny-by-default), install-time authorization prompt, plugin upgrade re-prompt, audit trace persistence. |
+| Workflow runtime | `workflow run` is backed by `CoreRuntimeManager` (LLM via LoopEngine) and `ToolRegistry` (WASM/native/MCP tools). `RuntimeWorkflowHandle` delegates prompt steps to `run_text()` and tool steps to `ToolRegistry::get() + execute()`. 9 tests including integration test with fake provider/tool proving real runtime paths. |
 
 ## Planned
 

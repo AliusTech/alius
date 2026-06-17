@@ -1,7 +1,7 @@
 //! Session Manager — workspace/session/turn/run/trace lifecycle management.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 
@@ -12,6 +12,8 @@ pub struct SessionManager {
     workspace_ref: WorkspaceRef,
     sessions: RwLock<HashMap<String, SessionSnapshot>>,
     runs: RwLock<HashMap<String, RunState>>,
+    /// Optional persistent event sink for durable event storage.
+    event_sink: Option<Arc<Mutex<crate::logging::LogWriter>>>,
 }
 
 struct RunState {
@@ -32,7 +34,13 @@ impl SessionManager {
             workspace_ref,
             sessions: RwLock::new(HashMap::new()),
             runs: RwLock::new(HashMap::new()),
+            event_sink: None,
         }
+    }
+
+    /// Set an optional LogWriter for durable event persistence.
+    pub fn set_event_sink(&mut self, sink: Arc<Mutex<crate::logging::LogWriter>>) {
+        self.event_sink = Some(sink);
     }
 
     /// Return the workspace root path.
@@ -127,7 +135,15 @@ impl SessionManager {
     }
 
     /// Push an event into a run's event buffer.
+    /// If an event sink is configured, the event is also persisted to disk.
     pub fn push_event(&self, run_ref: &RunRef, event: CoreEvent) -> Result<(), ProtocolError> {
+        // Persist to disk first (best-effort, non-blocking).
+        if let Some(ref sink) = self.event_sink {
+            if let Ok(mut writer) = sink.lock() {
+                let _ = writer.append_core_event(&event);
+            }
+        }
+
         let mut runs = self.runs.write().unwrap();
         let state = runs
             .get_mut(run_ref.as_str())
@@ -137,12 +153,41 @@ impl SessionManager {
     }
 
     /// Get all events for a run.
+    /// If the run exists in memory, returns in-memory events.
+    /// If not in memory, falls back to disk (`events.jsonl`) for process restart recovery.
     pub fn get_events(&self, run_ref: &RunRef) -> Result<Vec<CoreEvent>, ProtocolError> {
         let runs = self.runs.read().unwrap();
-        let state = runs
-            .get(run_ref.as_str())
-            .ok_or_else(|| ProtocolError::RunNotFound(run_ref.clone()))?;
-        Ok(state.events.clone())
+        if let Some(state) = runs.get(run_ref.as_str()) {
+            return Ok(state.events.clone());
+        }
+        drop(runs);
+
+        // Run not in memory — try disk for process restart recovery.
+        let disk_events = self.load_events_from_disk(run_ref.as_str());
+        if disk_events.is_empty() {
+            return Err(ProtocolError::RunNotFound(run_ref.clone()));
+        }
+        Ok(disk_events)
+    }
+
+    /// Load events for a specific run from `events.jsonl` on disk.
+    fn load_events_from_disk(&self, run_ref: &str) -> Vec<CoreEvent> {
+        let log_dir = self.workspace_ref.root.join(".alius").join("logs");
+        let path = log_dir.join("events.jsonl");
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        content
+            .lines()
+            .filter_map(|line| {
+                let event: CoreEvent = serde_json::from_str(line).ok()?;
+                if event.run_ref.as_str() == run_ref {
+                    Some(event)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Get the next sequence number for a run (max existing sequence + 1).

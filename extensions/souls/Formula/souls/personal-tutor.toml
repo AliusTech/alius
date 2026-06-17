@@ -1,0 +1,11 @@
+id = "personal-tutor"
+name = "Personal Tutor"
+version = "0.1.0"
+type = "soul"
+description = "A personalized tutoring soul for adaptive teaching, knowledge mentoring, and learning path guidance"
+license = "MIT"
+
+[model]
+preferred_provider = "anthropic"
+preferred_main_model = "claude-sonnet-4-20250514"
+preferred_review_model = "claude-sonnet-4-20250514"

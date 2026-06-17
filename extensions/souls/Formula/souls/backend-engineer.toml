@@ -1,0 +1,11 @@
+id = "backend-engineer"
+name = "Backend Engineer"
+version = "0.1.0"
+type = "soul"
+description = "A backend-focused soul for server-side development and system design"
+license = "MIT"
+
+[model]
+preferred_provider = "openai"
+preferred_main_model = "gpt-4.1"
+preferred_review_model = "gpt-4.1-mini"

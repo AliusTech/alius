@@ -127,6 +127,27 @@ impl LogWriter {
         Ok(())
     }
 
+    /// Append a CoreEvent to `events.jsonl` for durable event persistence.
+    ///
+    /// This creates/opens a fourth JSONL file alongside the existing three.
+    /// Events are appended synchronously; callers should not block on this.
+    pub fn append_core_event(
+        &mut self,
+        event: &protocol_interface::core::CoreEvent,
+    ) -> Result<(), LoggingError> {
+        let path = self.log_dir.join("events.jsonl");
+        let line = serde_json::to_string(event).map_err(LoggingError::Serialization)?;
+        let line_with_newline = format!("{}\n", line);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(LoggingError::Io)?
+            .write_all(line_with_newline.as_bytes())
+            .map_err(LoggingError::Io)?;
+        Ok(())
+    }
+
     /// Flush all file buffers to disk.
     pub fn flush(&mut self) -> Result<(), LoggingError> {
         self.runtime_log.flush().map_err(LoggingError::Io)?;

@@ -66,6 +66,7 @@ const ERR_RUNTIME: i64 = -32000;
 ///
 /// **Deprecated**: use `dispatch_with_runtime` for runtime-backed execution.
 /// Kept only for backward-compat unit tests that verify basic JSON-RPC framing.
+#[cfg(test)]
 pub fn dispatch(request: &JsonRpcRequest) -> JsonRpcResponse {
     match request.method.as_str() {
         "health_check" => JsonRpcResponse {
@@ -105,7 +106,8 @@ pub fn dispatch(request: &JsonRpcRequest) -> JsonRpcResponse {
 /// - `version`      → local crate version (no runtime)
 /// - `run_start`    → `CoreRuntimeManager::start_streaming()`
 /// - `run_subscribe`→ `CoreRuntimeManager::subscribe()` (snapshot)
-/// - `run_cancel`   → `CoreRuntimeManager::cancel()`
+/// - `run_cancel`        → `CoreRuntimeManager::cancel()`
+/// - `run_confirm_tool`  → `CoreRuntimeManager::respond_confirmation()`
 pub fn dispatch_with_runtime(
     request: &JsonRpcRequest,
     manager: &CoreRuntimeManager,
@@ -134,6 +136,7 @@ pub fn dispatch_with_runtime(
         "run_start" => handle_run_start(request, manager),
         "run_subscribe" => handle_run_subscribe(request, manager),
         "run_cancel" => handle_run_cancel(request, manager),
+        "run_confirm_tool" => handle_run_confirm_tool(request, manager),
         _ => method_not_found(request),
     }
 }
@@ -237,6 +240,34 @@ fn handle_run_cancel(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> 
         .map(String::from);
 
     match manager.cancel(&run_ref, reason) {
+        Ok(()) => success(request, serde_json::json!({"success": true})),
+        Err(e) => runtime_error(request, e.to_string()),
+    }
+}
+
+/// `run_confirm_tool`: Respond to a tool confirmation request.
+/// Params: `{"run_ref": "...", "tool_call_id": "...", "approved": true/false}`
+/// Returns: `{"success": true}`
+fn handle_run_confirm_tool(
+    request: &JsonRpcRequest,
+    manager: &CoreRuntimeManager,
+) -> JsonRpcResponse {
+    let run_ref_str = match request.params.get("run_ref").and_then(|v| v.as_str()) {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return invalid_params(request, "params.run_ref is required"),
+    };
+    let tool_call_id = match request.params.get("tool_call_id").and_then(|v| v.as_str()) {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => return invalid_params(request, "params.tool_call_id is required"),
+    };
+    let approved = match request.params.get("approved").and_then(|v| v.as_bool()) {
+        Some(b) => b,
+        None => return invalid_params(request, "params.approved (bool) is required"),
+    };
+
+    let run_ref = RunRef::from_existing(run_ref_str.to_string());
+
+    match manager.respond_confirmation(&run_ref, tool_call_id, approved) {
         Ok(()) => success(request, serde_json::json!({"success": true})),
         Err(e) => runtime_error(request, e.to_string()),
     }

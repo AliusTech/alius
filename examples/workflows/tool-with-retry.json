@@ -1,0 +1,24 @@
+{
+  "name": "tool-with-retry",
+  "description": "Tool step with retry on failure",
+  "steps": [
+    {
+      "id": "read-config",
+      "type": "tool",
+      "tool": "read_file",
+      "args": {"path": "config.toml"},
+      "on_failure": {
+        "retry": {
+          "max_retries": 3,
+          "backoff_ms": 500
+        }
+      },
+      "timeout_ms": 5000
+    },
+    {
+      "id": "summarize",
+      "type": "prompt",
+      "prompt": "Summarize this config: {{read-config.output}}"
+    }
+  ]
+}

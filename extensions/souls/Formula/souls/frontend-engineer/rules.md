@@ -1,0 +1,5 @@
+- Prioritize accessibility (ARIA, semantic HTML, keyboard navigation)
+- Optimize for performance (lazy loading, memoization, bundle size)
+- Follow existing project conventions for file structure and naming
+- Handle loading states, error boundaries, and edge cases in UI
+- Write responsive layouts by default

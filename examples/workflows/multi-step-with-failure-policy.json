@@ -1,0 +1,40 @@
+{
+  "name": "multi-step-failure-policy",
+  "description": "Multi-step workflow with mixed failure policies",
+  "mode": "plan",
+  "timeout_ms": 120000,
+  "steps": [
+    {
+      "id": "fetch-data",
+      "type": "http",
+      "url": "https://api.example.com/data",
+      "method": "GET",
+      "on_failure": "skip"
+    },
+    {
+      "id": "check-fetch",
+      "type": "condition",
+      "prompt": "fetch-data success",
+      "on_failure": "abort"
+    },
+    {
+      "id": "process",
+      "type": "prompt",
+      "prompt": "Process this data: {{fetch-data.output}}",
+      "on_failure": {
+        "retry": {
+          "max_retries": 2,
+          "backoff_ms": 1000
+        }
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "id": "save",
+      "type": "tool",
+      "tool": "write_file",
+      "args": {"path": "output.txt", "content": "{{process.output}}"},
+      "on_failure": "abort"
+    }
+  ]
+}

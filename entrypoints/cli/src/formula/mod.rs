@@ -9,11 +9,68 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Default remote URL for the official Alius Soul repository.
+/// Legacy remote URL for the official Alius Soul repository.
+///
+/// **Deprecated**: Official souls are now bundled in the main repository under
+/// `extensions/souls/`. Use [`bundled_souls_path`] instead. This constant is
+/// kept only for backward compatibility and migration.
+#[deprecated(note = "Use bundled_souls_path() — official souls are now in extensions/souls/")]
 pub const OFFICIAL_REMOTE: &str = "git@github.com:AliusTech/alius-souls.git";
 
-/// Public fallback URL for environments without GitHub SSH credentials.
+/// Legacy public fallback URL.
+///
+/// **Deprecated**: See [`OFFICIAL_REMOTE`].
+#[deprecated(note = "Use bundled_souls_path() — official souls are now in extensions/souls/")]
 pub const OFFICIAL_HTTPS_REMOTE: &str = "https://github.com/AliusTech/alius-souls.git";
+
+/// Get the path to the bundled souls repository root in the main repository.
+///
+/// Returns the root that contains `Formula/souls/` — i.e. `extensions/souls`.
+/// This matches the layout expected by `sync_souls_from_repo()` and `list_formulas()`.
+///
+/// Looks relative to:
+/// 1. The directory containing the current executable (release builds)
+/// 2. `CARGO_MANIFEST_DIR` (development builds)
+/// 3. Current working directory
+///
+/// Returns `None` if the bundled directory is not found.
+pub fn bundled_souls_path() -> Option<PathBuf> {
+    // Try relative to the executable first (release builds)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let path = exe_dir.join("extensions/souls");
+            if path.join("Formula").join("souls").exists() {
+                return Some(path);
+            }
+            if let Some(parent) = exe_dir.parent() {
+                let path = parent.join("extensions/souls");
+                if path.join("Formula").join("souls").exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    // Try relative to CARGO_MANIFEST_DIR (development builds)
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let path = PathBuf::from(manifest_dir)
+            .join("..")
+            .join("extensions/souls");
+        if path.join("Formula").join("souls").exists() {
+            return Some(path);
+        }
+    }
+
+    // Try current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        let path = cwd.join("extensions/souls");
+        if path.join("Formula").join("souls").exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
 
 /// A parsed formula definition from TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +107,11 @@ pub fn official_repo_path() -> PathBuf {
         .join("souls")
 }
 
-/// Clone or update the official Alius Soul repository.
+/// Clone or update the official Alius Soul repository (legacy fallback).
+///
+/// This function is the fallback when bundled souls are not available.
+/// Prefer [`sync_all_souls`] which tries the bundled path first.
+#[allow(deprecated)]
 pub fn update_repo() -> Result<PathBuf> {
     let path = official_repo_path();
     if path.join(".git").exists() {
@@ -131,11 +192,15 @@ pub fn sync_official_repo() -> Result<PathBuf> {
     update_repo()
 }
 
-/// Sync all official soul formulas from alius-souls into `~/.alius/soul`.
+/// Sync all official soul formulas into `~/.alius/soul`.
 ///
-/// This refreshes the local official soul cache without removing any local
-/// custom souls that are not present in alius-souls.
+/// Tries the bundled `extensions/souls` path first (no network required).
+/// Falls back to cloning from the legacy git remote if bundled path is not found.
 pub fn sync_all_souls() -> Result<Vec<FormulaDef>> {
+    if let Some(bundled) = bundled_souls_path() {
+        return sync_souls_from_repo(&bundled);
+    }
+    // Fallback to legacy git remote
     let repo_path = sync_official_repo()?;
     sync_souls_from_repo(&repo_path)
 }
@@ -151,15 +216,18 @@ pub fn sync_souls_from_repo(repo_path: &Path) -> Result<Vec<FormulaDef>> {
 
 /// List all available souls from the official repository.
 ///
-/// Syncs the repo if it doesn't exist locally, then parses formula definitions.
+/// Tries the bundled path first (no network), then falls back to the legacy
+/// git clone if available.
 pub fn list_available_souls() -> Result<Vec<FormulaDef>> {
+    if let Some(bundled) = bundled_souls_path() {
+        return list_formulas(&bundled, "souls");
+    }
+    // Fallback: try the legacy repo cache
     let repo_path = official_repo_path();
-    let repo_path = if repo_path.exists() {
-        repo_path
-    } else {
-        sync_official_repo()?
-    };
-    list_formulas(&repo_path, "souls")
+    if repo_path.exists() {
+        return list_formulas(&repo_path, "souls");
+    }
+    Ok(vec![])
 }
 
 /// List all formulas in a directory (e.g. Formula/souls/).
@@ -447,13 +515,13 @@ pub fn current_project_soul() -> Option<String> {
 
 /// Install and activate a soul by formula ID.
 ///
-/// Looks up the formula in the official repository, installs it to the global
-/// directory, and activates it for the current project.
+/// Looks up the formula in the bundled extensions or legacy repo,
+/// installs it to the global directory, and activates it for the current project.
 pub fn install_and_activate_soul(id: &str) -> Result<FormulaDef> {
     if !soul_dir().join(id).exists() {
-        let repo_path = official_repo_path();
-        if repo_path.exists() {
-            sync_souls_from_repo(&repo_path)?;
+        // Try bundled first, then legacy
+        if let Some(bundled) = bundled_souls_path() {
+            sync_souls_from_repo(&bundled)?;
         } else {
             sync_all_souls()?;
         }
@@ -534,6 +602,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn official_remote_uses_maintainer_ssh_url() {
         assert_eq!(OFFICIAL_REMOTE, "git@github.com:AliusTech/alius-souls.git");
         assert_eq!(
@@ -761,5 +830,46 @@ mod tests {
 
         let result = list_formulas(&repo_dir, "souls").unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_sync_from_bundled_path() {
+        let _guard = EnvGuard::save();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a mock bundled souls structure
+        let bundled = tmp.path().join("extensions/souls/Formula/souls");
+        std::fs::create_dir_all(bundled.join("test-soul")).unwrap();
+
+        let toml = r#"
+id = "test-soul"
+name = "Test Soul"
+version = "0.1.0"
+type = "soul"
+description = "A test soul"
+"#;
+        std::fs::write(bundled.join("test-soul.toml"), toml).unwrap();
+        std::fs::write(bundled.join("test-soul/identity.md"), "I am a test").unwrap();
+        std::fs::write(bundled.join("test-soul/style.md"), "Be testing").unwrap();
+        std::fs::write(bundled.join("test-soul/rules.md"), "Always test").unwrap();
+
+        // Set HOME to tmp so soul_dir() uses our temp
+        std::env::set_var("HOME", tmp.path().join("home").to_str().unwrap());
+
+        // Sync using the bundled path
+        let souls = sync_souls_from_repo(tmp.path().join("extensions/souls").as_path()).unwrap();
+        assert_eq!(souls.len(), 1);
+        assert_eq!(souls[0].id, "test-soul");
+
+        // Verify installed
+        let installed = list_installed_souls().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].id, "test-soul");
+
+        // Verify prompts copied
+        let prompts = load_soul_prompts("test-soul").unwrap();
+        assert!(prompts.contains("I am a test"));
+        assert!(prompts.contains("Be testing"));
+        assert!(prompts.contains("Always test"));
     }
 }

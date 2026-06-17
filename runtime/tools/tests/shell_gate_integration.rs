@@ -175,7 +175,7 @@ fn test_multiple_external_paths_detected() {
 fn test_authorize_etc_passwd_denied() {
     let mut req = make_request("/workspace", "/workspace", "cat /etc/passwd");
     req.args = vec!["/etc/passwd".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for /etc/passwd, got {:?}",
@@ -187,7 +187,7 @@ fn test_authorize_etc_passwd_denied() {
 fn test_authorize_parent_escape_denied() {
     let mut req = make_request("/workspace", "/workspace", "cat ../outside/file.txt");
     req.args = vec!["../outside/file.txt".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for ../outside escape, got {:?}",
@@ -199,7 +199,7 @@ fn test_authorize_parent_escape_denied() {
 fn test_authorize_output_flag_denied() {
     let mut req = make_request("/workspace", "/workspace", "gcc main.c --output=/tmp/out");
     req.args = vec!["main.c".to_string(), "--output=/tmp/out".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for --output=/tmp/out, got {:?}",
@@ -210,7 +210,7 @@ fn test_authorize_output_flag_denied() {
 #[test]
 fn test_authorize_stdout_redirect_denied() {
     let req = make_request("/workspace", "/workspace", "echo test > /tmp/out");
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for > /tmp/out, got {:?}",
@@ -221,7 +221,7 @@ fn test_authorize_stdout_redirect_denied() {
 #[test]
 fn test_authorize_stderr_redirect_denied() {
     let req = make_request("/workspace", "/workspace", "command 2>/tmp/err");
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for 2>/tmp/err, got {:?}",
@@ -233,7 +233,7 @@ fn test_authorize_stderr_redirect_denied() {
 fn test_authorize_workspace_internal_allowed() {
     let mut req = make_request("/workspace", "/workspace", "cat ./src/main.rs");
     req.args = vec!["./src/main.rs".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert_eq!(
         decision,
         ShellGateDecision::Allow,
@@ -245,7 +245,7 @@ fn test_authorize_workspace_internal_allowed() {
 fn test_authorize_high_risk_internal_requires_approval() {
     let mut req = make_request("/workspace", "/workspace", "rm -rf ./build");
     req.args = vec!["-rf".to_string(), "./build".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::ApprovalRequired { .. }),
         "Expected ApprovalRequired for high-risk workspace-internal command, got {:?}",
@@ -257,7 +257,7 @@ fn test_authorize_high_risk_internal_requires_approval() {
 fn test_authorize_high_risk_external_denied() {
     let mut req = make_request("/workspace", "/workspace", "rm -rf /tmp/foo");
     req.args = vec!["-rf".to_string(), "/tmp/foo".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for high-risk external path (rm -rf /tmp/foo), got {:?}",
@@ -269,7 +269,7 @@ fn test_authorize_high_risk_external_denied() {
 fn test_authorize_critical_risk_external_denied() {
     let mut req = make_request("/workspace", "/workspace", "sudo rm -rf /etc");
     req.args = vec!["rm".to_string(), "-rf".to_string(), "/etc".to_string()];
-    let decision = authorize(&req, &ShellGateConfig::default());
+    let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
     assert!(
         matches!(decision, ShellGateDecision::Deny { .. }),
         "Expected Deny for critical-risk external path (sudo rm -rf /etc), got {:?}",

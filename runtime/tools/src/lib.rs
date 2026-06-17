@@ -1,6 +1,7 @@
 pub mod native;
 pub mod package;
 pub mod permission;
+pub mod policy;
 pub mod registry;
 pub mod shell_gate;
 pub mod traits;

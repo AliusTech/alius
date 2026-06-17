@@ -1,0 +1,8 @@
+- Always respect real-time constraints and deterministic execution requirements
+- Validate control algorithms in simulation (Gazebo, Isaac Sim, MuJoCo) before deployment
+- Consider system-level safety: joint limits, velocity limits, collision avoidance, and fail-safe behaviors
+- Design modular control architectures: separate planning, control, and feedback layers
+- Use proper coordinate frame conventions and document all transformations (TF trees)
+- Account for sensor latency, noise, and failure modes in control loop design
+- Prefer model-based approaches (MPC, WBC, impedance control) when dynamics are well-characterized
+- When using learning-based methods, ensure safety constraints and bounded outputs

@@ -36,6 +36,52 @@ impl From<PluginManifest> for ToolPackageManifest {
     }
 }
 
+/// Extension registry entry from `extensions/registry.toml`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RegistryEntry {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub path: String,
+    pub version: String,
+    pub description: String,
+}
+
+/// Top-level extension registry.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExtensionRegistry {
+    pub extensions: Vec<RegistryEntry>,
+}
+
+impl ExtensionRegistry {
+    /// Load registry from a `registry.toml` file.
+    pub fn load(registry_path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(registry_path)?;
+        let registry: ExtensionRegistry = toml::from_str(&content)?;
+        Ok(registry)
+    }
+
+    /// Find a WASM plugin entry by ID and resolve its manifest path.
+    pub fn find_wasm_plugin(&self, id: &str, base_dir: &Path) -> Option<PathBuf> {
+        self.extensions
+            .iter()
+            .find(|e| e.id == id && e.entry_type == "wasm_plugin")
+            .map(|e| base_dir.join(&e.path))
+    }
+
+    /// List all WASM plugin entries with resolved manifest paths.
+    pub fn list_wasm_plugins(&self, base_dir: &Path) -> Vec<(RegistryEntry, PathBuf)> {
+        self.extensions
+            .iter()
+            .filter(|e| e.entry_type == "wasm_plugin")
+            .map(|e| {
+                let path = base_dir.join(&e.path);
+                (e.clone(), path)
+            })
+            .collect()
+    }
+}
+
 /// Installed Rust WASM tool package.
 #[derive(Debug, Clone)]
 pub struct ToolPackage {

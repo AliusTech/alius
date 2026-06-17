@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Plugin metadata from plugin.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,9 +93,11 @@ const SHELL_OPS: &[&str] = &["exec"];
 const ENV_OPS: &[&str] = &["read"];
 
 /// Validate all permission entries in a manifest.
-/// Returns Ok(()) if all entries are valid, Err with all errors otherwise.
-pub fn validate_permissions(permissions: &PluginPermissions) -> Result<()> {
+/// Returns Ok(warnings) if all entries are valid, Err with all errors otherwise.
+/// Warnings include non-blocking notices like "fetch not yet implemented".
+pub fn validate_permissions(permissions: &PluginPermissions) -> Result<Vec<String>> {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
 
     for entry in &permissions.filesystem {
         if let Err(e) = validate_fs_permission(entry) {
@@ -106,6 +108,10 @@ pub fn validate_permissions(permissions: &PluginPermissions) -> Result<()> {
         if let Err(e) = validate_net_permission(entry) {
             errors.push(e);
         }
+    }
+    if !permissions.network.is_empty() {
+        warnings
+            .push("network permissions are declared but fetch is not yet implemented".to_string());
     }
     for entry in &permissions.shell {
         if let Err(e) = validate_shell_permission(entry) {
@@ -125,7 +131,7 @@ pub fn validate_permissions(permissions: &PluginPermissions) -> Result<()> {
             messages.join("\n  - ")
         );
     }
-    Ok(())
+    Ok(warnings)
 }
 
 fn parse_permission(entry: &str) -> Result<ParsedPermission, PermissionValidationError> {
@@ -224,7 +230,7 @@ fn is_valid_env_var_name(name: &str) -> bool {
 }
 
 /// A plugin with its resolved permissions (from manifest or default).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolvedPluginPermissions {
     pub filesystem: Vec<String>,
     pub network: Vec<String>,
@@ -272,6 +278,256 @@ impl ResolvedPluginPermissions {
         }
         lines
     }
+
+    /// Check whether a filesystem operation is allowed by this permission set.
+    ///
+    /// `operation` is one of `"read"`, `"write"`, `"list"`.
+    /// `path` is the requested path **relative to workspace root**.
+    /// `workspace_root` is the absolute workspace root on the host filesystem.
+    ///
+    /// The path is canonicalized (resolving symlinks and `..`) and checked to
+    /// ensure it stays within the workspace boundary. A declared permission
+    /// prefix matches if the canonical path equals the prefix or is a child of it.
+    pub fn check_filesystem(
+        &self,
+        operation: &str,
+        path: &Path,
+        workspace_root: &Path,
+    ) -> PermissionDecision {
+        // Absolute paths are always rejected.
+        if path.is_absolute() {
+            return PermissionDecision::deny("absolute paths are not allowed");
+        }
+
+        if self.filesystem.is_empty() {
+            return PermissionDecision::deny("no filesystem permissions declared");
+        }
+
+        let full_path = workspace_root.join(path);
+
+        // Canonicalize to resolve symlinks and `..`. If canonicalization fails
+        // (path doesn't exist yet), fall back to lexical normalization.
+        let (canonical, ws_canonical) =
+            match (full_path.canonicalize(), workspace_root.canonicalize()) {
+                (Ok(canon), Ok(ws)) => (canon, ws),
+                _ => (
+                    normalize_lexical(&full_path),
+                    normalize_lexical(workspace_root),
+                ),
+            };
+
+        // Reject paths that escape the workspace boundary.
+        if !canonical.starts_with(&ws_canonical) {
+            return PermissionDecision::deny("path escapes workspace boundary");
+        }
+
+        // Check each declared permission for a prefix match.
+        for entry in &self.filesystem {
+            let (op, target) = match entry.split_once(':') {
+                Some(pair) => pair,
+                None => continue,
+            };
+            if op != operation {
+                continue;
+            }
+
+            let prefix_canonical = match workspace_root.join(target).canonicalize() {
+                Ok(p) => p,
+                _ => normalize_lexical(&workspace_root.join(target)),
+            };
+
+            if canonical == prefix_canonical
+                || canonical.starts_with(
+                    prefix_canonical
+                        .join("__placeholder__")
+                        .parent()
+                        .unwrap_or(&prefix_canonical),
+                )
+            {
+                // More precise check: path must start with prefix + "/" or equal prefix.
+                if canonical == prefix_canonical
+                    || canonical.starts_with(format!(
+                        "{}{}",
+                        prefix_canonical.display(),
+                        std::path::MAIN_SEPARATOR
+                    ))
+                {
+                    return PermissionDecision::Allow {
+                        resolved_path: canonical,
+                    };
+                }
+            }
+        }
+
+        PermissionDecision::deny(&format!(
+            "filesystem {operation} not permitted for path '{}'",
+            path.display()
+        ))
+    }
+
+    /// Check whether a network request is allowed by this permission set.
+    ///
+    /// The URL is prefix-matched against declared `fetch:<prefix>` entries.
+    pub fn check_network(&self, url: &str) -> PermissionDecision {
+        if self.network.is_empty() {
+            return PermissionDecision::deny("no network permissions declared");
+        }
+
+        for entry in &self.network {
+            let (op, prefix) = match entry.split_once(':') {
+                Some(pair) => pair,
+                None => continue,
+            };
+            if op != "fetch" {
+                continue;
+            }
+            // Exact match, or prefix followed by a path/query separator.
+            // This prevents "https://api.example.com.evil.com" from matching
+            // a declared prefix of "https://api.example.com".
+            if url == prefix
+                || url.starts_with(prefix)
+                    && url
+                        .as_bytes()
+                        .get(prefix.len())
+                        .map(|&b| b == b'/' || b == b'?')
+                        .unwrap_or(false)
+            {
+                return PermissionDecision::allow_no_path();
+            }
+        }
+
+        PermissionDecision::deny(&format!("network fetch not permitted for URL '{url}'"))
+    }
+
+    /// Check whether a shell command is allowed by this permission set.
+    ///
+    /// `exec:readonly` allows commands in the read-only set (ls, cat, grep, git, etc.).
+    /// `exec:<literal>` allows the exact command string only.
+    pub fn check_shell(&self, command: &str) -> PermissionDecision {
+        if self.shell.is_empty() {
+            return PermissionDecision::deny("no shell permissions declared");
+        }
+
+        let trimmed = command.trim();
+        let base_command = trimmed.split_whitespace().next().unwrap_or("");
+
+        for entry in &self.shell {
+            let (op, target) = match entry.split_once(':') {
+                Some(pair) => pair,
+                None => continue,
+            };
+            if op != "exec" {
+                continue;
+            }
+
+            if target == "readonly" {
+                if READONLY_SHELL_COMMANDS.contains(&base_command) {
+                    return PermissionDecision::allow_no_path();
+                }
+            } else if trimmed == target {
+                return PermissionDecision::allow_no_path();
+            }
+        }
+
+        PermissionDecision::deny(&format!("shell command not permitted: '{command}'"))
+    }
+
+    /// Check whether reading an environment variable is allowed by this permission set.
+    ///
+    /// Variable names must match exactly — no wildcards, no prefixes.
+    pub fn check_env(&self, var_name: &str) -> PermissionDecision {
+        if var_name.is_empty() {
+            return PermissionDecision::deny("empty environment variable name");
+        }
+
+        if self.env.is_empty() {
+            return PermissionDecision::deny("no env permissions declared");
+        }
+
+        for entry in &self.env {
+            let (op, target) = match entry.split_once(':') {
+                Some(pair) => pair,
+                None => continue,
+            };
+            if op != "read" {
+                continue;
+            }
+            if target == var_name {
+                return PermissionDecision::allow_no_path();
+            }
+        }
+
+        PermissionDecision::deny(&format!("env read not permitted for '{var_name}'"))
+    }
+}
+
+/// Result of a runtime permission check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionDecision {
+    /// The operation is allowed.
+    ///
+    /// For filesystem checks, `resolved_path` contains the canonicalized
+    /// absolute path that was verified against the workspace boundary.
+    /// Callers MUST use this path for execution instead of re-joining,
+    /// to avoid TOCTOU between check and execution.
+    Allow { resolved_path: std::path::PathBuf },
+    /// The operation is denied with a human-readable reason.
+    Deny { reason: String },
+}
+
+impl PermissionDecision {
+    /// Create a `Deny` decision with the given reason.
+    pub fn deny(reason: &str) -> Self {
+        Self::Deny {
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Create an `Allow` decision with an empty resolved path (for non-fs checks).
+    pub fn allow_no_path() -> Self {
+        Self::Allow {
+            resolved_path: std::path::PathBuf::new(),
+        }
+    }
+
+    /// Returns `true` if the decision is `Allow`.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allow { .. })
+    }
+
+    /// Returns the resolved path if this is an `Allow` decision.
+    pub fn resolved_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Allow { resolved_path } => Some(resolved_path),
+            Self::Deny { .. } => None,
+        }
+    }
+}
+
+/// Shell commands allowed under `exec:readonly` permission.
+///
+/// Aligns with `LOW_RISK_COMMANDS` in shell_gate/inspector.rs plus `git`
+/// (which has subcommand-level risk classification in Shell Gate).
+const READONLY_SHELL_COMMANDS: &[&str] = &[
+    "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", "diff", "echo", "pwd",
+    "whoami", "which", "type", "stat", "file", "tree", "rg", "ag", "fd", "bat", "git",
+];
+
+/// Resolve `.` and `..` components in a path without filesystem access.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
 }
 
 /// A discovered Rust WASM tool module on disk.
@@ -320,7 +576,9 @@ pub fn plugin_dir() -> PathBuf {
 ///
 /// Validates the manifest including permission declarations before copying.
 /// Returns an error if the manifest is malformed or permissions are invalid.
-pub fn install_plugin(source_dir: &Path) -> Result<PluginManifest> {
+pub fn install_plugin(
+    source_dir: &Path,
+) -> Result<(PluginManifest, Vec<String>, Option<PluginUpgradeInfo>)> {
     let manifest_path = source_dir.join("plugin.toml");
     if !manifest_path.exists() {
         bail!("plugin.toml not found in {}", source_dir.display());
@@ -333,17 +591,56 @@ pub fn install_plugin(source_dir: &Path) -> Result<PluginManifest> {
     let manifest_content = std::fs::read_to_string(&manifest_path)?;
     let manifest: PluginManifest = toml::from_str(&manifest_content)?;
 
-    // Validate permissions if declared
+    // Validate permissions if declared, collect warnings
+    let mut warnings = Vec::new();
     if let Some(ref permissions) = manifest.permissions {
-        validate_permissions(permissions)?;
+        warnings = validate_permissions(permissions)?;
     }
 
+    // Build permission summary for install-time display
+    let resolved: ResolvedPluginPermissions = manifest.permissions.clone().into();
+    let mut summary = resolved.summary_lines();
+    // Append warnings to summary
+    for w in &warnings {
+        summary.push(format!("  WARNING: {}", w));
+    }
+
+    // Check for existing installation (upgrade detection)
     let dest = plugin_dir().join(&manifest.id);
+    let upgrade_info = if dest.exists() {
+        let existing_manifest_path = dest.join("plugin.toml");
+        if existing_manifest_path.exists() {
+            let existing_content = std::fs::read_to_string(&existing_manifest_path)?;
+            let existing: PluginManifest = toml::from_str(&existing_content)?;
+            let existing_resolved: ResolvedPluginPermissions = existing.permissions.into();
+            let new_resolved: ResolvedPluginPermissions = manifest.permissions.clone().into();
+
+            let permissions_changed = existing_resolved != new_resolved;
+            Some(PluginUpgradeInfo {
+                old_version: existing.version,
+                new_version: manifest.version.clone(),
+                permissions_changed,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     std::fs::create_dir_all(&dest)?;
     std::fs::copy(&manifest_path, dest.join("plugin.toml"))?;
     std::fs::copy(&wasm_path, dest.join("plugin.wasm"))?;
 
-    Ok(manifest)
+    Ok((manifest, summary, upgrade_info))
+}
+
+/// Information about a plugin upgrade.
+#[derive(Debug, Clone)]
+pub struct PluginUpgradeInfo {
+    pub old_version: String,
+    pub new_version: String,
+    pub permissions_changed: bool,
 }
 
 /// List all installed plugins.
@@ -834,5 +1131,475 @@ unknown_domain = ["something"]
         assert!(lines[0].contains("filesystem"));
         assert!(lines[1].contains("network"));
         assert!(lines[2].contains("env"));
+    }
+
+    // ===== Permission Matcher Tests =====
+
+    fn make_workspace() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("alius_test_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("project/src")).unwrap();
+        std::fs::create_dir_all(dir.join("output")).unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        std::fs::write(dir.join("project/src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("output/report.md"), "report").unwrap();
+        std::fs::write(dir.join("other/file.txt"), "other").unwrap();
+        dir
+    }
+
+    fn cleanup_workspace(ws: &Path) {
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    // --- Default deny (no permissions) ---
+
+    #[test]
+    fn test_no_permissions_denies_all_filesystem() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions::default();
+        let decision = perms.check_filesystem("read", Path::new("project/src/main.rs"), &ws);
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "no filesystem permissions declared".to_string()
+            }
+        );
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_no_permissions_denies_all_network() {
+        let perms = ResolvedPluginPermissions::default();
+        let decision = perms.check_network("https://api.example.com/data");
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "no network permissions declared".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_no_permissions_denies_all_shell() {
+        let perms = ResolvedPluginPermissions::default();
+        let decision = perms.check_shell("ls -la");
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "no shell permissions declared".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_no_permissions_denies_all_env() {
+        let perms = ResolvedPluginPermissions::default();
+        let decision = perms.check_env("HOME");
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "no env permissions declared".to_string()
+            }
+        );
+    }
+
+    // --- Filesystem matcher ---
+
+    #[test]
+    fn test_fs_read_allowed_within_prefix() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        assert!(perms
+            .check_filesystem("read", Path::new("project/src/main.rs"), &ws)
+            .is_allowed());
+        assert!(perms
+            .check_filesystem("read", Path::new("project/src"), &ws)
+            .is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_write_allowed_within_prefix() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["write:output".to_string()],
+            ..Default::default()
+        };
+        assert!(perms
+            .check_filesystem("write", Path::new("output/report.md"), &ws)
+            .is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_list_allowed_within_prefix() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["list:project".to_string()],
+            ..Default::default()
+        };
+        assert!(perms
+            .check_filesystem("list", Path::new("project/src"), &ws)
+            .is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_denies_undeclared_path() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_filesystem("read", Path::new("other/file.txt"), &ws);
+        assert!(!decision.is_allowed());
+        assert!(match &decision {
+            PermissionDecision::Deny { reason } => reason.contains("not permitted"),
+            _ => false,
+        });
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_denies_path_traversal() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        let decision =
+            perms.check_filesystem("read", Path::new("project/../../../etc/passwd"), &ws);
+        assert!(!decision.is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_denies_absolute_path() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_filesystem("read", Path::new("/etc/passwd"), &ws);
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "absolute paths are not allowed".to_string()
+            }
+        );
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_denies_symlink_escape() {
+        let ws = make_workspace();
+        // Create a symlink inside workspace pointing outside.
+        let outside = std::env::temp_dir().join(format!("alius_outside_{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+
+        let link_path = ws.join("project/escape_link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link_path).unwrap();
+
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        let decision =
+            perms.check_filesystem("read", Path::new("project/escape_link/secret.txt"), &ws);
+        assert!(!decision.is_allowed());
+
+        cleanup_workspace(&outside);
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_denies_operation_mismatch() {
+        let ws = make_workspace();
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        // Read permission does not grant write.
+        let decision = perms.check_filesystem("write", Path::new("project/src/main.rs"), &ws);
+        assert!(!decision.is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_fs_exact_prefix_match() {
+        let ws = make_workspace();
+        // "read:project" must NOT match "project-backup".
+        std::fs::create_dir_all(ws.join("project-backup")).unwrap();
+        std::fs::write(ws.join("project-backup/file.txt"), "data").unwrap();
+
+        let perms = ResolvedPluginPermissions {
+            filesystem: vec!["read:project".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_filesystem("read", Path::new("project-backup/file.txt"), &ws);
+        assert!(!decision.is_allowed());
+        cleanup_workspace(&ws);
+    }
+
+    // --- Network matcher ---
+
+    #[test]
+    fn test_net_fetch_allowed_prefix() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        assert!(perms
+            .check_network("https://api.example.com/data")
+            .is_allowed());
+        assert!(perms
+            .check_network("https://api.example.com/v2/items")
+            .is_allowed());
+    }
+
+    #[test]
+    fn test_net_denies_undeclared_domain() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_network("https://evil.com/steal");
+        assert!(!decision.is_allowed());
+    }
+
+    #[test]
+    fn test_net_denies_similar_but_not_matching() {
+        let perms = ResolvedPluginPermissions {
+            network: vec!["fetch:https://api.example.com".to_string()],
+            ..Default::default()
+        };
+        // Similar domain but not a prefix match.
+        let decision = perms.check_network("https://api.example.com.evil.com/data");
+        assert!(!decision.is_allowed());
+    }
+
+    // --- Shell matcher ---
+
+    #[test]
+    fn test_shell_readonly_allows_ls() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:readonly".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_shell("ls -la").is_allowed());
+        assert!(perms.check_shell("ls").is_allowed());
+    }
+
+    #[test]
+    fn test_shell_readonly_allows_cat() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:readonly".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_shell("cat file.txt").is_allowed());
+    }
+
+    #[test]
+    fn test_shell_readonly_allows_git_log() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:readonly".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_shell("git log --oneline").is_allowed());
+        assert!(perms.check_shell("git status").is_allowed());
+    }
+
+    #[test]
+    fn test_shell_readonly_denies_rm() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:readonly".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_shell("rm -rf /");
+        assert!(!decision.is_allowed());
+    }
+
+    #[test]
+    fn test_shell_readonly_denies_sudo() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:readonly".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_shell("sudo apt install foo");
+        assert!(!decision.is_allowed());
+    }
+
+    #[test]
+    fn test_shell_literal_exact_match() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:git log".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_shell("git log").is_allowed());
+    }
+
+    #[test]
+    fn test_shell_literal_denies_different() {
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:git log".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_shell("git status");
+        assert!(!decision.is_allowed());
+    }
+
+    #[test]
+    fn test_shell_dangerous_command_only_matches_exact_literal() {
+        // If someone declares "exec:rm -rf /", it only matches that exact string.
+        let perms = ResolvedPluginPermissions {
+            shell: vec!["exec:rm -rf /".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_shell("rm -rf /").is_allowed());
+        // A different rm command does NOT match.
+        assert!(!perms.check_shell("rm -rf ~").is_allowed());
+        assert!(!perms.check_shell("rm file.txt").is_allowed());
+    }
+
+    // --- Env matcher ---
+
+    #[test]
+    fn test_env_exact_match_allowed() {
+        let perms = ResolvedPluginPermissions {
+            env: vec!["read:HOME".to_string(), "read:CARGO_HOME".to_string()],
+            ..Default::default()
+        };
+        assert!(perms.check_env("HOME").is_allowed());
+        assert!(perms.check_env("CARGO_HOME").is_allowed());
+    }
+
+    #[test]
+    fn test_env_empty_denied() {
+        let perms = ResolvedPluginPermissions {
+            env: vec!["read:HOME".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_env("");
+        assert_eq!(
+            decision,
+            PermissionDecision::Deny {
+                reason: "empty environment variable name".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_env_prefix_denied() {
+        let perms = ResolvedPluginPermissions {
+            env: vec!["read:HOME".to_string()],
+            ..Default::default()
+        };
+        // "HOME" should NOT match "HOME_DIR".
+        let decision = perms.check_env("HOME_DIR");
+        assert!(!decision.is_allowed());
+    }
+
+    #[test]
+    fn test_env_undeclared_denied() {
+        let perms = ResolvedPluginPermissions {
+            env: vec!["read:HOME".to_string()],
+            ..Default::default()
+        };
+        let decision = perms.check_env("PATH");
+        assert!(!decision.is_allowed());
+    }
+
+    // --- ToolPackageManifest integration ---
+
+    #[test]
+    fn test_package_manifest_permissions_used_for_matching() {
+        let ws = make_workspace();
+
+        let toml_str = r#"
+id = "test-matcher"
+name = "Test Matcher"
+version = "1.0.0"
+description = "A plugin for testing the matcher"
+
+[permissions]
+filesystem = ["read:project", "write:output"]
+network = ["fetch:https://api.example.com"]
+shell = ["exec:readonly"]
+env = ["read:HOME"]
+"#;
+        let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
+        let pkg: crate::package::ToolPackageManifest = manifest.into();
+
+        // Use pkg.permissions directly for matching.
+        assert!(pkg
+            .permissions
+            .check_filesystem("read", Path::new("project/src/main.rs"), &ws)
+            .is_allowed());
+        assert!(pkg
+            .permissions
+            .check_filesystem("write", Path::new("output/report.md"), &ws)
+            .is_allowed());
+        assert!(!pkg
+            .permissions
+            .check_filesystem("read", Path::new("other/file.txt"), &ws)
+            .is_allowed());
+        assert!(pkg
+            .permissions
+            .check_network("https://api.example.com/data")
+            .is_allowed());
+        assert!(!pkg
+            .permissions
+            .check_network("https://evil.com")
+            .is_allowed());
+        assert!(pkg.permissions.check_shell("ls -la").is_allowed());
+        assert!(!pkg.permissions.check_shell("rm -rf /").is_allowed());
+        assert!(pkg.permissions.check_env("HOME").is_allowed());
+        assert!(!pkg.permissions.check_env("PATH").is_allowed());
+
+        cleanup_workspace(&ws);
+    }
+
+    #[test]
+    fn test_permission_decision_is_allowed() {
+        assert!(PermissionDecision::allow_no_path().is_allowed());
+        assert!(!PermissionDecision::Deny {
+            reason: "test".to_string()
+        }
+        .is_allowed());
+    }
+
+    #[test]
+    fn test_manifest_without_permissions_denies_all_runtime_checks() {
+        let ws = make_workspace();
+        // A manifest with no [permissions] section deserializes to None.
+        let toml_str = r#"
+id = "no-perms"
+name = "No Perms"
+version = "1.0.0"
+description = "Plugin without permissions"
+"#;
+        let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.permissions.is_none());
+
+        let resolved: ResolvedPluginPermissions = manifest.permissions.into();
+        assert!(resolved.is_empty());
+
+        // All runtime checks must deny.
+        assert!(!resolved
+            .check_filesystem("read", Path::new("project/src/main.rs"), &ws)
+            .is_allowed());
+        assert!(!resolved
+            .check_filesystem("write", Path::new("output/report.md"), &ws)
+            .is_allowed());
+        assert!(!resolved
+            .check_network("https://api.example.com/data")
+            .is_allowed());
+        assert!(!resolved.check_shell("ls -la").is_allowed());
+        assert!(!resolved.check_env("HOME").is_allowed());
+        cleanup_workspace(&ws);
     }
 }

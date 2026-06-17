@@ -77,8 +77,8 @@ pub enum Command {
     #[command(about = "Initialize project configuration")]
     Init,
 
-    /// Manage the official Soul repository.
-    #[command(about = "Official Soul repository management")]
+    /// Legacy: manage the official Soul repository from alius-souls.git.
+    #[command(about = "Legacy: update official Soul repository from alius-souls.git")]
     Core {
         #[command(subcommand)]
         command: CoreCommand,
@@ -176,6 +176,9 @@ pub enum PluginCommand {
     Install {
         /// Path to directory containing plugin.toml + plugin.wasm.
         path: String,
+        /// Skip permission confirmation prompt.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Show details of an installed plugin.
@@ -196,15 +199,15 @@ pub enum PluginCommand {
 /// Subcommands for Soul management.
 #[derive(Subcommand)]
 pub enum SoulCommand {
-    /// Sync all official souls from alius-souls into the local soul cache.
-    #[command(about = "Update local souls from alius-souls")]
+    /// Sync all official souls from bundled extensions into the local soul cache.
+    #[command(about = "Update local souls from bundled extensions")]
     Update,
 
     /// List installed souls.
     #[command(about = "List installed souls")]
     List,
 
-    /// Install a soul from the official Soul repository.
+    /// Install a soul from bundled official extensions (legacy repo as fallback).
     #[command(about = "Install a soul")]
     Install {
         /// Soul ID to install (e.g. "coder", "researcher").
@@ -223,15 +226,15 @@ pub enum SoulCommand {
     },
 }
 
-/// Subcommands for official Soul repository management.
+/// Legacy subcommands for alius-souls.git repository management.
 #[derive(Subcommand)]
 pub enum CoreCommand {
-    /// Clone or update the official Soul repository from remote.
-    #[command(about = "Update official Soul repository")]
+    /// Legacy: clone or update from alius-souls.git.
+    #[command(about = "Legacy: update from alius-souls.git")]
     Update,
 
-    /// List available souls from the official Soul repository.
-    #[command(about = "List available souls")]
+    /// Legacy: list available souls from the alius-souls.git cache.
+    #[command(about = "Legacy: list available souls from alius-souls.git")]
     List,
 
     /// Show details of a specific soul.

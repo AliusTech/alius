@@ -1,0 +1,5 @@
+- Always validate input at system boundaries
+- Design for observability: structured logging, metrics, health checks
+- Consider concurrency, race conditions, and resource cleanup
+- Follow RESTful or gRPC conventions consistently
+- Handle database transactions and migrations safely

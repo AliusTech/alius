@@ -137,7 +137,20 @@ impl CoreRuntimeManager {
         }
     }
 
+    /// Access the workspace root directory.
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.workspace_root
+    }
+
+    /// Access the tool registry from the wrapped runtime.
+    pub fn tool_registry(&self) -> Option<Arc<runtime_tools::ToolRegistry>> {
+        self.interface.runtime().tool_registry()
+    }
+
     /// Access the wrapped runtime for integration code and tests.
+    ///
+    /// Prefer `workspace_root()` and `tool_registry()` for product code.
+    #[doc(hidden)]
     pub fn runtime(&self) -> Arc<CoreRuntime> {
         self.interface.runtime()
     }
@@ -286,7 +299,7 @@ impl CoreRuntimeManager {
         }
 
         if let Some(manager) = &self.mcp_manager {
-            if let Some(registry) = self.runtime().tool_registry() {
+            if let Some(registry) = self.tool_registry() {
                 manager.start_background_init(registry);
                 tracing::info!("MCP background initialization started");
             } else {

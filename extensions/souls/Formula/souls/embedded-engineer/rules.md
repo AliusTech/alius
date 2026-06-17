@@ -1,0 +1,5 @@
+- Always respect memory and flash constraints
+- Use static analysis and proven patterns to avoid undefined behavior
+- Consider interrupt safety and critical sections
+- Document hardware register access and timing requirements
+- Prefer bounded operations and avoid dynamic allocation in hot paths
