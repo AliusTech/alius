@@ -24,6 +24,17 @@ use core_runtime::CoreRuntimeManager;
 use protocol_interface::core::{CoreEventPayload, RuntimeMode};
 use runtime_tools::{ToolContext, ToolRegistry};
 
+/// Result of a prompt step execution, including runtime correlation IDs.
+#[derive(Debug, Clone, Default)]
+pub struct PromptResult {
+    /// The LLM response text.
+    pub content: String,
+    /// Run reference from the CoreRuntime event stream.
+    pub run_ref: Option<String>,
+    /// Trace ID from the CoreRuntime event stream.
+    pub trace_id: Option<String>,
+}
+
 /// Abstraction for runtime capabilities needed by workflow steps.
 ///
 /// Implementors bridge workflow steps to the Core Runtime (LLM calls, tool execution).
@@ -31,8 +42,8 @@ use runtime_tools::{ToolContext, ToolRegistry};
 /// still using real runtime paths when available.
 #[async_trait]
 pub trait LoopEngineHandle: Send + Sync {
-    /// Run a prompt through the LLM and return the text response.
-    async fn run_prompt(&self, text: &str, mode: &str) -> Result<String>;
+    /// Run a prompt through the LLM and return the response with runtime correlation IDs.
+    async fn run_prompt(&self, text: &str, mode: &str) -> Result<PromptResult>;
 
     /// Execute a tool by name with JSON arguments and execution mode.
     /// Returns the tool's JSON output.
@@ -64,7 +75,7 @@ impl RuntimeWorkflowHandle {
 
 #[async_trait]
 impl LoopEngineHandle for RuntimeWorkflowHandle {
-    async fn run_prompt(&self, text: &str, mode: &str) -> Result<String> {
+    async fn run_prompt(&self, text: &str, mode: &str) -> Result<PromptResult> {
         let rt_mode = match mode.to_lowercase().as_str() {
             "plan" => RuntimeMode::Plan,
             _ => RuntimeMode::Chat,
@@ -73,6 +84,24 @@ impl LoopEngineHandle for RuntimeWorkflowHandle {
             .manager
             .run_text(text, rt_mode)
             .map_err(|e| anyhow::anyhow!("Runtime error: {}", e))?;
+
+        // Extract runtime correlation IDs from the first envelope.
+        let mut run_ref: Option<String> = None;
+        let mut trace_id: Option<String> = None;
+        for envelope in &envelopes {
+            if run_ref.is_none() {
+                run_ref = envelope.run_ref.as_ref().map(|r| r.as_str().to_string());
+            }
+            if trace_id.is_none() {
+                let tid = envelope.trace_id.as_str();
+                if !tid.is_empty() {
+                    trace_id = Some(tid.to_string());
+                }
+            }
+            if run_ref.is_some() && trace_id.is_some() {
+                break;
+            }
+        }
 
         // Extract the final result from the event stream.
         let mut final_content = String::new();
@@ -96,9 +125,17 @@ impl LoopEngineHandle for RuntimeWorkflowHandle {
         if had_error && !final_content.is_empty() {
             Err(anyhow::anyhow!("{}", final_content))
         } else if final_content.is_empty() {
-            Ok("(no response)".to_string())
+            Ok(PromptResult {
+                content: "(no response)".to_string(),
+                run_ref,
+                trace_id,
+            })
         } else {
-            Ok(final_content)
+            Ok(PromptResult {
+                content: final_content,
+                run_ref,
+                trace_id,
+            })
         }
     }
 
@@ -118,6 +155,19 @@ impl LoopEngineHandle for RuntimeWorkflowHandle {
             "plan" => RuntimeMode::Plan,
             _ => RuntimeMode::Chat,
         };
+
+        // Fail-closed: workflow tool steps have no interactive confirmation
+        // channel. If the tool would require user confirmation (e.g. high-risk
+        // shell commands in Plan mode), reject the call rather than executing
+        // without approval.
+        if tool.preview_confirmation(&args, rt_mode) {
+            anyhow::bail!(
+                "Tool '{}' requires confirmation but workflow has no confirmation channel. \
+                 Use 'chat' mode or pre-approve the tool.",
+                tool_name
+            );
+        }
+
         let ctx = ToolContext::new(workspace.to_path_buf(), "workflow".to_string(), rt_mode);
 
         let result = tool
@@ -140,8 +190,11 @@ pub struct StubLoopEngineHandle;
 
 #[async_trait]
 impl LoopEngineHandle for StubLoopEngineHandle {
-    async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
-        Ok(format!("[prompt] {}", text))
+    async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
+        Ok(PromptResult {
+            content: format!("[prompt] {}", text),
+            ..Default::default()
+        })
     }
 
     async fn run_tool(
@@ -393,8 +446,13 @@ async fn execute_step_inner(
         StepType::Prompt => {
             let prompt = step.prompt.as_deref().unwrap_or("");
             let interpolated = ctx.interpolate(prompt);
-            match handle.run_prompt(&interpolated, "Plan").await {
-                Ok(output) => Ok(step_result(step.id.clone(), output, true)),
+            match handle.run_prompt(&interpolated, mode).await {
+                Ok(prompt_result) => {
+                    let mut result = step_result(step.id.clone(), prompt_result.content, true);
+                    result.run_ref = prompt_result.run_ref;
+                    result.trace_id = prompt_result.trace_id;
+                    Ok(result)
+                }
                 Err(e) => Ok(step_result(step.id.clone(), format!("Error: {}", e), false)),
             }
         }
@@ -577,12 +635,58 @@ fn save_run_record(record: &WorkflowRunRecord) -> Result<()> {
 ///
 /// If a `CancellationToken` is provided, it is checked before each step.
 /// Cancelling the token will abort the workflow gracefully.
+///
+/// If `workflow.timeout_ms` is set, the entire workflow execution is bounded
+/// by that duration. A timeout produces a `Cancelled` run record.
 pub async fn execute_workflow(
     workflow: &Workflow,
     handle: &dyn LoopEngineHandle,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(ExecutionContext, WorkflowRunRecord)> {
     let workflow_started_at = chrono::Utc::now();
+
+    // Enforce workflow-level timeout if configured.
+    if let Some(timeout_ms) = workflow.timeout_ms {
+        let deadline = std::time::Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(
+            deadline,
+            execute_workflow_inner(workflow, handle, cancel_token, workflow_started_at),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                // Workflow timed out — build a Cancelled run record.
+                eprintln!(
+                    "Workflow '{}' timed out after {}ms",
+                    workflow.name, timeout_ms
+                );
+                let record = WorkflowRunRecord {
+                    workflow_name: workflow.name.clone(),
+                    status: WorkflowRunStatus::Cancelled,
+                    started_at: workflow_started_at,
+                    finished_at: chrono::Utc::now(),
+                    duration_ms: timeout_ms,
+                    steps: vec![],
+                };
+                if let Err(e) = save_run_record(&record) {
+                    eprintln!("Warning: failed to save workflow run record: {}", e);
+                }
+                Ok((ExecutionContext::new(), record))
+            }
+        }
+    } else {
+        execute_workflow_inner(workflow, handle, cancel_token, workflow_started_at).await
+    }
+}
+
+/// Inner workflow execution (separated so it can be wrapped in a timeout).
+async fn execute_workflow_inner(
+    workflow: &Workflow,
+    handle: &dyn LoopEngineHandle,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    workflow_started_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(ExecutionContext, WorkflowRunRecord)> {
     let mut ctx = ExecutionContext::new();
     let mut aborted = false;
     let mut cancelled = false;
@@ -718,10 +822,13 @@ mod tests {
 
     #[async_trait]
     impl LoopEngineHandle for MockHandle {
-        async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
+        async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
             let response = format!("LLM response to: {}", text);
             self.prompt_results.lock().unwrap().push(text.to_string());
-            Ok(response)
+            Ok(PromptResult {
+                content: response,
+                ..Default::default()
+            })
         }
 
         async fn run_tool(
@@ -890,7 +997,7 @@ mod tests {
     async fn test_stub_handle() {
         let handle = StubLoopEngineHandle;
         let result = handle.run_prompt("test", "Plan").await.unwrap();
-        assert!(result.contains("[prompt]"));
+        assert!(result.content.contains("[prompt]"));
         let result = handle
             .run_tool("shell", serde_json::json!({"cmd": "ls"}), "chat")
             .await
@@ -1024,14 +1131,14 @@ mod tests {
         // Test run_prompt: must go through real LLM, not return "[prompt] ...".
         let prompt_result = handle.run_prompt("Say hello", "Chat").await.unwrap();
         assert!(
-            !prompt_result.contains("[prompt]"),
+            !prompt_result.content.contains("[prompt]"),
             "RuntimeWorkflowHandle must not use stub — got: {}",
-            prompt_result
+            prompt_result.content
         );
         assert!(
-            prompt_result.contains("real-llm-response"),
+            prompt_result.content.contains("real-llm-response"),
             "Expected real LLM response — got: {}",
-            prompt_result
+            prompt_result.content
         );
 
         // Test run_tool: must go through real ToolRegistry, not return "[tool:...]".
@@ -1049,6 +1156,152 @@ mod tests {
             output.contains("real-tool-executed"),
             "Expected real tool output — got: {}",
             output
+        );
+    }
+
+    /// Workflow `run_tool` must fail-closed when a tool requires confirmation.
+    /// This prevents workflow tool steps from bypassing the confirmation gate
+    /// that the LoopEngine enforces in interactive mode.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_workflow_run_tool_fails_on_confirmation_required() {
+        use protocol_interface::core::WorkspaceRef;
+        use runtime_model::{ChatEvent, ChatStream, LlmClient, LlmProvider, ToolCall};
+        use runtime_tools::{AliusTool, ToolResult as RealToolResult};
+        use std::future::Future;
+        use std::pin::Pin;
+
+        // Minimal fake LLM provider.
+        struct FakeProvider;
+        impl LlmProvider for FakeProvider {
+            fn chat_stream<'a>(
+                &'a self,
+                _conv: &'a runtime_model::Conversation,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<ChatStream>> + Send + 'a>> {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok(stream)
+                })
+            }
+            fn chat_once<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _system: Option<&'a str>,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send + 'a>> {
+                Box::pin(async { Ok(String::new()) })
+            }
+            fn list_models<'a>(
+                &'a self,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>
+            {
+                Box::pin(async { Ok(vec![]) })
+            }
+            fn chat_stream_with_tools<'a>(
+                &'a self,
+                _conv: &'a runtime_model::Conversation,
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok((stream, None))
+                })
+            }
+            fn continue_with_tool_results<'a>(
+                &'a self,
+                _conv: &'a runtime_model::Conversation,
+                _results: &'a [(String, String, String)],
+                _calls: &'a [ToolCall],
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> Pin<Box<dyn Future<Output = runtime_model::ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async {
+                    let stream: ChatStream =
+                        Box::pin(futures::stream::iter(vec![Ok(ChatEvent::Done {
+                            full_response: String::new(),
+                        })]));
+                    Ok((stream, None))
+                })
+            }
+        }
+
+        // Tool that always requires confirmation (simulates high-risk shell).
+        struct ConfirmationRequiredTool;
+        #[async_trait::async_trait]
+        impl AliusTool for ConfirmationRequiredTool {
+            fn name(&self) -> &'static str {
+                "dangerous_tool"
+            }
+            fn description(&self) -> &'static str {
+                "tool that always requires confirmation"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn preview_confirmation(
+                &self,
+                _args: &serde_json::Value,
+                _mode: protocol_interface::RuntimeMode,
+            ) -> bool {
+                true // always requires confirmation
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: runtime_tools::ToolContext,
+            ) -> Result<RealToolResult, protocol_interface::AliusError> {
+                Ok(RealToolResult::success("should-not-reach".to_string()))
+            }
+        }
+
+        let registry = Arc::new({
+            let reg = runtime_tools::ToolRegistry::new();
+            reg.register(ConfirmationRequiredTool).unwrap();
+            reg
+        });
+        let client = LlmClient::new_with_provider_for_test(
+            Box::new(FakeProvider),
+            "fake-model",
+            protocol_interface::ProviderType::Openai,
+        );
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = core_runtime::CoreRuntimeBuilder::new()
+            .workspace_ref(WorkspaceRef::new(tmp.path()))
+            .settings(runtime_config::Settings::default())
+            .client(client)
+            .tool_registry_arc(registry.clone())
+            .build()
+            .unwrap();
+        let manager = core_runtime::CoreRuntimeManager::from_runtime(tmp.path(), runtime);
+
+        let handle = RuntimeWorkflowHandle::new(manager, registry);
+
+        // In plan mode: tool requires confirmation → must fail.
+        let err = handle
+            .run_tool("dangerous_tool", serde_json::json!({}), "plan")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("requires confirmation"),
+            "Expected confirmation error — got: {}",
+            err
+        );
+
+        // In chat mode: tool still requires confirmation → must also fail.
+        // (preview_confirmation returns true regardless of mode for this tool)
+        let err = handle
+            .run_tool("dangerous_tool", serde_json::json!({}), "chat")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("requires confirmation"),
+            "Expected confirmation error in chat mode — got: {}",
+            err
         );
     }
 
@@ -1273,13 +1526,16 @@ mod tests {
 
     #[async_trait]
     impl LoopEngineHandle for FailThenSucceedHandle {
-        async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
+        async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
             let mut remaining = self.remaining_fails.lock().unwrap();
             if *remaining > 0 {
                 *remaining -= 1;
                 Err(anyhow::anyhow!("simulated failure"))
             } else {
-                Ok(format!("success: {}", text))
+                Ok(PromptResult {
+                    content: format!("success: {}", text),
+                    ..Default::default()
+                })
             }
         }
 
@@ -1304,9 +1560,12 @@ mod tests {
 
     #[async_trait]
     impl LoopEngineHandle for SlowHandle {
-        async fn run_prompt(&self, _text: &str, _mode: &str) -> Result<String> {
+        async fn run_prompt(&self, _text: &str, _mode: &str) -> Result<PromptResult> {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            Ok("should not reach here".to_string())
+            Ok(PromptResult {
+                content: "should not reach here".to_string(),
+                ..Default::default()
+            })
         }
 
         async fn run_tool(
@@ -1425,11 +1684,14 @@ mod tests {
         }
         #[async_trait]
         impl LoopEngineHandle for FailOnSpecific {
-            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
+            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
                 if text.contains(&self.fail_on) {
                     Err(anyhow::anyhow!("deliberate failure"))
                 } else {
-                    Ok(format!("ok: {}", text))
+                    Ok(PromptResult {
+                        content: format!("ok: {}", text),
+                        ..Default::default()
+                    })
                 }
             }
             async fn run_tool(
@@ -1504,11 +1766,14 @@ mod tests {
         }
         #[async_trait]
         impl LoopEngineHandle for FailOnSpecific {
-            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
+            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
                 if text.contains(&self.fail_on) {
                     Err(anyhow::anyhow!("deliberate failure"))
                 } else {
-                    Ok(format!("ok: {}", text))
+                    Ok(PromptResult {
+                        content: format!("ok: {}", text),
+                        ..Default::default()
+                    })
                 }
             }
             async fn run_tool(
@@ -1666,14 +1931,17 @@ mod tests {
         }
         #[async_trait]
         impl LoopEngineHandle for SlowThenCheckHandle {
-            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<String> {
+            async fn run_prompt(&self, text: &str, _mode: &str) -> Result<PromptResult> {
                 let mut count = self.call_count.lock().unwrap();
                 *count += 1;
                 if *count >= 2 {
                     // Cancel after first step completes
                     self.cancel_token.cancel();
                 }
-                Ok(format!("ok: {}", text))
+                Ok(PromptResult {
+                    content: format!("ok: {}", text),
+                    ..Default::default()
+                })
             }
             async fn run_tool(
                 &self,
@@ -1745,5 +2013,203 @@ mod tests {
         assert!(ctx.results.contains_key("s2"));
         assert!(!ctx.results.contains_key("s3"));
         assert_eq!(ctx.results.len(), 2);
+    }
+
+    // ---- Fix 1 acceptance: mode propagation, timeout, trace correlation ----
+
+    /// A mock handle that records the `mode` parameter passed to each call.
+    struct ModeRecordingHandle {
+        prompt_modes: Arc<Mutex<Vec<String>>>,
+        tool_modes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ModeRecordingHandle {
+        #[allow(clippy::type_complexity)]
+        fn new() -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
+            let prompt_modes = Arc::new(Mutex::new(Vec::new()));
+            let tool_modes = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    prompt_modes: Arc::clone(&prompt_modes),
+                    tool_modes: Arc::clone(&tool_modes),
+                },
+                prompt_modes,
+                tool_modes,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl LoopEngineHandle for ModeRecordingHandle {
+        async fn run_prompt(&self, text: &str, mode: &str) -> Result<PromptResult> {
+            self.prompt_modes.lock().unwrap().push(mode.to_string());
+            Ok(PromptResult {
+                content: format!("response to: {}", text),
+                run_ref: Some("test-run-ref".to_string()),
+                trace_id: Some("test-trace-id".to_string()),
+            })
+        }
+
+        async fn run_tool(
+            &self,
+            tool_name: &str,
+            args: serde_json::Value,
+            mode: &str,
+        ) -> Result<serde_json::Value> {
+            self.tool_modes.lock().unwrap().push(mode.to_string());
+            Ok(serde_json::json!({"tool": tool_name, "args": args}))
+        }
+    }
+
+    /// A mock handle that simulates a slow prompt (for timeout testing).
+    struct SlowPromptHandle;
+
+    #[async_trait]
+    impl LoopEngineHandle for SlowPromptHandle {
+        async fn run_prompt(&self, _text: &str, _mode: &str) -> Result<PromptResult> {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            Ok(PromptResult {
+                content: "should not reach here".to_string(),
+                ..Default::default()
+            })
+        }
+
+        async fn run_tool(
+            &self,
+            tool_name: &str,
+            args: serde_json::Value,
+            _mode: &str,
+        ) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"tool": tool_name, "args": args}))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_workflow_mode_propagated_to_prompt_steps() {
+        let (handle, prompt_modes, _) = ModeRecordingHandle::new();
+        let workflow = Workflow {
+            name: "mode-test".to_string(),
+            description: String::new(),
+            steps: vec![Step {
+                id: "s1".to_string(),
+                step_type: StepType::Prompt,
+                prompt: Some("hello".to_string()),
+                tool: None,
+                args: None,
+                url: None,
+                method: None,
+                body: None,
+                on_failure: OnFailurePolicy::Abort,
+                timeout_ms: None,
+            }],
+            mode: "plan".to_string(),
+            timeout_ms: None,
+        };
+
+        let _ = execute_workflow(&workflow, &handle, None).await.unwrap();
+        let modes = prompt_modes.lock().unwrap();
+        assert_eq!(modes.len(), 1);
+        assert_eq!(
+            modes[0], "plan",
+            "Workflow mode 'plan' must be passed to prompt steps"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workflow_mode_propagated_to_tool_steps() {
+        let (handle, _, tool_modes) = ModeRecordingHandle::new();
+        let workflow = Workflow {
+            name: "mode-tool-test".to_string(),
+            description: String::new(),
+            steps: vec![Step {
+                id: "s1".to_string(),
+                step_type: StepType::Tool,
+                prompt: None,
+                tool: Some("fake_tool".to_string()),
+                args: Some(serde_json::json!({})),
+                url: None,
+                method: None,
+                body: None,
+                on_failure: OnFailurePolicy::Abort,
+                timeout_ms: None,
+            }],
+            mode: "chat".to_string(),
+            timeout_ms: None,
+        };
+
+        let _ = execute_workflow(&workflow, &handle, None).await.unwrap();
+        let modes = tool_modes.lock().unwrap();
+        assert_eq!(modes.len(), 1);
+        assert_eq!(
+            modes[0], "chat",
+            "Workflow mode 'chat' must be passed to tool steps"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workflow_level_timeout_cancels_long_running() {
+        let workflow = Workflow {
+            name: "timeout-test".to_string(),
+            description: String::new(),
+            steps: vec![Step {
+                id: "s1".to_string(),
+                step_type: StepType::Prompt,
+                prompt: Some("slow prompt".to_string()),
+                tool: None,
+                args: None,
+                url: None,
+                method: None,
+                body: None,
+                on_failure: OnFailurePolicy::Abort,
+                timeout_ms: None, // no step-level timeout
+            }],
+            mode: "chat".to_string(),
+            timeout_ms: Some(100), // 100ms workflow-level timeout
+        };
+
+        let (_ctx, record) = execute_workflow(&workflow, &SlowPromptHandle, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            record.status,
+            WorkflowRunStatus::Cancelled,
+            "Workflow should be cancelled when timeout_ms is exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workflow_run_record_captures_trace_ids() {
+        let (handle, _, _) = ModeRecordingHandle::new();
+        let workflow = Workflow {
+            name: "trace-test".to_string(),
+            description: String::new(),
+            steps: vec![Step {
+                id: "s1".to_string(),
+                step_type: StepType::Prompt,
+                prompt: Some("hello".to_string()),
+                tool: None,
+                args: None,
+                url: None,
+                method: None,
+                body: None,
+                on_failure: OnFailurePolicy::Abort,
+                timeout_ms: None,
+            }],
+            mode: "chat".to_string(),
+            timeout_ms: None,
+        };
+
+        let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
+        let step_result = &ctx.results["s1"];
+        assert!(
+            step_result.run_ref.is_some(),
+            "StepResult should capture run_ref from prompt step"
+        );
+        assert!(
+            step_result.trace_id.is_some(),
+            "StepResult should capture trace_id from prompt step"
+        );
+        assert_eq!(step_result.run_ref.as_deref(), Some("test-run-ref"));
+        assert_eq!(step_result.trace_id.as_deref(), Some("test-trace-id"));
     }
 }
