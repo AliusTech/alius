@@ -176,35 +176,40 @@ async fn test_mcp_protocol_sequence() {
 }
 
 #[tokio::test]
-async fn test_mcp_tool_source_is_mcp() {
-    // This test verifies that when McpToolAdapter wraps an MCP tool,
-    // the source() method returns ToolSource::Mcp.
-    use runtime_tools::AliusTool;
-
+async fn test_mcp_tool_registered_in_registry_with_mcp_source() {
+    // Verify that McpToolAdapter can be registered into ToolRegistry
+    // and appears with ToolSource::Mcp in to_tool_infos().
     let client = create_echo_client().await.expect("Failed to create client");
     let tools = client.list_tools().await.expect("Failed to list tools");
     let echo_tool = &tools[0];
 
-    // Create an adapter
     let adapter = runtime_tools::mcp_bridge::McpToolAdapter::from_mcp_tool(
         echo_tool,
         std::sync::Arc::new(client),
     );
 
-    // Verify source
+    let registry = runtime_tools::ToolRegistry::new();
+    registry
+        .register(adapter)
+        .expect("Failed to register MCP tool");
+
+    // Verify tool appears in registry with correct source
+    let tool_infos = registry.to_tool_infos();
+    assert_eq!(tool_infos.len(), 1, "Should have exactly one tool");
+
+    let info = &tool_infos[0];
+    assert_eq!(info.name, "echo", "Tool name should be 'echo'");
     assert_eq!(
-        adapter.source(),
+        info.source,
         protocol_interface::core::ToolSource::Mcp,
-        "MCP tool source should be ToolSource::Mcp"
+        "Registered MCP tool source should be ToolSource::Mcp"
     );
-    assert_eq!(adapter.name(), "echo");
 }
 
 #[tokio::test]
-async fn test_mcp_tool_adapter_execute() {
-    // Test that McpToolAdapter::execute() works correctly
-    use runtime_tools::AliusTool;
-
+async fn test_mcp_tool_executed_through_registry() {
+    // Verify that McpToolAdapter can be executed through ToolRegistry::get()
+    // and AliusTool::execute(), proving the full registration -> execution path.
     let client = create_echo_client().await.expect("Failed to create client");
     let tools = client.list_tools().await.expect("Failed to list tools");
     let echo_tool = &tools[0];
@@ -214,24 +219,168 @@ async fn test_mcp_tool_adapter_execute() {
         std::sync::Arc::new(client),
     );
 
-    // Execute the tool through the adapter
+    let registry = runtime_tools::ToolRegistry::new();
+    registry
+        .register(adapter)
+        .expect("Failed to register MCP tool");
+
+    // Get tool from registry
+    let tool = registry
+        .get("echo")
+        .expect("Should find 'echo' tool in registry");
+
+    // Verify source is still Mcp after retrieval
+    assert_eq!(
+        tool.source(),
+        protocol_interface::core::ToolSource::Mcp,
+        "Tool retrieved from registry should still have ToolSource::Mcp"
+    );
+
+    // Execute through the registry-obtained tool
     let ctx = runtime_tools::ToolContext::new(
         std::path::PathBuf::from("/tmp"),
         "test-session".to_string(),
-        protocol_interface::RuntimeMode::Plan,
+        protocol_interface::RuntimeMode::Chat,
     );
 
-    let result = adapter
-        .execute(json!({"message": "test via adapter"}), ctx)
+    let result = tool
+        .execute(json!({"message": "test via registry"}), ctx)
         .await
         .expect("Tool execution failed");
 
     assert!(result.success, "Tool execution should succeed");
     assert!(
-        result.output.contains("Echo: test via adapter"),
-        "Output should contain echoed message, got: {}",
+        result.output.contains("Echo: test via registry"),
+        "Output should contain echoed message from MCP server, got: {}",
         result.output
     );
+}
+
+#[tokio::test]
+async fn test_mcp_tool_executed_through_execute_tools() {
+    // Full integration: register MCP tool in registry, then execute through
+    // the same execute_tools path that LoopEngine uses.
+    let client = create_echo_client().await.expect("Failed to create client");
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let echo_tool = &tools[0];
+
+    let adapter = runtime_tools::mcp_bridge::McpToolAdapter::from_mcp_tool(
+        echo_tool,
+        std::sync::Arc::new(client),
+    );
+
+    let registry = runtime_tools::ToolRegistry::new();
+    registry
+        .register(adapter)
+        .expect("Failed to register MCP tool");
+
+    // Verify tool is registered with correct source
+    let tool_infos = registry.to_tool_infos();
+    let echo_info = tool_infos
+        .iter()
+        .find(|t| t.name == "echo")
+        .expect("echo tool should be in registry");
+    assert_eq!(
+        echo_info.source,
+        protocol_interface::core::ToolSource::Mcp,
+        "echo tool source should be ToolSource::Mcp"
+    );
+
+    // Create a session manager for execute_tools
+    let session_manager =
+        core_runtime::SessionManager::new(protocol_interface::core::WorkspaceRef::new("/tmp"));
+    let session = session_manager.create_session();
+    let (_, run_ref, trace_id) = session_manager
+        .create_turn(&session.session_ref)
+        .expect("Failed to create turn");
+
+    // Create tool call for echo
+    let tool_calls = vec![runtime_model::ToolCall::new(
+        "tc-echo-1".to_string(),
+        "echo".to_string(),
+        json!({"message": "hello from execute_tools"}),
+    )];
+
+    // Execute through the same path LoopEngine uses
+    let mut seq = 0u64;
+    let mut events = Vec::new();
+    let batch_result = core_runtime::loop_engine::tool_step::execute_tools(
+        &tool_calls,
+        &registry,
+        std::path::Path::new("/tmp"),
+        "test-session",
+        protocol_interface::RuntimeMode::Chat,
+        Some(&session_manager),
+        &mut |e| events.push(e),
+        &run_ref,
+        &trace_id,
+        &mut seq,
+        None, // log_writer
+    )
+    .await
+    .expect("execute_tools failed");
+
+    // Verify batch was not denied
+    assert!(
+        !batch_result.batch_denied,
+        "Batch should not be denied for Chat mode"
+    );
+
+    // Verify tool results contain MCP server response
+    assert_eq!(batch_result.results.len(), 1, "Should have one result");
+    let (call_id, tool_name, output) = &batch_result.results[0];
+    assert_eq!(call_id, "tc-echo-1");
+    assert_eq!(tool_name, "echo");
+    assert!(
+        output.contains("Echo: hello from execute_tools"),
+        "Output should contain MCP server response, got: {}",
+        output
+    );
+
+    // Verify ToolCallStarted and ToolCallCompleted events were emitted
+    let has_started = events.iter().any(|e| {
+        matches!(
+            e.kind,
+            protocol_interface::core::CoreEventKind::ToolCallStarted
+        )
+    });
+    let has_completed = events.iter().any(|e| {
+        matches!(
+            e.kind,
+            protocol_interface::core::CoreEventKind::ToolCallCompleted
+        )
+    });
+    assert!(has_started, "Should emit ToolCallStarted event");
+    assert!(has_completed, "Should emit ToolCallCompleted event");
+}
+
+#[tokio::test]
+async fn test_mcp_tool_source_propagates_through_registry() {
+    // Verify that ToolSource::Mcp propagates correctly when tool
+    // is registered in registry and retrieved via different methods.
+    let client = create_echo_client().await.expect("Failed to create client");
+    let tools = client.list_tools().await.expect("Failed to list tools");
+    let echo_tool = &tools[0];
+
+    let adapter = runtime_tools::mcp_bridge::McpToolAdapter::from_mcp_tool(
+        echo_tool,
+        std::sync::Arc::new(client),
+    );
+
+    let registry = runtime_tools::ToolRegistry::new();
+    registry
+        .register(adapter)
+        .expect("Failed to register MCP tool");
+
+    // Test 1: to_tool_infos() returns correct source
+    let infos = registry.to_tool_infos();
+    let echo_info = infos.iter().find(|t| t.name == "echo").unwrap();
+    assert_eq!(echo_info.source, protocol_interface::core::ToolSource::Mcp);
+
+    // Test 2: get() returns tool with correct source
+    let tool = registry.get("echo").unwrap();
+    assert_eq!(tool.source(), protocol_interface::core::ToolSource::Mcp);
+    assert_eq!(tool.name(), "echo");
 }
 
 fn extract_text(result: &runtime_mcp::protocol::McpToolResult) -> String {

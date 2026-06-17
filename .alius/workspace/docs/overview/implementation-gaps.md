@@ -97,7 +97,7 @@ Tools that trigger confirmation in Plan mode:
 
 Remaining gaps:
 - **TUI streaming-path integration test**: While the `ProtocolBridge` streaming acceptance test and unit tests verify the full bridge path and UI state, a test exercising the TUI event loop with actual key input simulation is still missing.
-- MCP tool execution via LoopEngine is tested with a fake MCP-source tool registered in the shared ToolRegistry. Real MCP server end-to-end execution (with actual MCP protocol) is verified through integration tests using a stdio echo server fixture that exercises `initialize → tools/list → tools/call → McpToolAdapter::execute()` path.
+- MCP tool execution via LoopEngine is tested with a fake MCP-source tool registered in the shared ToolRegistry. Real MCP server end-to-end execution (with actual MCP protocol) is verified through integration tests using a stdio echo server fixture that exercises the full `initialize → tools/list → tools/call → McpToolAdapter → ToolRegistry → execute_tools` chain, confirming MCP tools enter the default runtime tool execution path with `ToolSource::Mcp`.
 - `~/.alius/mcp/servers.toml` is the runtime config path; `.alius/config/mcp.json` is a legacy/CLI reference not used by the runtime loader.
 
 ## WASM Plugin Integration

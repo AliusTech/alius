@@ -16,4 +16,6 @@ toml.workspace = true
 [dev-dependencies]
 tokio-test = "0.4"
 runtime-tools = { path = "../tools" }
+runtime-model = { path = "../model" }
+core-runtime = { path = "../core" }
 protocol-interface = { path = "../../protocol" }

@@ -2794,7 +2794,9 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "core-runtime",
  "protocol-interface",
+ "runtime-model",
  "runtime-tools",
  "serde",
  "serde_json",
