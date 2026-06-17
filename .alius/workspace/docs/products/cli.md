@@ -78,3 +78,29 @@ Important distinction:
 ## Extension Commands
 
 `alius plugin`, `alius mcp`, and `alius workflow` expose management surfaces. They should not be documented as fully integrated runtime capabilities unless the code path being described explicitly connects them to Core Runtime execution.
+
+## Functional Test Surface
+
+Every CLI command family must have a functional acceptance test. The goal is to catch dispatch, config, filesystem, output, and runtime wiring regressions, not only unit-level parser mistakes.
+
+Required command coverage:
+
+- `alius version` prints a non-empty version and exits successfully.
+- `alius --help` and each command-family help page render without panic.
+- `alius init` reaches the project-local initialization path inside an isolated temporary workspace and does not write to the developer or CI user's real home directory.
+- `alius run -p <prompt>` works through deterministic test providers in normal CI and through a selected-provider smoke test only when provider-test secrets are present.
+- `alius config show` and `alius config validate` work against a generated project config fixture.
+- `alius config soul --role <role>` validates role selection behavior against a fixture role.
+- `alius core` compatibility commands must be tested without making the legacy remote repository the official extension path.
+- `alius soul` commands must test bundled-soul sync and local cache behavior without requiring network access.
+- `alius plugin` commands must test list, inspect, install, remove, invalid package handling, permission display, and duplicate-name rejection.
+- `alius mcp` commands must test list/start/inspect behavior against local fixture servers.
+- `alius workflow` commands must test list, validate, dry-run or run behavior, confirmation requirements, and runtime-backed tool execution where applicable.
+- `alius repl` and plain `alius` must have non-interactive smoke coverage through the TUI or legacy REPL test harness rather than unbounded terminal sessions.
+
+Functional tests must isolate filesystem state by setting temporary workspace, home, cache, and config paths. They must not mutate `~/.alius`, the repository working tree outside the fixture workspace, or real global credentials.
+
+Network-facing command behavior should be covered in two layers:
+
+- deterministic functional tests against local mock HTTP or MCP servers, required on every CI run;
+- selected-provider smoke tests against real model APIs, required only when the configured CI secrets are available and the workflow context is trusted.

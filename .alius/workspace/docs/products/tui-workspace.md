@@ -210,6 +210,105 @@ Current state:
 - Agent Team is not live by default.
 - Do not claim live AgentNet or A2A traffic until runtime plumbing populates the Agent Team state.
 
+## TUI Test Design
+
+The TUI workspace must have deterministic tests for state transitions, interaction surfaces, rendering reducers, keyboard and mouse behavior, and runtime event reduction. Test helpers must not leak into the release `alius` binary.
+
+### Test Placement
+
+Unit tests that only validate private module behavior should stay behind `#[cfg(test)]`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_state_transition() {}
+}
+```
+
+Shared test helpers are allowed only in test-gated modules:
+
+```rust
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+```
+
+Allowed helper locations:
+
+- `runtime/model/src/testing.rs`
+- `runtime/tools/src/testing.rs`
+- `runtime/core/src/testing.rs`
+- `entrypoints/cli/src/testing.rs`
+- `entrypoints/cli/src/tui/testing.rs`
+
+Integration tests should live under package-local `tests/` directories, for example:
+
+- `entrypoints/cli/tests/cli_parse.rs`
+- `entrypoints/cli/tests/cli_dispatch_config.rs`
+- `entrypoints/cli/tests/tui_state_machine.rs`
+- `runtime/core/tests/chat_run.rs`
+- `runtime/model/tests/client_cache.rs`
+
+Files under `tests/` compile only as test binaries and must not be linked into the release `alius` binary.
+
+### TestKit Scope
+
+The TUI TestKit should provide only deterministic harnesses and fakes:
+
+- `TuiTestHarness` for workspace state setup, synthetic key and mouse events, rendered block inspection, and terminal-size variants.
+- `CoreRuntimeHarness` for deterministic Core event streams and cancellation or confirmation scenarios.
+- `VecEventSource` for ordered event replay without background networking.
+- `FakeProvider` for model output fixtures.
+- `FakeTool` for controlled tool success, failure, and confirmation behavior.
+
+Production modules must not import `crate::testing::*` or package testing modules from normal code paths. Any import of a test helper must itself be gated with `#[cfg(any(test, feature = "testing"))]`.
+
+### TUI State-Machine Coverage
+
+TUI tests should prioritize state-machine coverage over fragile terminal screenshots. Required coverage:
+
+- workspace launch state, welcome block presence, and status bar rendering for Git and non-Git directories;
+- Plan and Bypass mode switching, including the rule that `Shift+Tab` does not change mode while a configuration task is active;
+- plan drafting, clarification prompt rendering, plan proposal, approval, per-node execution, completion confirmation, and Plans panel close;
+- cancellation and interrupt flow through `Esc` while the model is drafting, while a tool confirmation is pending, and while execution is active;
+- `/init` wizard state transitions, resume/restart/exit behavior, progress persistence, and cleanup of completed or cancelled init state;
+- `/config` tab navigation, immediate apply-on-select behavior, validation feedback, and silent exit when nothing is unsaved;
+- `/model` add/view/delete flows with local provider fixtures and no real network dependency;
+- interaction-surface variants: text input, single select, multi select, approval controls, and validation errors;
+- folding behavior, global expand/collapse, and click-to-toggle for long conversation blocks;
+- mouse capture release for native text selection and absence of custom right-click copy UI;
+- responsive welcome layouts for wide, medium, compact, and tiny terminal sizes;
+- Core event reduction for tool start/completion/error, plan events, status events, and output streaming.
+
+Snapshot or screenshot-style assertions may be used only for stable, layout-critical fragments. The primary assertions should inspect state, block kinds, visible labels, selected options, active operation scope, and emitted commands.
+
+### Test and Release Commands
+
+Test runs that need shared harnesses use the explicit `testing` feature:
+
+```bash
+cargo test --workspace --features testing --locked
+```
+
+Release builds must not enable the `testing` feature:
+
+```bash
+cargo build -p alius-cli --bin alius --release --locked
+```
+
+Forbidden release commands:
+
+```bash
+cargo build --release --all-features
+cargo build --release --features testing
+```
+
+Release CI must scan the final binary for test-only symbols and fail if any are present:
+
+```bash
+strings target/release/alius | grep -E "FakeProvider|FakeTool|CoreRuntimeHarness|TuiTestHarness|VecEventSource|testing::|testkit"
+```
+
 ## Legacy REPL
 
 The legacy REPL remains useful for fallback and debugging:
