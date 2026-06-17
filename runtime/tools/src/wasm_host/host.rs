@@ -60,6 +60,8 @@ pub enum PermissionValidationError {
     AbsolutePath { entry: String },
     /// Env entry is empty or has empty target.
     EmptyTarget { entry: String },
+    /// Env target contains wildcard or is not a valid env var name.
+    InvalidEnvVarName { entry: String },
 }
 
 impl std::fmt::Display for PermissionValidationError {
@@ -74,6 +76,12 @@ impl std::fmt::Display for PermissionValidationError {
             Self::PathTraversal { entry } => write!(f, "path traversal (..) not allowed: {entry}"),
             Self::AbsolutePath { entry } => write!(f, "absolute paths not allowed: {entry}"),
             Self::EmptyTarget { entry } => write!(f, "empty target not allowed: {entry}"),
+            Self::InvalidEnvVarName { entry } => {
+                write!(
+                    f,
+                    "invalid env var name (must be [A-Za-z_][A-Za-z0-9_]*): {entry}"
+                )
+            }
         }
     }
 }
@@ -190,7 +198,29 @@ fn validate_env_permission(entry: &str) -> Result<(), PermissionValidationError>
             entry: entry.to_string(),
         });
     }
+    // Reject wildcards and validate env var name format.
+    // Valid: HOME, CARGO_HOME, MY_VAR
+    // Invalid: *, HOME*, *HOME, my-var, 123
+    if parsed.target.contains('*') || !is_valid_env_var_name(&parsed.target) {
+        return Err(PermissionValidationError::InvalidEnvVarName {
+            entry: entry.to_string(),
+        });
+    }
     Ok(())
+}
+
+/// Validate that a string is a valid environment variable name.
+/// Must start with [A-Za-z_] and contain only [A-Za-z0-9_].
+fn is_valid_env_var_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// A plugin with its resolved permissions (from manifest or default).
@@ -685,8 +715,12 @@ mod tests {
             shell: vec![],
             env: vec!["read:*".to_string()],
         };
-        // Wildcards are allowed in env - only empty targets are rejected
-        assert!(validate_permissions(&permissions).is_ok());
+        let result = validate_permissions(&permissions);
+        assert!(result.is_err(), "env wildcard should be rejected");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid env var name"));
     }
 
     #[test]

@@ -106,10 +106,10 @@ Plugin management and WASM host code exist. Production ABI, capability policy, s
 
 **Implemented:**
 - `PluginManifest` includes `permissions` field with structured permission model (`filesystem`, `network`, `shell`, `env` domains)
-- Install-time validation rejects malformed permissions (path traversal, absolute paths, unknown operations, empty targets)
+- Install-time validation rejects malformed permissions (path traversal, absolute paths, unknown operations, empty targets, env wildcards, invalid env var names)
 - `ToolPackageManifest` preserves permissions through conversion
 - `ResolvedPluginPermissions` for programmatic access
-- Tests cover all permission validation scenarios
+- Tests cover all permission validation scenarios and package conversion
 
 **Not yet implemented:**
 - `wasm→host` imports (read_file, write_file, list_dir, fetch, shell, env_get)

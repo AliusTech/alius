@@ -131,3 +131,57 @@ impl ToolPackageResolver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wasm_host::{PluginManifest, PluginPermissions};
+
+    #[test]
+    fn test_manifest_with_permissions_converts() {
+        let manifest = PluginManifest {
+            id: "test-plugin".to_string(),
+            name: "Test Plugin".to_string(),
+            version: "1.0.0".to_string(),
+            description: "A test plugin".to_string(),
+            author: Some("tester".to_string()),
+            permissions: Some(PluginPermissions {
+                filesystem: vec!["read:project".to_string(), "write:output".to_string()],
+                network: vec!["fetch:https://api.example.com".to_string()],
+                shell: vec!["exec:readonly".to_string()],
+                env: vec!["read:HOME".to_string(), "read:PATH".to_string()],
+            }),
+        };
+        let pkg: ToolPackageManifest = manifest.into();
+        assert_eq!(pkg.id, "test-plugin");
+        assert_eq!(pkg.name, "Test Plugin");
+        assert_eq!(pkg.version, "1.0.0");
+        assert_eq!(pkg.author, Some("tester".to_string()));
+        assert_eq!(
+            pkg.permissions.filesystem,
+            vec!["read:project", "write:output"]
+        );
+        assert_eq!(
+            pkg.permissions.network,
+            vec!["fetch:https://api.example.com"]
+        );
+        assert_eq!(pkg.permissions.shell, vec!["exec:readonly"]);
+        assert_eq!(pkg.permissions.env, vec!["read:HOME", "read:PATH"]);
+    }
+
+    #[test]
+    fn test_manifest_without_permissions_converts_empty() {
+        let manifest = PluginManifest {
+            id: "old-plugin".to_string(),
+            name: "Old Plugin".to_string(),
+            version: "0.1.0".to_string(),
+            description: "An old plugin".to_string(),
+            author: None,
+            permissions: None,
+        };
+        let pkg: ToolPackageManifest = manifest.into();
+        assert_eq!(pkg.id, "old-plugin");
+        assert!(pkg.author.is_none());
+        assert!(pkg.permissions.is_empty());
+    }
+}
