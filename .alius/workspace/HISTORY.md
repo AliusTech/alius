@@ -26,6 +26,8 @@ All entries use the format:
 [2026-06-17 18:30]: runtime/tools/tests/shell_gate_integration.rs - Added 5 tests: low-risk success, bypass mode, authorization
 [2026-06-17 18:30]: runtime/core/src/runtime.rs - Added 3 tests: close_session, clear_conversation, nonexistent session
 [2026-06-17 18:30]: entrypoints/cli/src/workflow/mod.rs - Added 5 tests: load_workflow from disk, load_workflows directory
+[2026-06-17 19:00]: runtime/tools/src/wasm_host/host.rs - Added 5 tests: list/find/remove lifecycle, validate_wasm_module
+[2026-06-17 19:00]: entrypoints/cli/src/workflow/mod.rs - Added 3 tests: condition failed operator, nonexistent step
 
 ## 2026-06-17
 
