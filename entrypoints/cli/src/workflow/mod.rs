@@ -2293,4 +2293,85 @@ mod tests {
         let workflows = load_workflows(std::path::Path::new("/nonexistent/dir")).unwrap();
         assert!(workflows.is_empty());
     }
+
+    // ── Condition step: failed operator ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_condition_step_failed_operator() {
+        let (handle, _, _) = MockHandle::new();
+        let mut ctx = ExecutionContext::new();
+        ctx.results.insert(
+            "prev".to_string(),
+            step_result("prev".to_string(), "error occurred".to_string(), false),
+        );
+
+        let step = Step {
+            id: "cond".to_string(),
+            step_type: StepType::Condition,
+            prompt: Some("prev failed".to_string()),
+            tool: None,
+            args: None,
+            url: None,
+            method: None,
+            body: None,
+            on_failure: OnFailurePolicy::default(),
+            timeout_ms: None,
+        };
+        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        assert!(
+            result.success,
+            "failed operator should return true when step failed"
+        );
+        assert_eq!(result.output, "true");
+    }
+
+    #[tokio::test]
+    async fn test_condition_step_failed_operator_returns_false_on_success() {
+        let (handle, _, _) = MockHandle::new();
+        let mut ctx = ExecutionContext::new();
+        ctx.results.insert(
+            "prev".to_string(),
+            step_result("prev".to_string(), "ok".to_string(), true),
+        );
+
+        let step = Step {
+            id: "cond".to_string(),
+            step_type: StepType::Condition,
+            prompt: Some("prev failed".to_string()),
+            tool: None,
+            args: None,
+            url: None,
+            method: None,
+            body: None,
+            on_failure: OnFailurePolicy::default(),
+            timeout_ms: None,
+        };
+        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        // When step succeeded, "failed" evaluates to false
+        assert_eq!(
+            result.output, "false",
+            "failed operator should output 'false' when step succeeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_condition_step_nonexistent_step_returns_failure() {
+        let (handle, _, _) = MockHandle::new();
+        let ctx = ExecutionContext::new();
+
+        let step = Step {
+            id: "cond".to_string(),
+            step_type: StepType::Condition,
+            prompt: Some("nonexistent success".to_string()),
+            tool: None,
+            args: None,
+            url: None,
+            method: None,
+            body: None,
+            on_failure: OnFailurePolicy::default(),
+            timeout_ms: None,
+        };
+        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        assert!(!result.success, "referencing nonexistent step should fail");
+    }
 }

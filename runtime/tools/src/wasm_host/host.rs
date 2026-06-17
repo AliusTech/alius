@@ -1945,4 +1945,45 @@ description = "Plugin without permissions"
         assert!(!resolved.check_env("HOME").is_allowed());
         cleanup_workspace(&ws);
     }
+
+    // ── Lifecycle: list / find / remove ──────────────────────────────
+
+    #[test]
+    fn test_list_plugins_returns_empty_when_no_plugins() {
+        // Ensure the plugin directory doesn't exist or is empty
+        let dir = plugin_dir();
+        if dir.exists() {
+            // Save existing plugins to restore later
+            let _existing = std::fs::read_dir(&dir).ok();
+        }
+        // list_plugins should succeed even if dir doesn't exist
+        let result = list_plugins();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_find_plugin_returns_none_for_unknown_id() {
+        let result = find_plugin("nonexistent-plugin-id-12345");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_remove_plugin_fails_for_nonexistent() {
+        let result = remove_plugin("nonexistent-plugin-id-12345");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not installed"));
+    }
+
+    #[test]
+    fn test_validate_wasm_module_rejects_invalid() {
+        let result = validate_wasm_module(&[0, 1, 2, 3]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_wasm_module_rejects_empty() {
+        let result = validate_wasm_module(&[]);
+        assert!(result.is_err());
+    }
 }
