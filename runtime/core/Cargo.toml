@@ -11,7 +11,7 @@ default = ["std", "mcp"]
 std = []
 embedded = ["dep:critical-section"]
 mcp = ["dep:runtime-mcp", "dep:dirs"]
-testing = ["protocol-interface/testing", "runtime-config/testing", "runtime-model/testing", "runtime-store/testing", "runtime-tools/testing", "dep:tempfile", "dep:async-trait"]
+testing = ["protocol-interface/testing", "runtime-config/testing", "runtime-model/testing", "runtime-store/testing", "runtime-tools/testing", "dep:tempfile"]
 
 [dependencies]
 protocol-interface = { workspace = true }
@@ -38,12 +38,13 @@ tracing = { workspace = true }
 # Optional: for embedded mode
 critical-section = { version = "1.0", optional = true }
 
+# Required for a2a module
+async-trait = { workspace = true }
+
 # Optional: for testing feature
 tempfile = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-async-trait = { workspace = true }
 runtime-model = { workspace = true, features = ["testing"] }
 runtime-tools = { workspace = true, features = ["testing"] }
