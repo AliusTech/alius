@@ -125,7 +125,19 @@ impl LlmClient {
                 &settings,
             )?),
             ProviderType::Google => {
-                return Err(anyhow::anyhow!("Google provider not yet implemented"));
+                let api_key = settings.get_api_key().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Google API key not found. Set GOOGLE_API_KEY or api_key in config."
+                    )
+                })?;
+                let mut provider = crate::google_provider::GoogleProvider::new(
+                    &api_key,
+                    &settings.model,
+                )?;
+                if let Some(ref base_url) = settings.base_url {
+                    provider = provider.with_base_url(base_url);
+                }
+                Box::new(provider)
             }
         };
 

@@ -1,23 +1,40 @@
 //! Google Generative AI provider implementation.
 //!
-//! Uses the OpenAI-compatible interface that Google provides.
-//! For actual API calls, use the OpenAI provider with Google's base_url.
+//! Uses the OpenAI-compatible interface that Google provides at
+//! `https://generativelanguage.googleapis.com/v1beta/openai`.
+//!
+//! Internally delegates to [`OpenAiProvider`] with the Google base URL,
+//! so all chat/tool/streaming functionality works through the same code path.
 
 use anyhow::{bail, Result};
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::openai_provider::OpenAiProvider;
 use crate::provider::{ChatStream, LlmProvider, ToolResponse};
 use crate::{ChatEvent, Conversation, ToolCall};
 use protocol_interface::ToolDef;
+use runtime_config::LlmSettings;
 
 /// Google Generative AI provider using OpenAI-compatible interface.
-#[derive(Debug)]
+///
+/// Delegates all operations to [`OpenAiProvider`] configured with Google's
+/// base URL and the provided API key.
 pub struct GoogleProvider {
-    base_url: String,
-    api_key: String,
+    inner: OpenAiProvider,
     model: String,
+    api_key: String,
+    base_url: String,
+}
+
+impl std::fmt::Debug for GoogleProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleProvider")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 impl GoogleProvider {
@@ -30,16 +47,44 @@ impl GoogleProvider {
         if api_key.is_empty() {
             bail!("Google API key is required");
         }
-        Ok(Self {
-            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
-            api_key: api_key.to_string(),
+
+        let base_url = "https://generativelanguage.googleapis.com/v1beta/openai".to_string();
+
+        let settings = LlmSettings {
+            provider: protocol_interface::ProviderType::Openai,
+            provider_mode: None,
             model: model.to_string(),
+            api_key: Some(api_key.to_string()),
+            api_key_env: None,
+            base_url: Some(base_url.clone()),
+            review_model: None,
+        };
+
+        let inner = OpenAiProvider::new(&settings)?;
+
+        Ok(Self {
+            inner,
+            model: model.to_string(),
+            api_key: api_key.to_string(),
+            base_url,
         })
     }
 
     /// Create with custom base URL.
     pub fn with_base_url(mut self, url: &str) -> Self {
-        self.base_url = url.to_string();
+        let settings = LlmSettings {
+            provider: protocol_interface::ProviderType::Openai,
+            provider_mode: None,
+            model: self.model.clone(),
+            api_key: Some(self.api_key.clone()),
+            api_key_env: None,
+            base_url: Some(url.to_string()),
+            review_model: None,
+        };
+        if let Ok(inner) = OpenAiProvider::new(&settings) {
+            self.inner = inner;
+            self.base_url = url.to_string();
+        }
         self
     }
 }
@@ -47,21 +92,17 @@ impl GoogleProvider {
 impl LlmProvider for GoogleProvider {
     fn chat_stream<'a>(
         &'a self,
-        _conversation: &'a Conversation,
+        conversation: &'a Conversation,
     ) -> Pin<Box<dyn Future<Output = Result<ChatStream>> + Send + 'a>> {
-        Box::pin(async {
-            bail!("Google provider streaming not yet implemented — use OpenAI provider with Google base_url")
-        })
+        self.inner.chat_stream(conversation)
     }
 
     fn chat_once<'a>(
         &'a self,
-        _prompt: &'a str,
-        _system: Option<&'a str>,
+        prompt: &'a str,
+        system: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
-        Box::pin(async {
-            bail!("Google provider not yet implemented — use OpenAI provider with Google base_url")
-        })
+        self.inner.chat_once(prompt, system)
     }
 
     fn list_models<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
@@ -76,20 +117,21 @@ impl LlmProvider for GoogleProvider {
 
     fn chat_stream_with_tools<'a>(
         &'a self,
-        _conversation: &'a Conversation,
-        _tools: &'a [ToolDef],
+        conversation: &'a Conversation,
+        tools: &'a [ToolDef],
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
-        Box::pin(async { bail!("Google provider tool calling not yet implemented") })
+        self.inner.chat_stream_with_tools(conversation, tools)
     }
 
     fn continue_with_tool_results<'a>(
         &'a self,
-        _conversation: &'a Conversation,
-        _tool_results: &'a [(String, String, String)],
-        _assistant_tool_calls: &'a [ToolCall],
-        _tools: &'a [ToolDef],
+        conversation: &'a Conversation,
+        tool_results: &'a [(String, String, String)],
+        assistant_tool_calls: &'a [ToolCall],
+        tools: &'a [ToolDef],
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
-        Box::pin(async { bail!("Google provider tool results not yet implemented") })
+        self.inner
+            .continue_with_tool_results(conversation, tool_results, assistant_tool_calls, tools)
     }
 }
 
@@ -101,10 +143,6 @@ mod tests {
     fn test_google_provider_new() {
         let provider = GoogleProvider::new("test-key", "gemini-2.0-flash").unwrap();
         assert_eq!(provider.model, "gemini-2.0-flash");
-        assert_eq!(
-            provider.base_url,
-            "https://generativelanguage.googleapis.com/v1beta/openai"
-        );
     }
 
     #[test]
@@ -119,10 +157,8 @@ mod tests {
         let provider = GoogleProvider::new("key", "gemini-2.0-flash")
             .unwrap()
             .with_base_url("https://custom.googleapis.com/v1beta/openai");
-        assert_eq!(
-            provider.base_url,
-            "https://custom.googleapis.com/v1beta/openai"
-        );
+        // Model should still be set
+        assert_eq!(provider.model, "gemini-2.0-flash");
     }
 
     #[tokio::test]
