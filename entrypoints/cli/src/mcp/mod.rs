@@ -73,27 +73,51 @@ struct JsonRpcError {
 }
 
 /// Load MCP config from file.
+///
+/// Config resolution order (later entries override earlier):
+/// 1. User-level: `~/.alius/mcp/servers.toml` (global MCP server registry)
+/// 2. Project-level: `.alius/config/mcp.json` (per-project overrides)
+/// 3. Legacy project-level: `.alius/mcp.json` (migrated to config/mcp.json)
+///
+/// Servers from all layers are merged; project-level entries override
+/// user-level entries with the same name.
 pub fn load_config() -> Result<McpConfig> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let mut merged = McpConfig {
+        servers: HashMap::new(),
+    };
 
-    // Try project config first, then global
-    let paths = vec![
-        PathBuf::from(".alius").join("mcp.json"),
-        PathBuf::from("alius").join("mcp.json"),
-        PathBuf::from(home).join(".alius").join("mcp.json"),
-    ];
-
-    for path in &paths {
-        if path.exists() {
-            let content = std::fs::read_to_string(path)?;
-            let config: McpConfig = serde_json::from_str(&content)?;
-            return Ok(config);
+    // Layer 1: User-level TOML config
+    let user_toml = PathBuf::from(&home).join(".alius/mcp/servers.toml");
+    if user_toml.exists() {
+        if let Ok(content) = std::fs::read_to_string(&user_toml) {
+            if let Ok(toml_config) = toml::from_str::<McpConfig>(&content) {
+                merged.servers.extend(toml_config.servers);
+            }
         }
     }
 
-    Ok(McpConfig {
-        servers: HashMap::new(),
-    })
+    // Layer 2: Project-level JSON config (new path)
+    let project_json = PathBuf::from(".alius/config/mcp.json");
+    if project_json.exists() {
+        if let Ok(content) = std::fs::read_to_string(&project_json) {
+            if let Ok(json_config) = serde_json::from_str::<McpConfig>(&content) {
+                merged.servers.extend(json_config.servers);
+            }
+        }
+    }
+
+    // Layer 3: Legacy project-level JSON config
+    let legacy_json = PathBuf::from(".alius/mcp.json");
+    if legacy_json.exists() {
+        if let Ok(content) = std::fs::read_to_string(&legacy_json) {
+            if let Ok(json_config) = serde_json::from_str::<McpConfig>(&content) {
+                merged.servers.extend(json_config.servers);
+            }
+        }
+    }
+
+    Ok(merged)
 }
 
 /// List configured MCP servers (without starting them).

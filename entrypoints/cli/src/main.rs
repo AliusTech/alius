@@ -630,7 +630,11 @@ fn handle_mcp(cmd: McpCommand) -> Result<()> {
         McpCommand::List => {
             let servers = crate::mcp::list_configured_servers()?;
             if servers.is_empty() {
-                println!("No MCP servers configured. Create .alius/mcp.json or ~/.alius/mcp.json");
+                println!("No MCP servers configured.");
+                println!("Config locations (merged, later overrides earlier):");
+                println!("  User:    ~/.alius/mcp/servers.toml");
+                println!("  Project: .alius/config/mcp.json");
+                println!("  Legacy:  .alius/mcp.json");
             } else {
                 println!("Configured MCP Servers:");
                 for (name, config) in &servers {

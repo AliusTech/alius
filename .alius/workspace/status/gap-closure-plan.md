@@ -10,9 +10,13 @@ Based on comprehensive audit verification (889 tests, 177 Rust files, 78 workspa
 | CLI Global Params | 60% | 90% | All commands respect --workspace/--config/--provider/--model; --verbose wired to tracing |
 | Documentation | Conflicts | Clean | extensions.md corrected |
 | Workflow HTTP | Open | Gated | Domain allow-list validation; fail-closed when no domains configured |
-| Core Runtime | 90% | 90% | No change |
+| Model Router | Dead code | Wired | CoreRuntimeManager uses ModelRouter::route_default() when project config available |
+| Core Runtime | 90% | 92% | Model Router integration |
 | Shell Gate | 88% | 88% | No change |
 | CI | 90% | 90% | No change |
+
+**Test count:** 900 (up from 889)
+**Commit:** 60a5af3
 
 ## Completed Items
 
@@ -21,19 +25,18 @@ Based on comprehensive audit verification (889 tests, 177 Rust files, 78 workspa
 - ✅ P0.2: CLI global params (--config, --provider, --model, --workspace)
 - ✅ P0.3: Documentation conflicts fixed
 
-### P1 — High Priority (DONE)
+### P1 — High Priority (ALL DONE)
 - ✅ P1.1: REPL respects --workspace override
 - ✅ P1.2: ConfigCommand::Show respects --workspace
 - ✅ P1.3: apply_cli_overrides hydrates from --workspace, not CWD
 - ✅ P1.4: --verbose flag configures tracing (tracing-subscriber added)
 - ✅ P1.5: Workflow HTTP steps gated by domain allow-list (fail-closed)
 - ✅ P1.6: Model Router wired into CoreRuntimeManager — `resolve_llm_settings()` uses `ModelRouter::route_default()` when project config is available
+- ✅ P1.7: MCP config path unified — 3-layer merge (user TOML → project JSON → legacy JSON)
 
 ## Remaining Gaps
 
-### P1 — High Priority
-
-#### P1.7: MCP config path unification
+### P2 — Medium Priority
 **Current:** Line 67 calls `settings.hydrate_from_project_config(&cwd)` using CWD before workspace override is resolved.
 **Fix:** Resolve workspace first, then hydrate from that path.
 **Files:** `entrypoints/cli/src/main.rs`
