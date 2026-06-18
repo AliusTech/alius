@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod conversation;
 pub mod episodic;
 pub mod memory;
@@ -7,6 +8,7 @@ pub mod retrieval;
 pub mod semantic;
 pub mod session;
 
+pub use bridge::MemoryBridge;
 pub use conversation::ConversationStore;
 pub use episodic::EpisodicStore;
 pub use memory::MemoryStore;
