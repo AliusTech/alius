@@ -14,8 +14,10 @@ All 9 workspace crates have a `testing` feature flag with proper propagation thr
 - `core_runtime::testing::{CoreRuntimeHarness, FakeMcpEchoTool, FakeMcpToolCallProvider}` — isolated runtime environment
 - `alius_cli::testing::{CwdGuard, enter_temp_cwd, temp_workspace}` — filesystem isolation
 - `alius_cli::tui::testing::{key, key_with, type_text, submit_input}` — TUI key helpers
+- `alius_cli::tui::testing::TuiTestHarness` — workspace state harness with key/mouse injection, terminal size variants, block inspection, and tool confirmation state management
+- `alius_cli::tui::testing::VecEventSource` — ordered Core event replay for deterministic testing
 
-All testing modules gated with `#[cfg(any(test, feature = "testing"))]`. Release binary verified clean of test symbols via CI symbol scan. ~783 tests total across the workspace.
+All testing modules gated with `#[cfg(any(test, feature = "testing"))]`. Release binary verified clean of test symbols via CI symbol scan. ~889 tests total across the workspace.
 
 **Remaining gaps:** (none for infrastructure; individual module coverage gaps noted below)
 

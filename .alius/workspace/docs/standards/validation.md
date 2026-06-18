@@ -152,10 +152,10 @@ The main CI workflow should run a single test-and-coverage job before release bu
 5. Run `cargo clippy --workspace --all-targets --features testing -- -D warnings`.
 6. Run `cargo test --workspace --features testing --locked -- --nocapture` and capture the full log under `target/ci-reports/test.log`.
 7. Parse `test result:` lines into `target/ci-reports/test-summary.env`.
-8. Generate coverage reports with `cargo llvm-cov --workspace --features testing`, excluding `tests/`, `testing.rs`, and `testkit` paths.
+8. Generate coverage reports with `cargo llvm-cov --workspace --features testing`, excluding `tests/`, `testing.rs`, and `testkit` paths via `--ignore-filename-regex`. The same regex must be passed to every `cargo llvm-cov report` invocation.
 9. Write a Markdown summary to `GITHUB_STEP_SUMMARY`.
 10. Upload test logs, summary files, LCOV, coverage summary, and HTML coverage as GitHub artifacts.
-11. Enforce `--fail-under-lines 85`.
+11. Enforce the staged coverage threshold (see below).
 
 Recommended report artifacts:
 
@@ -177,6 +177,28 @@ cargo build -p alius-cli --bin alius --release --locked
 ```
 
 It must not use `--all-features` or `--features testing`.
+
+### Staged Coverage Threshold
+
+The final coverage target is `--fail-under-lines 85`. Because the codebase was not built with coverage instrumentation from the start, reaching 85% requires staged effort. The threshold is enforced at each stage as follows:
+
+| Stage | Threshold | Baseline | Target date | Criteria |
+|-------|-----------|----------|-------------|----------|
+| 0 (current) | 65% | 67.5% | 2026-06 | Established with TUI TestKit and initial state-machine tests |
+| 1 | 70% | — | 2026-07 | Cover remaining CLI dispatch, config loader, plugin install/remove |
+| 2 | 75% | — | 2026-08 | Cover Core Runtime loop engine, session manager, tool execution |
+| 3 | 80% | — | 2026-09 | Cover MCP protocol, WASM host imports, workflow engine |
+| 4 | 85% | — | 2026-10 | Cover JSON-RPC surface, provider error mapping, TUI full state machine |
+
+Each stage must update the `--fail-under-lines` value in both `ci.yml` and `release.yml`. A stage cannot be skipped. If a stage target is missed, the threshold stays at the previous stage value until the target is met.
+
+Coverage exclusion regex (applied to all `cargo llvm-cov report` commands):
+
+```
+--ignore-filename-regex '(/tests/|/testing\.rs$|/testkit/|state_machine_tests\.rs$)'
+```
+
+This excludes integration test files, shared testing modules, testkit code, and state-machine test files from line coverage calculations, since those files are test infrastructure, not production logic.
 
 This policy forbids third-party test report services, but it does not forbid normal CI dependency downloads such as `rustup`, crates.io dependencies, or `cargo install cargo-llvm-cov`. If the project later requires offline CI, the workflow must move to self-hosted runners, preinstalled tools, `cargo vendor`, and offline Cargo commands.
 

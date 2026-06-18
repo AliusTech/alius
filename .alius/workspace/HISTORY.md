@@ -6,6 +6,26 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-18
+
+[2026-06-18 10:00] Alius: .github/workflows/release.yml - Added test-gate job before create-release; moved tag creation to after test-gate passes; added --locked to all release builds; added per-platform test-symbol scan before artifact upload; added cargo-audit to release test-gate.
+
+[2026-06-18 10:00] Alius: .github/workflows/ci.yml - Added cargo-llvm-cov coverage collection with --ignore-filename-regex for testing files; added staged coverage threshold (65%); added provider-smoke job with correct .alius/config/ structure, binary pre-build, config validation with DeepSeek/model assertion, set -o pipefail, and failure-pattern rejection; documented audit exceptions.
+
+[2026-06-18 10:00] Alius: entrypoints/cli/src/main.rs - Fixed `alius run` to return non-zero exit code on failure (ErrorRaised or FinalResult.success=false).
+
+[2026-06-18 10:00] Alius: entrypoints/cli/src/tui/testing.rs - Implemented TuiTestHarness (workspace state harness with key/mouse injection, terminal size variants, block inspection, tool confirmation state, config task injection, execution mode, folding) and VecEventSource (ordered Core event replay with next/peek/reset/drain).
+
+[2026-06-18 10:00] Alius: entrypoints/cli/src/tui/workspace/mod.rs + state_machine_tests.rs - Added 44 TUI state-machine tests covering welcome block, Plan/Bypass toggle, config-task Shift+Tab guard, Esc interrupt, Ctrl+C/D quit, focus zone cycling, tool confirmation inject/clear, terminal size variants, block manipulation, streaming text, folding, execution mode, responsive layout, input/submit, backspace, tab completion, VecEventSource, Core event replay helpers. Tests extracted to separate file for coverage exclusion.
+
+[2026-06-18 10:00] Alius: runtime/core/src/runtime.rs - Stabilized cancel_streaming_run_stops_future_events test with retry loop to fix race condition in serial test execution.
+
+[2026-06-18 10:00] Alius: .alius/workspace/docs/standards/validation.md - Added staged coverage threshold table (Stage 0: 65% → Stage 4: 85%) with per-stage targets, dates, and criteria; updated coverage exclusion regex to include state_machine_tests.rs; clarified --ignore-filename-regex must be passed to all report commands.
+
+[2026-06-18 10:00] Alius: .alius/workspace/docs/overview/implementation-gaps.md - Updated testing infrastructure section to list TuiTestHarness and VecEventSource; updated test count.
+
+[2026-06-18 10:00] Alius: docs/audit-exceptions.md - Documented RUSTSEC-2025-0012 (backoff), RUSTSEC-2024-0384 (instant), RUSTSEC-2024-0436 (paste), RUSTSEC-2026-0002 (lru) with impact, mitigation, owner, and review date.
+
 ## 2026-06-17
 
 [2026-06-17 18:00]: test infrastructure - Added `testing` feature flag to all 9 workspace crates with proper feature propagation
