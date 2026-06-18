@@ -2,6 +2,30 @@
 //!
 //! Provides a TCP line-based JSON-RPC interface backed by `CoreRuntimeManager`.
 //!
+//! ## Connection modes
+//!
+//! **Request-response** (default): Each connection reads one JSON-RPC request,
+//! dispatches it, writes the response, and closes.
+//!
+//! **Streaming** (`run_stream` method): Holds the connection open and pushes
+//! events as newline-delimited JSON. The server sends an initial acknowledgment,
+//! then streams events until a `FinalResult` event or 5-minute timeout.
+//!
+//! ## Methods
+//!
+//! | Method             | Description                          |
+//! |--------------------|--------------------------------------|
+//! | `health_check`     | Runtime health report                |
+//! | `config_read`      | Current configuration snapshot       |
+//! | `model_list`       | Available models                     |
+//! | `tool_list`        | Registered tools                     |
+//! | `version`          | Crate version                        |
+//! | `run_start`        | Start a streaming run                |
+//! | `run_subscribe`    | Snapshot of events for a run         |
+//! | `run_stream`       | Real-time event stream (persistent)  |
+//! | `run_cancel`       | Cancel a running execution           |
+//! | `run_confirm_tool` | Respond to tool confirmation         |
+//!
 //! ## Error codes
 //!
 //! | Code    | Meaning                         |
@@ -135,6 +159,11 @@ pub fn dispatch_with_runtime(
         ),
         "run_start" => handle_run_start(request, manager),
         "run_subscribe" => handle_run_subscribe(request, manager),
+        "run_stream" => {
+            // run_stream is handled at the connection level, not here.
+            // This arm exists only for the method_not_found fallback.
+            method_not_found(request)
+        }
         "run_cancel" => handle_run_cancel(request, manager),
         "run_confirm_tool" => handle_run_confirm_tool(request, manager),
         _ => method_not_found(request),
@@ -361,6 +390,93 @@ pub async fn serve(addr: SocketAddr) -> Result<()> {
     serve_with_runtime(addr, Arc::new(manager)).await
 }
 
+/// Handle a `run_stream` connection — holds the connection open and pushes
+/// events as newline-delimited JSON as they arrive.
+///
+/// Uses polling with `subscribe()` to check for new events. The connection
+/// closes when:
+/// - The run emits a `FinalResult` event
+/// - The client disconnects (write fails)
+/// - 5 minutes of inactivity (timeout)
+async fn handle_run_stream_connection(
+    request: JsonRpcRequest,
+    manager: &CoreRuntimeManager,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let run_ref_str = match request.params.get("run_ref").and_then(|v| v.as_str()) {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => {
+            let resp = invalid_params(&request, "params.run_ref is required");
+            if let Ok(body) = serde_json::to_string(&resp) {
+                let _ = writer.write_all(format!("{}\n", body).as_bytes()).await;
+            }
+            return Ok(());
+        }
+    };
+    let run_ref = protocol_interface::RunRef::from_existing(run_ref_str.to_string());
+
+    // Send initial acknowledgment
+    let ack = success(&request, serde_json::json!({"streaming": true, "run_ref": run_ref_str}));
+    if let Ok(body) = serde_json::to_string(&ack) {
+        let _ = writer.write_all(format!("{}\n", body).as_bytes()).await;
+    }
+
+    // Polling loop: check for new events every 100ms
+    let mut seen_count: usize = 0;
+    let timeout = std::time::Duration::from_secs(300); // 5 min timeout
+    let poll_interval = std::time::Duration::from_millis(100);
+    let start = std::time::Instant::now();
+    let mut is_final = false;
+
+    loop {
+        if start.elapsed() > timeout {
+            break;
+        }
+        if is_final {
+            break;
+        }
+
+        match manager.subscribe(&run_ref) {
+            Ok(envelopes) => {
+                // Send only new events (beyond what we've already sent)
+                if envelopes.len() > seen_count {
+                    for env in &envelopes[seen_count..] {
+                        let event_json = serde_json::json!({
+                            "event_id": env.payload.event_id.as_str(),
+                            "trace_id": env.trace_id.as_str(),
+                            "run_ref": env.run_ref.as_ref().map(|r| r.as_str()),
+                            "kind": serde_json::to_value(&env.payload.kind).unwrap_or_default(),
+                            "payload": serde_json::to_value(&env.payload.payload).unwrap_or_default(),
+                            "sequence": env.payload.sequence,
+                            "created_at": env.payload.created_at.to_rfc3339(),
+                        });
+                        let line = serde_json::to_string(&event_json).unwrap_or_default();
+                        if writer.write_all(format!("{}\n", line).as_bytes()).await.is_err() {
+                            return Ok(()); // Client disconnected
+                        }
+
+                        // Check if this is a FinalResult event
+                        if let protocol_interface::core::CoreEventKind::FinalResult = env.payload.kind {
+                            is_final = true;
+                        }
+                    }
+                    seen_count = envelopes.len();
+                }
+            }
+            Err(_) => {
+                // Run not found or error — stop streaming
+                break;
+            }
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Ok(())
+}
+
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     manager: &CoreRuntimeManager,
@@ -375,6 +491,10 @@ async fn handle_connection(
         Ok(_) => {
             let trimmed = line.trim();
             match serde_json::from_str::<JsonRpcRequest>(trimmed) {
+                Ok(req) if req.method == "run_stream" => {
+                    // Streaming mode: hold connection open, push events
+                    handle_run_stream_connection(req, manager, &mut writer).await
+                }
                 Ok(req) => {
                     let resp = dispatch_with_runtime(&req, manager);
                     if let Ok(body) = serde_json::to_string(&resp) {

@@ -12,6 +12,14 @@
 //! The production handle is [`RuntimeWorkflowHandle`], which delegates to
 //! `CoreRuntimeManager` (LLM) and `ToolRegistry` (tools). A stub handle
 //! exists for tests only.
+//!
+//! ## Confirmation
+//!
+//! Tool confirmations are handled through [`confirmation::ConfirmationChannel`].
+//! Non-interactive workflows use [`confirmation::FailClosedChannel`] (deny all).
+//! Interactive workflows use [`confirmation::StdinConfirmChannel`] (prompt user).
+
+pub mod confirmation;
 
 use anyhow::Result;
 use async_trait::async_trait;
