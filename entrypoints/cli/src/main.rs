@@ -31,6 +31,67 @@ fn set_locale(locale: &str) {
     rust_i18n::set_locale(locale);
 }
 
+/// Parse a provider string into a ProviderType.
+///
+/// Accepts case-insensitive names: "openai", "anthropic", "google",
+/// "bigmodel", "deepseek", "xiaomi_mimo", "custom".
+fn parse_provider(s: &str) -> Result<protocol_interface::ProviderType> {
+    match s.to_lowercase().as_str() {
+        "openai" => Ok(protocol_interface::ProviderType::Openai),
+        "anthropic" => Ok(protocol_interface::ProviderType::Anthropic),
+        "google" => Ok(protocol_interface::ProviderType::Google),
+        "bigmodel" => Ok(protocol_interface::ProviderType::BigModel),
+        "deepseek" => Ok(protocol_interface::ProviderType::DeepSeek),
+        "xiaomi_mimo" | "xiaomi-mimo" => Ok(protocol_interface::ProviderType::XiaomiMimo),
+        "custom" => Ok(protocol_interface::ProviderType::Custom),
+        _ => Err(anyhow::anyhow!(
+            "Unknown provider '{}'. Valid: openai, anthropic, google, bigmodel, deepseek, xiaomi_mimo, custom",
+            s
+        )),
+    }
+}
+
+/// Apply CLI global parameter overrides to loaded settings.
+///
+/// Overrides are applied in order: config path, workspace, provider, model.
+/// The resolved workspace root is returned for use by all commands.
+fn apply_cli_overrides(cli: &Cli) -> Result<(Settings, std::path::PathBuf)> {
+    // Load settings: use custom config path if --config is provided
+    let mut settings = match &cli.config {
+        Some(path) => Settings::load_from_path(path)?,
+        None => Settings::load()?,
+    };
+
+    // Resolve workspace root: --workspace flag > current directory.
+    // This must happen before project config hydration so that the
+    // project config is loaded from the correct workspace.
+    let workspace_root = cli
+        .workspace
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    // Hydrate from project config and soul activation using resolved workspace
+    settings.hydrate_from_project_config(&workspace_root);
+    if let Some(soul_id) = crate::formula::current_project_soul() {
+        settings.soul.role = SoulRole::new(soul_id);
+    }
+
+    // Apply --provider override
+    if let Some(ref provider_str) = cli.provider {
+        settings.llm.provider = parse_provider(provider_str)?;
+    }
+
+    // Apply --model override (global flag, applies to all commands)
+    if let Some(ref model) = cli.model {
+        settings.llm.model = model.clone();
+    }
+
+    // Apply saved locale before any UI output
+    set_locale(&settings.ui.locale);
+
+    Ok((settings, workspace_root))
+}
+
 /// Main application logic.
 ///
 /// Parses CLI arguments, loads configuration, and dispatches to the
@@ -38,18 +99,23 @@ fn set_locale(locale: &str) {
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load settings from default/user/project config, then hydrate legacy chat
-    // fields from the project-local model pool and role activation state.
-    let mut settings = Settings::load()?;
-    if let Ok(cwd) = std::env::current_dir() {
-        settings.hydrate_from_project_config(&cwd);
-    }
-    if let Some(soul_id) = crate::formula::current_project_soul() {
-        settings.soul.role = SoulRole::new(soul_id);
-    }
+    // Initialize tracing based on --verbose flag.
+    // 0 = warn, 1 = info, 2 = debug, 3+ = trace.
+    let filter = match cli.verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
+        )
+        .with_target(false)
+        .init();
 
-    // Apply saved locale before any UI output
-    set_locale(&settings.ui.locale);
+    let (settings, workspace_root) = apply_cli_overrides(&cli)?;
 
     match cli.command {
         // No subcommand or explicit REPL: start interactive mode
@@ -57,17 +123,16 @@ pub async fn run() -> Result<()> {
             if updater::should_auto_check(&settings) {
                 let _ = updater::check_and_notify_silent().await;
             }
-            crate::repl::run_repl(settings).await?;
+            crate::repl::run_repl(settings, workspace_root).await?;
         }
         // Run a single prompt in non-interactive mode
         Some(Command::Run { prompt, model }) => {
             let mut settings = settings;
-            // Override the default model if specified via --model flag
+            // Subcommand-level --model overrides global --model
             if let Some(m) = model {
                 settings.llm.model = m;
             }
 
-            let workspace_root = std::env::current_dir().unwrap_or_default();
             let manager = CoreRuntimeManager::new_local(workspace_root, settings)?;
             let (_run_ref, mut rx) = manager.start_streaming(&prompt, RuntimeMode::Chat)?;
             let mut failed: Option<String> = None;
@@ -124,7 +189,7 @@ pub async fn run() -> Result<()> {
         }
         // Configuration management subcommands
         Some(Command::Config { command }) => {
-            handle_config(&settings, command)?;
+            handle_config(&settings, command, &workspace_root)?;
         }
         // Display version information
         Some(Command::Version) => {
@@ -148,7 +213,7 @@ pub async fn run() -> Result<()> {
         }
         // Workflow management
         Some(Command::Workflow { command }) => {
-            handle_workflow(command, &settings).await?;
+            handle_workflow(command, &settings, &workspace_root).await?;
         }
         // CLI self-update
         Some(Command::Update { command }) => {
@@ -192,7 +257,7 @@ pub async fn run() -> Result<()> {
 /// Handle configuration subcommands.
 ///
 /// Dispatches to the appropriate handler for show, validate, or soul commands.
-fn handle_config(settings: &Settings, cmd: ConfigCommand) -> Result<()> {
+fn handle_config(settings: &Settings, cmd: ConfigCommand, workspace_root: &std::path::Path) -> Result<()> {
     match cmd {
         // Display current configuration
         ConfigCommand::Show => {
@@ -225,8 +290,7 @@ fn handle_config(settings: &Settings, cmd: ConfigCommand) -> Result<()> {
             println!("  Soul: {}", soul_display);
 
             // Display new-system config if available
-            let cwd = std::env::current_dir().unwrap_or_default();
-            if let Ok(snapshot) = runtime_config::config_manager::load_project_config(&cwd) {
+            if let Ok(snapshot) = runtime_config::config_manager::load_project_config(workspace_root) {
                 println!();
                 println!("Routing:");
                 println!(
@@ -612,7 +676,7 @@ fn handle_mcp(cmd: McpCommand) -> Result<()> {
 }
 
 /// Handle workflow management subcommands.
-async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings) -> Result<()> {
+async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings, workspace_root: &std::path::Path) -> Result<()> {
     match cmd {
         WorkflowCommand::List => {
             let dir = crate::workflow::workflows_dir();
@@ -647,8 +711,7 @@ async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings) -> Result<()
             };
 
             // Build real CoreRuntimeManager and ToolRegistry for workflow execution.
-            let workspace_root = std::env::current_dir().unwrap_or_default();
-            let manager = CoreRuntimeManager::new_local(workspace_root, settings.clone())
+            let manager = CoreRuntimeManager::new_local(workspace_root.to_path_buf(), settings.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e))?;
             let registry = manager
                 .tool_registry()

@@ -198,10 +198,12 @@ pub struct ReplSession {
     pub(crate) mode: mode::ReplMode,
     pub(crate) models: Vec<String>,
     pub(crate) bridge: Option<protocol_bridge::ProtocolBridge>,
+    /// Resolved workspace root (from --workspace flag or current directory).
+    pub(crate) workspace_root: std::path::PathBuf,
 }
 
 impl ReplSession {
-    pub fn new(settings: Settings) -> Result<Self> {
+    pub fn new(settings: Settings, workspace_root: std::path::PathBuf) -> Result<Self> {
         let system_prompt = crate::formula::current_project_soul()
             .and_then(|id| crate::formula::load_soul_prompts(&id))
             .unwrap_or_else(|| system_prompt_for_role(&settings.soul.role));
@@ -215,8 +217,7 @@ impl ReplSession {
 
         // Build ProtocolBridge through CoreRuntimeManager.
         let bridge = {
-            let ws_root = std::env::current_dir().unwrap_or_default();
-            protocol_bridge::ProtocolBridge::new(ws_root, settings.clone()).ok()
+            protocol_bridge::ProtocolBridge::new(workspace_root.clone(), settings.clone()).ok()
         };
 
         Ok(Self {
@@ -230,6 +231,7 @@ impl ReplSession {
             mode: mode::ReplMode::Chat,
             models: Vec::new(),
             bridge,
+            workspace_root,
         })
     }
 
@@ -291,8 +293,7 @@ impl ReplSession {
 
         // Rebuild ProtocolBridge through CoreRuntimeManager.
         self.bridge = {
-            let ws_root = std::env::current_dir().unwrap_or_default();
-            protocol_bridge::ProtocolBridge::new(ws_root, settings.clone()).ok()
+            protocol_bridge::ProtocolBridge::new(self.workspace_root.clone(), settings.clone()).ok()
         };
     }
 
@@ -851,18 +852,18 @@ impl ReplSession {
     }
 }
 
-pub async fn run_repl(settings: Settings) -> Result<()> {
+pub async fn run_repl(settings: Settings, workspace_root: std::path::PathBuf) -> Result<()> {
     if std::env::var_os("ALIUS_LEGACY_REPL").is_none() {
         let initial_missing = missing_runtime_requirements(&settings);
-        let mut session = ReplSession::new(settings)?;
+        let mut session = ReplSession::new(settings, workspace_root)?;
         session.fetch_models();
         return crate::tui::workspace::run_workspace(session, initial_missing).await;
     }
 
-    run_legacy_repl(settings).await
+    run_legacy_repl(settings, workspace_root).await
 }
 
-async fn run_legacy_repl(settings: Settings) -> Result<()> {
+async fn run_legacy_repl(settings: Settings, workspace_root: std::path::PathBuf) -> Result<()> {
     crate::ui::show_welcome(&settings);
 
     let missing = missing_runtime_requirements(&settings);
@@ -872,7 +873,7 @@ async fn run_legacy_repl(settings: Settings) -> Result<()> {
         println!();
     }
 
-    let mut session = ReplSession::new(settings)?;
+    let mut session = ReplSession::new(settings, workspace_root)?;
 
     session.fetch_models();
 

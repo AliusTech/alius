@@ -781,16 +781,22 @@ pub fn list_plugin_tools(wasm_bytes: &[u8]) -> Result<Vec<PluginToolDef>> {
     Ok(tools)
 }
 
-/// Call a tool in a Rust WASM tool module.
-pub fn call_plugin_tool(
+/// Call a tool in a Rust WASM tool module using host imports for capability access.
+///
+/// The module is instantiated with `build_linker()` so that plugin tool calls
+/// go through host imports (permissions, audit, Shell Gate). The `host_state`
+/// controls which capabilities are available and where audit events go.
+pub fn call_plugin_tool_with_state(
     wasm_bytes: &[u8],
     tool_name: &str,
     args: &serde_json::Value,
+    host_state: super::imports::WasmHostState,
 ) -> Result<serde_json::Value> {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::from_binary(&engine, wasm_bytes)?;
-    let mut store = wasmtime::Store::new(&engine, ());
-    let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+    let linker = super::imports::build_linker(&engine)?;
+    let mut store = wasmtime::Store::new(&engine, host_state);
+    let instance = linker.instantiate(&mut store, &module)?;
 
     let call_fn = instance
         .get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "alius_plugin_call_tool")
@@ -837,6 +843,25 @@ pub fn call_plugin_tool(
     let result_str = std::str::from_utf8(result_bytes)?;
     let result: serde_json::Value = serde_json::from_str(result_str)?;
     Ok(result)
+}
+
+/// Call a tool in a Rust WASM tool module with default (empty) permissions.
+///
+/// Creates a default `WasmHostState` with no permissions — all capability
+/// calls will be denied, but audit trail is still recorded. Prefer
+/// `call_plugin_tool_with_state` with explicit permissions for production use.
+pub fn call_plugin_tool(
+    wasm_bytes: &[u8],
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let state = super::imports::WasmHostState::new(
+        ResolvedPluginPermissions::default(),
+        "unknown".to_string(),
+        std::env::current_dir().unwrap_or_default(),
+        "legacy".to_string(),
+    );
+    call_plugin_tool_with_state(wasm_bytes, tool_name, args, state)
 }
 
 /// Check if a file path is within the workspace sandbox.

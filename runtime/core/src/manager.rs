@@ -14,6 +14,7 @@ use protocol_interface::{
 };
 use runtime_config::Settings;
 use runtime_model::LlmClient;
+use runtime_model::router::{ModelRouter, ModelRouterConfig};
 use runtime_tools::ToolPackageResolver;
 
 use crate::{CoreRuntime, CoreRuntimeBuilder};
@@ -81,13 +82,21 @@ impl CoreRuntimeManager {
     }
 
     /// Build a manager with an explicit caller context.
+    ///
+    /// If a project config with provider routing exists, uses `ModelRouter`
+    /// to resolve the default tier to a provider/model/credential. Otherwise
+    /// falls back to the legacy `settings.llm` path.
     pub fn new_with_context(
         workspace_root: impl Into<PathBuf>,
         settings: Settings,
         context: RuntimeManagerContext,
     ) -> Result<Self, ProtocolError> {
         let workspace_root = workspace_root.into();
-        let client = LlmClient::new(settings.llm.clone())
+
+        // Try to use the Model Router if project config is available.
+        // Falls back to legacy settings.llm if router is not configured.
+        let llm_settings = Self::resolve_llm_settings(&workspace_root, &settings);
+        let client = LlmClient::new(llm_settings)
             .map_err(|e| ProtocolError::Internal(format!("model client: {e}")))?;
 
         let registry = ToolPackageResolver::new(workspace_root.clone()).build_registry_lossy();
@@ -106,6 +115,34 @@ impl CoreRuntimeManager {
         manager.start_mcp_init();
 
         Ok(manager)
+    }
+
+    /// Resolve LLM settings using the Model Router if available.
+    ///
+    /// Attempts to load the project config and use `ModelRouter::route_default()`
+    /// to resolve the provider/model/credentials from the tiered routing config.
+    /// Falls back to `settings.llm` if the project config is not available or
+    /// the router is not configured.
+    fn resolve_llm_settings(
+        workspace_root: &std::path::Path,
+        settings: &Settings,
+    ) -> runtime_config::LlmSettings {
+        // Try to load project config and build router
+        if let Ok(snapshot) = runtime_config::config_manager::load_project_config(workspace_root) {
+            if let Some(router_config) = ModelRouterConfig::from_project_config(&snapshot) {
+                let router = ModelRouter::new(router_config);
+                match router.route_default() {
+                    Ok(route) => return route.to_llm_settings(),
+                    Err(e) => {
+                        // Router configured but routing failed — fall through to legacy
+                        tracing::warn!("Model Router failed ({}), falling back to settings.llm", e);
+                    }
+                }
+            }
+        }
+
+        // Legacy path: use settings.llm directly
+        settings.llm.clone()
     }
 
     /// Wrap an existing runtime with the default local CLI context.

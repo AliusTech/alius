@@ -152,7 +152,11 @@ impl ToolPackageResolver {
         crate::native::register_native_tools(&registry);
         for package in self.list_installed_packages()? {
             let wasm_bytes = std::fs::read(&package.wasm_path)?;
-            let tools = WasmPluginTool::from_wasm_bytes(&wasm_bytes)?;
+            let tools = WasmPluginTool::from_wasm_bytes(
+                &wasm_bytes,
+                package.manifest.permissions.clone(),
+                package.manifest.id.clone(),
+            )?;
             for tool in tools {
                 if let Err(conflict) = registry.register(tool) {
                     // WASM tool name conflicts with an already-registered tool

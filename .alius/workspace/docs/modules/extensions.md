@@ -139,8 +139,9 @@ Current maturity:
 - `LoopEngineHandle` trait provides the integration surface for runtime calls.
 - Prompt/tool/condition step execution through the trait.
 - Condition step with `contains`, `success`, `failed` operators.
-- `StubLoopEngineHandle` for testing; 7 unit tests.
-- **CLI `workflow run` uses `StubLoopEngineHandle`** — it does NOT call the real `CoreRuntimeManager` or `LoopEngine`. Workflow steps are scaffold, not a complete automation engine.
+- `StubLoopEngineHandle` retained for unit tests only.
+- **CLI `workflow run` uses `RuntimeWorkflowHandle`** backed by real `CoreRuntimeManager` and `ToolRegistry`. Prompt steps call the LLM provider; tool steps execute through the real WASM/native/MCP tool path.
+- HTTP steps use `reqwest::Client` directly (not yet gated through unified permission model).
 
 ## Agent Team and A2A
 

@@ -129,6 +129,96 @@ impl ModelRouter {
     }
 }
 
+impl ResolvedRoute {
+    /// Convert a resolved route to `LlmSettings` for use with `LlmClient`.
+    pub fn to_llm_settings(&self) -> runtime_config::LlmSettings {
+        let provider = match self.kind.to_lowercase().as_str() {
+            "openai" => protocol_interface::ProviderType::Openai,
+            "anthropic" => protocol_interface::ProviderType::Anthropic,
+            "google" => protocol_interface::ProviderType::Google,
+            "bigmodel" => protocol_interface::ProviderType::BigModel,
+            "deepseek" => protocol_interface::ProviderType::DeepSeek,
+            "xiaomi_mimo" | "xiaomi-mimo" => protocol_interface::ProviderType::XiaomiMimo,
+            _ => protocol_interface::ProviderType::Custom,
+        };
+        runtime_config::LlmSettings {
+            provider,
+            provider_mode: None,
+            model: self.model.clone(),
+            api_key: Some(self.api_key.clone()),
+            api_key_env: None,
+            base_url: if self.base_url.is_empty() {
+                None
+            } else {
+                Some(self.base_url.clone())
+            },
+            review_model: None,
+        }
+    }
+}
+
+impl ModelRouterConfig {
+    /// Build a `ModelRouterConfig` from a project config snapshot.
+    ///
+    /// Returns `None` if the project config doesn't have provider/tier data.
+    pub fn from_project_config(
+        snapshot: &runtime_config::views::ProjectConfigSnapshot,
+    ) -> Option<Self> {
+        let router = &snapshot.providers.router;
+        let tiers = &snapshot.providers.tiers;
+
+        let mut tier_map = std::collections::HashMap::new();
+        tier_map.insert(
+            "light".to_string(),
+            TierEntry {
+                provider: tiers.light.provider.clone(),
+                model: tiers.light.model.clone(),
+            },
+        );
+        tier_map.insert(
+            "medium".to_string(),
+            TierEntry {
+                provider: tiers.medium.provider.clone(),
+                model: tiers.medium.model.clone(),
+            },
+        );
+        tier_map.insert(
+            "high".to_string(),
+            TierEntry {
+                provider: tiers.high.provider.clone(),
+                model: tiers.high.model.clone(),
+            },
+        );
+
+        let mut provider_map = std::collections::HashMap::new();
+        for (name, ps) in &snapshot.providers.providers {
+            if ps.enabled {
+                provider_map.insert(
+                    name.clone(),
+                    ProviderEntry {
+                        kind: ps.kind.clone(),
+                        base_url: ps.base_url.clone(),
+                        api_key_env: ps.api_key_env.clone(),
+                    },
+                );
+            }
+        }
+
+        // Need at least one tier and one provider
+        if tier_map.is_empty() || provider_map.is_empty() {
+            return None;
+        }
+
+        Some(ModelRouterConfig {
+            default_tier: router.default_tier.clone(),
+            fallback_tier: router.fallback_tier.clone(),
+            default_model: snapshot.model.default_model.clone(),
+            tiers: tier_map,
+            providers: provider_map,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

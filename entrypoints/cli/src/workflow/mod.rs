@@ -250,10 +250,77 @@ pub struct Workflow {
     /// Overall workflow timeout in milliseconds. None = no timeout.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Allowed domains for HTTP steps. If empty, all HTTP steps are denied.
+    /// Each entry is a domain prefix (e.g., "api.example.com") that matches
+    /// URLs whose host starts with the prefix.
+    #[serde(default)]
+    pub http_allowed_domains: Vec<String>,
 }
 
 fn default_mode() -> String {
     "chat".to_string()
+}
+
+/// Extract the host from a URL string without pulling in the `url` crate.
+///
+/// Handles `http://host`, `https://host/path`, `http://host:port/path`.
+/// Returns None if the URL doesn't match the expected format.
+fn extract_url_host(url: &str) -> Option<&str> {
+    let rest = if url.starts_with("https://") {
+        &url[8..]
+    } else if url.starts_with("http://") {
+        &url[7..]
+    } else {
+        return None;
+    };
+    // Host ends at `/` or `:` (port separator), whichever comes first
+    let end = match (rest.find('/'), rest.find(':')) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => rest.len(),
+    };
+    if end == 0 {
+        return None;
+    }
+    Some(&rest[..end])
+}
+
+/// Validate an HTTP URL against the workflow's allowed domains list.
+///
+/// Returns Ok(()) if the URL's host matches an allowed domain prefix,
+/// or if the URL is a localhost/loopback address (for testing).
+/// Returns Err with a reason if denied.
+///
+/// If `allowed_domains` is empty, all HTTP requests are denied (fail-closed).
+fn validate_http_url(url: &str, allowed_domains: &[String]) -> Result<()> {
+    if allowed_domains.is_empty() {
+        anyhow::bail!(
+            "HTTP steps denied: no http_allowed_domains configured in workflow. \
+             Add allowed domains to the workflow JSON to enable HTTP steps."
+        );
+    }
+
+    let host = extract_url_host(url)
+        .ok_or_else(|| anyhow::anyhow!("Invalid HTTP URL: '{}'", url))?;
+
+    // Allow localhost/loopback for testing
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+
+    // Check against allowed domain prefixes
+    for domain in allowed_domains {
+        if host == domain.as_str() || host.ends_with(&format!(".{}", domain)) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!(
+        "HTTP URL host '{}' not in http_allowed_domains {:?}",
+        host,
+        allowed_domains
+    )
 }
 
 /// A single step in a workflow.
@@ -441,6 +508,7 @@ async fn execute_step_inner(
     ctx: &ExecutionContext,
     handle: &dyn LoopEngineHandle,
     mode: &str,
+    http_allowed_domains: &[String],
 ) -> Result<StepResult> {
     match step.step_type {
         StepType::Prompt => {
@@ -470,6 +538,12 @@ async fn execute_step_inner(
         }
         StepType::Http => {
             let url = ctx.interpolate(step.url.as_deref().unwrap_or(""));
+
+            // Permission gate: validate URL against allowed domains
+            if let Err(e) = validate_http_url(&url, http_allowed_domains) {
+                return Ok(step_result(step.id.clone(), format!("HTTP denied: {}", e), false));
+            }
+
             let method = step.method.as_deref().unwrap_or("POST");
             let body = step.body.as_ref().map(|b| ctx.interpolate_json(b));
 
@@ -547,6 +621,7 @@ pub async fn execute_step(
     ctx: &ExecutionContext,
     handle: &dyn LoopEngineHandle,
     mode: &str,
+    http_allowed_domains: &[String],
 ) -> Result<StepResult> {
     let (max_retries, backoff_ms) = match &step.on_failure {
         OnFailurePolicy::Retry {
@@ -566,7 +641,7 @@ pub async fn execute_step(
         let mut result = if let Some(timeout_ms) = step.timeout_ms {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                execute_step_inner(step, ctx, handle, mode),
+                execute_step_inner(step, ctx, handle, mode, http_allowed_domains),
             )
             .await
             {
@@ -583,7 +658,7 @@ pub async fn execute_step(
                 },
             }
         } else {
-            execute_step_inner(step, ctx, handle, mode).await?
+            execute_step_inner(step, ctx, handle, mode, http_allowed_domains).await?
         };
 
         // Record timing metadata.
@@ -712,7 +787,7 @@ async fn execute_workflow_inner(
         }
 
         println!("  Step: {} ({:?})", step.id, step.step_type);
-        let result = execute_step(step, &ctx, handle, &workflow.mode).await?;
+        let result = execute_step(step, &ctx, handle, &workflow.mode, &workflow.http_allowed_domains).await?;
         let is_success = result.success;
 
         println!(
@@ -859,7 +934,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("LLM response to"));
         assert_eq!(prompts.lock().unwrap().len(), 1);
@@ -881,7 +956,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("read_file"));
         assert_eq!(tools.lock().unwrap().len(), 1);
@@ -908,7 +983,7 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert_eq!(result.output, "true");
     }
@@ -934,7 +1009,7 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert_eq!(result.output, "true");
     }
@@ -973,6 +1048,7 @@ mod tests {
             ],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -1403,6 +1479,7 @@ mod tests {
             }],
             mode: "plan".to_string(),
             timeout_ms: Some(60000),
+            http_allowed_domains: vec![],
         };
         let json = serde_json::to_string(&wf).unwrap();
         let wf2: Workflow = serde_json::from_str(&json).unwrap();
@@ -1476,7 +1553,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert!(result.started_at.is_some());
         assert!(result.finished_at.is_some());
@@ -1499,7 +1576,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.duration_ms.is_some());
         // Duration should be >= 0 (it's always 0+ for a fast mock)
         assert!(result.duration_ms.unwrap() < 10000); // sanity check: less than 10s
@@ -1594,7 +1671,7 @@ mod tests {
             timeout_ms: Some(100), // 100ms timeout
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &SlowHandle, "chat")
+        let result = execute_step(&step, &ctx, &SlowHandle, "chat", &[])
             .await
             .unwrap();
         assert!(!result.success);
@@ -1621,7 +1698,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("success"));
         assert_eq!(*remaining.lock().unwrap(), 0); // all retries consumed
@@ -1646,7 +1723,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(!result.success);
         assert!(result.output.contains("simulated failure"));
         // Should have tried 3 times total (1 initial + 2 retries)
@@ -1669,7 +1746,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(!result.success);
         assert_eq!(*remaining.lock().unwrap(), 0); // only 1 attempt
     }
@@ -1750,6 +1827,7 @@ mod tests {
             ],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -1832,6 +1910,7 @@ mod tests {
             ],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -1878,6 +1957,7 @@ mod tests {
             ],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -1913,6 +1993,7 @@ mod tests {
             }],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, record) = execute_workflow(&workflow, &handle, Some(token))
@@ -2002,6 +2083,7 @@ mod tests {
             ],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, Some(token))
@@ -2104,6 +2186,7 @@ mod tests {
             }],
             mode: "plan".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let _ = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -2135,6 +2218,7 @@ mod tests {
             }],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let _ = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -2165,6 +2249,7 @@ mod tests {
             }],
             mode: "chat".to_string(),
             timeout_ms: Some(100), // 100ms workflow-level timeout
+            http_allowed_domains: vec![],
         };
 
         let (_ctx, record) = execute_workflow(&workflow, &SlowPromptHandle, None)
@@ -2197,6 +2282,7 @@ mod tests {
             }],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
 
         let (ctx, _record) = execute_workflow(&workflow, &handle, None).await.unwrap();
@@ -2236,6 +2322,7 @@ mod tests {
             }],
             mode: "chat".to_string(),
             timeout_ms: None,
+            http_allowed_domains: vec![],
         };
         let json = serde_json::to_string_pretty(&workflow).unwrap();
         std::fs::write(&path, json).unwrap();
@@ -2266,6 +2353,7 @@ mod tests {
                 steps: vec![],
                 mode: "chat".to_string(),
                 timeout_ms: None,
+                http_allowed_domains: vec![],
             };
             let path = tmp.path().join(format!("wf-{i}.json"));
             std::fs::write(&path, serde_json::to_string(&workflow).unwrap()).unwrap();
@@ -2317,7 +2405,7 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(
             result.success,
             "failed operator should return true when step failed"
@@ -2346,7 +2434,7 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         // When step succeeded, "failed" evaluates to false
         assert_eq!(
             result.output, "false",
@@ -2371,7 +2459,78 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat").await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
         assert!(!result.success, "referencing nonexistent step should fail");
+    }
+
+    // ===== HTTP URL validation tests =====
+
+    #[test]
+    fn test_extract_url_host_https() {
+        assert_eq!(extract_url_host("https://api.example.com/data"), Some("api.example.com"));
+    }
+
+    #[test]
+    fn test_extract_url_host_http() {
+        assert_eq!(extract_url_host("http://example.com"), Some("example.com"));
+    }
+
+    #[test]
+    fn test_extract_url_host_with_port() {
+        assert_eq!(extract_url_host("https://api.example.com:8080/path"), Some("api.example.com"));
+    }
+
+    #[test]
+    fn test_extract_url_host_invalid() {
+        assert_eq!(extract_url_host("ftp://example.com"), None);
+        assert_eq!(extract_url_host("not-a-url"), None);
+    }
+
+    #[test]
+    fn test_validate_http_empty_domains_denies_all() {
+        let result = validate_http_url("https://api.example.com/data", &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no http_allowed_domains"));
+    }
+
+    #[test]
+    fn test_validate_http_allowed_domain_exact() {
+        let domains = vec!["api.example.com".to_string()];
+        assert!(validate_http_url("https://api.example.com/data", &domains).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_allowed_domain_subdomain() {
+        let domains = vec!["example.com".to_string()];
+        assert!(validate_http_url("https://api.example.com/data", &domains).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_denied_domain() {
+        let domains = vec!["api.example.com".to_string()];
+        let result = validate_http_url("https://evil.com/steal", &domains);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not in http_allowed_domains"));
+    }
+
+    #[test]
+    fn test_validate_http_similar_domain_denied() {
+        let domains = vec!["api.example.com".to_string()];
+        let result = validate_http_url("https://api.example.com.evil.com/data", &domains);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_http_localhost_always_allowed() {
+        let domains = vec!["api.example.com".to_string()];
+        assert!(validate_http_url("http://localhost:3000/test", &domains).is_ok());
+        assert!(validate_http_url("http://127.0.0.1:8080/test", &domains).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_invalid_url() {
+        let domains = vec!["api.example.com".to_string()];
+        let result = validate_http_url("not-a-url", &domains);
+        assert!(result.is_err());
     }
 }

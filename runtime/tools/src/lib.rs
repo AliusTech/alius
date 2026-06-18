@@ -25,6 +25,9 @@ pub use wasm_host::WasmPluginTool;
 use std::path::Path;
 
 /// Discover and register all installed Rust WASM module tools.
+///
+/// Each tool is registered with its manifest permissions so that execution
+/// goes through host imports with permission enforcement and audit logging.
 pub fn register_installed_rust_wasm_tools(registry: &mut ToolRegistry, _workspace_root: &Path) {
     let packages = match wasm_host::list_plugins() {
         Ok(packages) => packages,
@@ -46,7 +49,11 @@ pub fn register_installed_rust_wasm_tools(registry: &mut ToolRegistry, _workspac
             }
         };
 
-        match WasmPluginTool::from_wasm_bytes(&wasm_bytes) {
+        let permissions: wasm_host::ResolvedPluginPermissions =
+            package.manifest.permissions.clone().into();
+        let plugin_id = package.manifest.id.clone();
+
+        match WasmPluginTool::from_wasm_bytes(&wasm_bytes, permissions, plugin_id) {
             Ok(tools) => {
                 for tool in tools {
                     if let Err(conflict) = registry.register(tool) {
