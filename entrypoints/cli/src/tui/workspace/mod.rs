@@ -10,7 +10,7 @@ mod status_bar;
 mod top_bar;
 
 // Re-export for testing module access
-pub(crate) use events::{ExecutionMode, WorkspaceAction};
+pub(crate) use events::{ExecutionMode, PlanPermissionMode, WorkspaceAction};
 
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use crossterm::event::{
 };
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
-use protocol_interface::core::{CoreEventKind, CoreEventPayload, RunRef, RuntimeMode};
+use protocol_interface::core::{CoreEventKind, CoreEventPayload, LoopPolicy, RunRef, RuntimeMode};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use runtime_config::ModelAssignmentRole;
@@ -1061,6 +1061,11 @@ fn handle_execution_key(state: &mut WorkspaceState, key: KeyEvent) -> ExecutionI
         return ExecutionInputAction::InterruptConfirmed;
     }
 
+    if key.code == KeyCode::BackTab && state.has_active_plan_execution() {
+        state.toggle_plan_permission_mode();
+        return ExecutionInputAction::None;
+    }
+
     // If there's a pending tool confirmation, route keys to the prompt handler.
     if state.pending_tool_confirmation.is_some() && state.prompt_input.is_some() {
         match state.handle_prompt_input_key(key) {
@@ -1113,7 +1118,7 @@ async fn execute_goal(
 
         let rt_mode = match mode {
             ExecutionMode::Plan => protocol_interface::core::RuntimeMode::Plan,
-            ExecutionMode::Bypass => protocol_interface::core::RuntimeMode::Chat,
+            ExecutionMode::Bypass => protocol_interface::core::RuntimeMode::Bypass,
         };
 
         match bridge.start_streaming(&prompt, rt_mode) {
@@ -1525,13 +1530,15 @@ async fn execute_plan_step(
         return Ok(false);
     };
 
-    let (run_ref, mut event_rx) = match bridge.start_streaming(&prompt, RuntimeMode::Plan) {
-        Ok(value) => value,
-        Err(err) => {
-            state.fail_plan_step(index, &err.to_string());
-            return Ok(false);
-        }
-    };
+    let policy = state.plan_permission_mode.loop_policy();
+    let (run_ref, mut event_rx) =
+        match bridge.start_streaming_with_policy(&prompt, RuntimeMode::Plan, policy) {
+            Ok(value) => value,
+            Err(err) => {
+                state.fail_plan_step(index, &err.to_string());
+                return Ok(false);
+            }
+        };
 
     let mut full_response = String::new();
     let mut errors: Vec<String> = Vec::new();
@@ -2452,8 +2459,25 @@ pub struct ToolConfirmationState {
     pub run_ref: RunRef,
 }
 
+impl PlanPermissionMode {
+    fn title(self) -> String {
+        match self {
+            Self::AcceptEdits => t!("workspace.mode.plan_accept_edits").to_string(),
+            Self::BypassPermissions => t!("workspace.mode.plan_bypass_permissions").to_string(),
+        }
+    }
+
+    fn loop_policy(self) -> LoopPolicy {
+        match self {
+            Self::AcceptEdits => LoopPolicy::plan_accept_edits(),
+            Self::BypassPermissions => LoopPolicy::plan(),
+        }
+    }
+}
+
 pub(crate) struct WorkspaceState {
     mode: InteractionMode,
+    plan_permission_mode: PlanPermissionMode,
     active_tab: MainTab,
     blocks: Vec<ConversationBlock>,
     plans: Vec<PlanNode>,
@@ -2511,6 +2535,7 @@ impl WorkspaceState {
 
         Self {
             mode: InteractionMode::Plan,
+            plan_permission_mode: PlanPermissionMode::BypassPermissions,
             active_tab: MainTab::Conversation,
             blocks,
             plans: Vec::new(),
@@ -2554,6 +2579,23 @@ impl WorkspaceState {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn mode(&self) -> InteractionMode {
         self.mode
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn plan_permission_mode(&self) -> PlanPermissionMode {
+        self.plan_permission_mode
+    }
+
+    /// Activate a minimal plan execution for state-machine tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn activate_plan_execution_for_test(&mut self) {
+        self.pending_goal = Some("test goal".to_string());
+        self.plan_permission_mode = PlanPermissionMode::BypassPermissions;
+        self.plans = vec![PlanNode::new(
+            "step-1",
+            "Test plan step",
+            PlanNodeStatus::Pending,
+        )];
     }
 
     /// Get the current focus zone.
@@ -2704,6 +2746,7 @@ impl WorkspaceState {
             &self.interaction,
             &InteractionState {
                 mode: self.mode,
+                mode_title_override: self.plan_mode_title_override(),
                 active_tab: self.active_tab,
                 input: &self.input,
                 prompt_input: self.prompt_input.as_ref(),
@@ -2822,7 +2865,10 @@ impl WorkspaceState {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
         {
-            return WorkspaceAction::Quit;
+            if matches!(self.interaction, InteractionUi::TextInput) {
+                self.show_quit_confirm_prompt();
+            }
+            return WorkspaceAction::None;
         }
 
         // Ctrl+O: Toggle global expand/collapse
@@ -3219,6 +3265,26 @@ impl WorkspaceState {
         // 不再清空输入框 — 模式切换时保留用户输入内容
     }
 
+    fn has_active_plan_execution(&self) -> bool {
+        self.pending_goal.is_some() && !self.plans.is_empty()
+    }
+
+    fn toggle_plan_permission_mode(&mut self) {
+        self.plan_permission_mode = self.plan_permission_mode.toggle();
+        self.push_block(ConversationBlock::status(t!(
+            "workspace.plan_permission.switched",
+            mode = self.plan_permission_mode.title()
+        )));
+    }
+
+    fn plan_mode_title_override(&self) -> Option<String> {
+        if self.has_active_plan_execution() {
+            Some(self.plan_permission_mode.title())
+        } else {
+            None
+        }
+    }
+
     fn toggle_tab(&mut self) {
         if !self.has_agent_team_tab() {
             return;
@@ -3403,6 +3469,16 @@ impl WorkspaceState {
             "Configuration has unsaved changes. Exit without saving?",
         ));
         self.interaction = InteractionUi::Decision(DecisionState::config_exit());
+        self.focus_zone = FocusZone::Input;
+    }
+
+    fn show_quit_confirm_prompt(&mut self) {
+        self.prompt_input = None;
+        self.input.clear();
+        self.push_block(ConversationBlock::decision(t!(
+            "workspace.quit_confirm.description"
+        )));
+        self.interaction = InteractionUi::Decision(DecisionState::quit_confirm());
         self.focus_zone = FocusZone::Input;
     }
 
@@ -3624,6 +3700,7 @@ impl WorkspaceState {
         }
 
         self.pending_goal = Some(draft.goal);
+        self.plan_permission_mode = PlanPermissionMode::BypassPermissions;
         self.plans = draft
             .nodes
             .into_iter()

@@ -30,6 +30,7 @@ pub struct WasmHostState {
     pub workspace_root: PathBuf,
     pub audit: Arc<dyn HostAuditSink>,
     pub trace_id: String,
+    pub bypass_permissions: bool,
 }
 
 impl WasmHostState {
@@ -45,11 +46,17 @@ impl WasmHostState {
             workspace_root,
             audit: Arc::new(TracingAuditSink),
             trace_id,
+            bypass_permissions: false,
         }
     }
 
     pub fn with_audit(mut self, audit: Arc<dyn HostAuditSink>) -> Self {
         self.audit = audit;
+        self
+    }
+
+    pub fn with_bypass_permissions(mut self, bypass_permissions: bool) -> Self {
+        self.bypass_permissions = bypass_permissions;
         self
     }
 
@@ -73,6 +80,14 @@ fn ok_response(data: serde_json::Value) -> String {
 
 fn err_response(code: &str, message: &str) -> String {
     serde_json::to_string(&json!({"ok": false, "error": message, "code": code})).unwrap_or_default()
+}
+
+fn bypass_path(path: &Path, workspace_root: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
 }
 
 /// Write a result JSON string into WASM memory and return packed (ptr, len) as i64.
@@ -205,28 +220,31 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
             let path = Path::new(&path_str);
 
             let state = caller.data();
-            let decision = state
-                .permissions
-                .check_filesystem("read", path, &state.workspace_root);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
-                state.emit_audit("read_file", &path_str, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
-            }
+            let full_path = if state.bypass_permissions {
+                bypass_path(path, &state.workspace_root)
+            } else {
+                let decision =
+                    state
+                        .permissions
+                        .check_filesystem("read", path, &state.workspace_root);
+                if !decision.is_allowed() {
+                    let reason = match &decision {
+                        PermissionDecision::Deny { reason } => reason.clone(),
+                        _ => "denied".to_string(),
+                    };
+                    state.emit_audit("read_file", &path_str, false, &reason);
+                    return write_json_result(
+                        &memory,
+                        &mut caller,
+                        &err_response("permission_denied", &reason),
+                    );
+                }
 
-            // Use the resolved (canonicalized) path from the permission check
-            // to avoid TOCTOU between check and execution.
-            let full_path = decision
-                .resolved_path()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| state.workspace_root.join(path));
+                decision
+                    .resolved_path()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| state.workspace_root.join(path))
+            };
             let result = match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
                     state.emit_audit("read_file", &path_str, true, "ok");
@@ -272,26 +290,31 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
             let path = Path::new(&path_str);
 
             let state = caller.data();
-            let decision = state
-                .permissions
-                .check_filesystem("write", path, &state.workspace_root);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
-                state.emit_audit("write_file", &path_str, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
-            }
+            let full_path = if state.bypass_permissions {
+                bypass_path(path, &state.workspace_root)
+            } else {
+                let decision =
+                    state
+                        .permissions
+                        .check_filesystem("write", path, &state.workspace_root);
+                if !decision.is_allowed() {
+                    let reason = match &decision {
+                        PermissionDecision::Deny { reason } => reason.clone(),
+                        _ => "denied".to_string(),
+                    };
+                    state.emit_audit("write_file", &path_str, false, &reason);
+                    return write_json_result(
+                        &memory,
+                        &mut caller,
+                        &err_response("permission_denied", &reason),
+                    );
+                }
 
-            let full_path = decision
-                .resolved_path()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| state.workspace_root.join(path));
+                decision
+                    .resolved_path()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| state.workspace_root.join(path))
+            };
             if let Some(parent) = full_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -336,26 +359,31 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
             let path = Path::new(&path_str);
 
             let state = caller.data();
-            let decision = state
-                .permissions
-                .check_filesystem("list", path, &state.workspace_root);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
-                state.emit_audit("list_dir", &path_str, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
-            }
+            let full_path = if state.bypass_permissions {
+                bypass_path(path, &state.workspace_root)
+            } else {
+                let decision =
+                    state
+                        .permissions
+                        .check_filesystem("list", path, &state.workspace_root);
+                if !decision.is_allowed() {
+                    let reason = match &decision {
+                        PermissionDecision::Deny { reason } => reason.clone(),
+                        _ => "denied".to_string(),
+                    };
+                    state.emit_audit("list_dir", &path_str, false, &reason);
+                    return write_json_result(
+                        &memory,
+                        &mut caller,
+                        &err_response("permission_denied", &reason),
+                    );
+                }
 
-            let full_path = decision
-                .resolved_path()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| state.workspace_root.join(path));
+                decision
+                    .resolved_path()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| state.workspace_root.join(path))
+            };
             let result = match std::fs::read_dir(&full_path) {
                 Ok(entries) => {
                     let names: Vec<String> = entries
@@ -400,18 +428,20 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
             };
 
             let state = caller.data();
-            let decision = state.permissions.check_env(&name);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
-                state.emit_audit("env_get", &name, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
+            if !state.bypass_permissions {
+                let decision = state.permissions.check_env(&name);
+                if !decision.is_allowed() {
+                    let reason = match &decision {
+                        PermissionDecision::Deny { reason } => reason.clone(),
+                        _ => "denied".to_string(),
+                    };
+                    state.emit_audit("env_get", &name, false, &reason);
+                    return write_json_result(
+                        &memory,
+                        &mut caller,
+                        &err_response("permission_denied", &reason),
+                    );
+                }
             }
 
             // SECURITY: env VALUE is never logged in audit
@@ -461,65 +491,62 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
             let state = caller.data();
             let base_cmd = command.split_whitespace().next().unwrap_or(&command);
 
-            // Permission check
-            let decision = state.permissions.check_shell(&command);
-            if !decision.is_allowed() {
-                let reason = match &decision {
-                    PermissionDecision::Deny { reason } => reason.clone(),
-                    _ => "denied".to_string(),
-                };
-                state.emit_audit("shell", base_cmd, false, &reason);
-                return write_json_result(
-                    &memory,
-                    &mut caller,
-                    &err_response("permission_denied", &reason),
-                );
-            }
-
-            // Shell Gate — the final authority for shell execution.
-            // Uses Embedded origin (WASM plugins are untrusted code).
-            // ApprovalRequired → fail-closed (no confirmation channel in WASM).
-            let shell_request = crate::shell_gate::ShellCommandRequest {
-                command: command.clone(),
-                args: command.split_whitespace().map(String::from).collect(),
-                cwd: state.workspace_root.clone(),
-                origin: crate::shell_gate::ShellOrigin::Embedded,
-                workspace_root: state.workspace_root.clone(),
-            };
-            let shell_config = crate::shell_gate::ShellGateConfig::default();
-            let (gate_decision, _risk) =
-                crate::shell_gate::authorizer::authorize(&shell_request, &shell_config);
-            match gate_decision {
-                crate::shell_gate::ShellGateDecision::Allow => {}
-                crate::shell_gate::ShellGateDecision::Deny { reason } => {
-                    state.emit_audit(
-                        "shell",
-                        base_cmd,
-                        false,
-                        &format!("shell_gate_deny: {reason}"),
-                    );
+            if !state.bypass_permissions {
+                let decision = state.permissions.check_shell(&command);
+                if !decision.is_allowed() {
+                    let reason = match &decision {
+                        PermissionDecision::Deny { reason } => reason.clone(),
+                        _ => "denied".to_string(),
+                    };
+                    state.emit_audit("shell", base_cmd, false, &reason);
                     return write_json_result(
                         &memory,
                         &mut caller,
-                        &err_response("shell_gate_denied", &reason),
+                        &err_response("permission_denied", &reason),
                     );
                 }
-                crate::shell_gate::ShellGateDecision::ApprovalRequired { reason } => {
-                    // Fail-closed: WASM plugins have no confirmation channel
-                    state.emit_audit(
-                        "shell",
-                        base_cmd,
-                        false,
-                        &format!("shell_gate_approval_required: {reason}"),
-                    );
-                    return write_json_result(
-                        &memory,
-                        &mut caller,
-                        &err_response(
-                            "shell_gate_denied",
-                            &format!("approval required but no confirmation channel: {reason}"),
-                        ),
-                    );
+
+                let shell_request = crate::shell_gate::ShellCommandRequest {
+                    command: command.clone(),
+                    args: command.split_whitespace().map(String::from).collect(),
+                    cwd: state.workspace_root.clone(),
+                    origin: crate::shell_gate::ShellOrigin::WasmPlugin,
+                    workspace_root: state.workspace_root.clone(),
+                };
+                let shell_config = crate::shell_gate::ShellGateConfig::default();
+                let (gate_decision, _risk) =
+                    crate::shell_gate::authorizer::authorize(&shell_request, &shell_config);
+                match gate_decision {
+                    crate::shell_gate::ShellGateDecision::Allow => {}
+                    crate::shell_gate::ShellGateDecision::Deny { reason } => {
+                        state.emit_audit(
+                            "shell",
+                            base_cmd,
+                            false,
+                            &format!("shell_gate_deny: {reason}"),
+                        );
+                        return write_json_result(
+                            &memory,
+                            &mut caller,
+                            &err_response("shell_gate_denied", &reason),
+                        );
+                    }
+                    crate::shell_gate::ShellGateDecision::ApprovalRequired { reason } => {
+                        state.emit_audit(
+                            "shell",
+                            base_cmd,
+                            false,
+                            &format!("shell_gate_approval_required: {reason}"),
+                        );
+                        return write_json_result(
+                            &memory,
+                            &mut caller,
+                            &err_response(
+                                "shell_gate_denied",
+                                &format!("approval required but no confirmation channel: {reason}"),
+                            ),
+                        );
+                    }
                 }
             }
 
@@ -573,15 +600,17 @@ pub fn build_linker(engine: &wasmtime::Engine) -> Result<wasmtime::Linker<WasmHo
 
             let state = caller.data();
 
-            // Validate URL (permission + protocol)
-            if let Err(reason) = validate_fetch_url(&url, &state.permissions) {
-                state.emit_audit("fetch", &url, false, &reason);
-                let code = if reason.contains("not permitted") || reason.contains("no network") {
-                    "permission_denied"
-                } else {
-                    "denied"
-                };
-                return write_json_result(&memory, &mut caller, &err_response(code, &reason));
+            if !state.bypass_permissions {
+                if let Err(reason) = validate_fetch_url(&url, &state.permissions) {
+                    state.emit_audit("fetch", &url, false, &reason);
+                    let code = if reason.contains("not permitted") || reason.contains("no network")
+                    {
+                        "permission_denied"
+                    } else {
+                        "denied"
+                    };
+                    return write_json_result(&memory, &mut caller, &err_response(code, &reason));
+                }
             }
 
             // Execute HTTP request synchronously. We cannot use

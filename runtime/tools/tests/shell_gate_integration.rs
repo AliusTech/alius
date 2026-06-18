@@ -4,19 +4,21 @@
 //! - args are properly extracted and used in scope analysis
 //! - external paths are detected: /etc/passwd, ../outside, --output=/tmp/out, > /tmp/out, 2>/tmp/err
 //! - cwd is validated to be inside workspace
-//! - Chat/Bypass modes respect Shell Gate (not bypassed)
+//! - Chat mode respects Shell Gate
+//! - Bypass permission strategy skips Alius Shell Gate and cwd boundary checks
 //! - authorize() returns Deny for external paths
-//! - Shell::execute() rejects external paths in all modes
+//! - Shell::execute() rejects external paths unless BypassPermissions is explicitly set
 
 use std::path::PathBuf;
 
-use protocol_interface::RuntimeMode;
+use protocol_interface::{PermissionStrategy, RuntimeMode};
 use runtime_tools::native::shell::Shell;
 use runtime_tools::shell_gate::authorizer::{authorize, ShellGateConfig, ShellGateDecision};
 use runtime_tools::shell_gate::scope::analyze_scope;
 use runtime_tools::shell_gate::{ShellCommandRequest, ShellOrigin};
 use runtime_tools::traits::{AliusTool, ToolContext};
 use serde_json::json;
+use tempfile::TempDir;
 
 fn make_request(cwd: &str, workspace: &str, command: &str) -> ShellCommandRequest {
     ShellCommandRequest {
@@ -291,6 +293,7 @@ async fn test_execute_etc_passwd_rejected_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "cat /etc/passwd"});
 
@@ -314,6 +317,7 @@ async fn test_execute_stdout_redirect_rejected_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "echo test > /tmp/out"});
 
@@ -337,6 +341,7 @@ async fn test_execute_stderr_redirect_rejected_in_plan() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Plan,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "command 2>/tmp/err"});
 
@@ -360,6 +365,7 @@ async fn test_execute_output_flag_rejected_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "gcc main.c --output=/tmp/out"});
 
@@ -383,6 +389,7 @@ async fn test_execute_high_risk_external_rejected_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "rm -rf /tmp/foo"});
 
@@ -406,6 +413,7 @@ async fn test_execute_critical_risk_external_rejected_in_plan() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Plan,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "sudo rm -rf /etc"});
 
@@ -433,6 +441,7 @@ async fn test_execute_low_risk_ls_succeeds_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "ls"});
 
@@ -454,6 +463,7 @@ async fn test_execute_low_risk_echo_succeeds_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "echo hello"});
 
@@ -480,6 +490,7 @@ async fn test_execute_low_risk_ls_succeeds_in_plan() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Plan,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "ls"});
 
@@ -590,6 +601,7 @@ async fn test_execute_git_status_succeeds_in_chat() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
     let args = json!({"command": "git status"});
 
@@ -599,6 +611,34 @@ async fn test_execute_git_status_succeeds_in_chat() {
     assert!(
         tool_result.success,
         "git status should succeed in Chat mode"
+    );
+}
+
+#[tokio::test]
+async fn test_execute_allows_external_cwd_with_bypass_permissions() {
+    let shell = Shell;
+    let workspace = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let ctx = ToolContext::new_with_permission_strategy(
+        workspace.path().to_path_buf(),
+        "test-session".to_string(),
+        RuntimeMode::Plan,
+        PermissionStrategy::BypassPermissions,
+    );
+    let args = json!({
+        "command": "pwd",
+        "cwd": outside.path().to_string_lossy(),
+    });
+
+    let result = shell
+        .execute(args, ctx)
+        .await
+        .expect("shell should execute");
+
+    assert!(
+        result.success,
+        "BypassPermissions should skip Alius cwd boundary denial, got: {}",
+        result.output
     );
 }
 

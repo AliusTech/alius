@@ -61,7 +61,7 @@ Shell Gate is intended to prevent unsafe shell, process, and git behavior by ana
 - workspace scope
 - authorization policy
 
-Shell Gate exists as a subsystem. Documentation should not claim total enforcement until the relevant tool path calls it consistently.
+Shell Gate exists as a subsystem. It is enforced when the active permission strategy is `AcceptEdits`.
 
 Scope analysis resolves path-like arguments relative to the command cwd and checks whether they stay inside the current workspace. This includes absolute paths (`/etc/passwd`), parent-directory escapes (`../secret`), option values (`--output=/tmp/file`), and redirection targets (`> /tmp/file`, `2>/tmp/error`). URL-like values are ignored as paths.
 
@@ -72,9 +72,9 @@ Git commands are classified by subcommand:
 - `git clean` and `git reset --hard` are high risk.
 - Other mutating git subcommands, such as `push`, `checkout`, `switch`, `merge`, `rebase`, `restore`, `add`, and `commit`, are medium risk.
 
-**Workspace boundary violations are hard-denied**: commands that reference paths outside the workspace (via absolute paths, `../` escape, redirections like `> /tmp/out`, or flags like `--output=/external`) are always rejected with `ShellGateDecision::Deny`, regardless of runtime mode. This ensures Chat/Bypass modes cannot execute external-path operations. `ApprovalRequired` is reserved for high-risk commands that remain within workspace boundaries (e.g., `rm -rf ./build`).
+**Workspace boundary violations are hard-denied under `AcceptEdits`**: commands that reference paths outside the workspace (via absolute paths, `../` escape, redirections like `> /tmp/out`, or flags like `--output=/external`) are rejected with `ShellGateDecision::Deny`. `ApprovalRequired` is reserved for high-risk commands that remain within workspace boundaries (e.g., `rm -rf ./build`).
 
-In Chat/Bypass mode, `ApprovalRequired` shell decisions execute directly and return tool results via `ToolCallStarted`/`ToolCallCompleted` events. In Plan mode, they trigger user confirmation before execution.
+When `permission_strategy = AcceptEdits`, `ApprovalRequired` shell decisions trigger user confirmation before execution. When `permission_strategy = BypassPermissions`, Shell Gate is skipped for that execution and the command result comes from the underlying OS/process.
 
 ## Rust WASM Module Tools
 
@@ -89,21 +89,25 @@ The ABI, host capability bridge, schema validation, and package diagnostics stil
 
 Built-in tools under `runtime/tools/src/native/`. Each implements `AliusTool` directly in Rust and is registered automatically in every registry.
 
-- **`shell`** (`native/shell.rs`) — runs a command via `sh -c` (Unix) or `cmd /C` (Windows). `PermissionLevel::Execute`. Pipeline: parse args → resolve cwd under workspace → `shell_gate::authorize` → on `Deny` reject, on `Allow` run, and on `ApprovalRequired` pause for user confirmation in Plan mode but run directly in Chat/Bypass mode. 120 s default timeout (`tokio::time::timeout`), env fully inherited, output `[exit:N]\n<stdout>\n<stderr>` truncated at 20 000 chars.
-- **`read_file`** (`native/fs.rs`) — `Read`. Workspace-boundary canonicalize, `tokio::fs::read_to_string`.
-- **`write_file`** — `Write`. Boundary; in Plan mode returns "confirmation required" (Stage B confirmation flow will pause instead).
-- **`list_dir`** — `Read`. Boundary; sorted `file\tname` / `dir\tname` lines.
-- **`edit_file`** — `Write`. Boundary; replaces all occurrences of `find` with `replace`; Plan mode requires confirmation.
+- **`shell`** (`native/shell.rs`) — runs a command via `sh -c` (Unix) or `cmd /C` (Windows). `PermissionLevel::Execute`. `AcceptEdits` pipeline: parse args → resolve cwd under workspace → `shell_gate::authorize` → on `Deny` reject, on `Allow` run, and on `ApprovalRequired` pause for user confirmation when the caller requires confirmation. `BypassPermissions` skips Alius cwd-boundary and Shell Gate checks, then executes from the requested cwd. 120 s default timeout (`tokio::time::timeout`), env fully inherited, output `[exit:N]\n<stdout>\n<stderr>` truncated at 20 000 chars.
+- **`read_file`** (`native/fs.rs`) — `Read`. `AcceptEdits` uses workspace-boundary canonicalize, then `tokio::fs::read_to_string`; `BypassPermissions` resolves absolute paths directly or relative paths from `working_directory`.
+- **`write_file`** — `Write`. `AcceptEdits` uses workspace boundary and may require confirmation through the runtime confirmation chain; `BypassPermissions` resolves the target directly and writes if the OS allows it.
+- **`list_dir`** — `Read`. Same path strategy as `read_file`; sorted `file\tname` / `dir\tname` lines.
+- **`edit_file`** — `Write`. Same path strategy as `write_file`; replaces all occurrences of `find` with `replace`; `AcceptEdits` may require confirmation.
 
 `resolve_within_workspace(path, workspace, must_exist)` is the shared boundary helper (join + canonicalize + `startswith workspace`). It rejects absolute paths, `../` traversal, and symlink escape in one place.
 
 ### ToolContext
 
-`ToolContext` carries `workspace`, `session_id`, `working_directory`, and `mode: RuntimeMode` (Plan/Chat). Tools consult `mode` to decide whether a risky operation needs confirmation (Plan) or executes directly (Chat/Bypass).
+`ToolContext` carries `workspace`, `session_id`, `working_directory`, `mode: RuntimeMode`, and `permission_strategy`.
+
+- `AcceptEdits` means tools use Alius workspace boundaries, manifest checks, Shell Gate, and runtime confirmation points.
+- `BypassPermissions` means tools skip Alius confirmation and permission interception for this execution. This is intentionally high risk and must remain visible through normal tool events and audit where an audit sink exists.
+- `BypassPermissions` cannot bypass operating-system permissions, missing paths, command failures, process spawn failures, or network failures.
 
 ### Confirmation Chain (Stage B)
 
-When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step follows this chain:
+When `permission_strategy = AcceptEdits` and `preview_confirmation` returns `true`, the tool step follows this chain:
 
 1. **Request**: emit `ToolConfirmationRequired` event, store a oneshot sender in `SessionManager`, transition run status to `WaitingForApproval`.
 2. **Await**: the loop blocks on the oneshot receiver.
@@ -121,3 +125,5 @@ When `preview_confirmation` returns `true` (Plan mode + risky op), the tool step
 **Confirmation decision type**: `confirm_and_await` returns a `ConfirmationDecision` enum (`Approved`, `Denied`, `Cancelled`, `Unavailable`) instead of a raw `bool`, preserving the reason for audit and error reporting.
 
 **Audit logging**: confirmation events are written to the event log via `audit::log_confirmation`. The `LogWriter` is created by `CoreRuntime` under `workspace_ref.root/.alius/logs` and passed through `LoopContext` → `execute_tools` → `confirm_and_await`. Events include `requested`, `approved`, `denied_by_user`, `cancelled`, `no_session`, and `delivery_failed` with `tool_name`, `tool_call_id`, `run_ref`, `trace_id`. Raw args and sensitive content are NOT logged. Audit write failures are non-blocking — they emit `LogRecordEmitted` diagnostic events (codes `audit_no_writer`, `audit_lock_poisoned`, `audit_write_failed`, `audit_flush_failed`) which do **not** trigger run status transitions, so audit gaps are observable without marking the run as Failed. All audit events use monotonically increasing sequence numbers.
+
+`BypassPermissions` does not emit `ToolConfirmationRequired`; the tool executes immediately and returns the actual execution result.

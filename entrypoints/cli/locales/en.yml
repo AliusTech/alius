@@ -318,6 +318,10 @@ workspace:
   mode:
     plan: "Plan Mode"
     bypass: "Bypass Mode"
+    plan_bypass_permissions: "Plan Mode - Bypass Permissions"
+    plan_accept_edits: "Plan Mode - Accept Edits"
+  plan_permission:
+    switched: "Plan permission strategy switched to %{mode}."
   placeholder:
     plan: "Describe a goal. Alius will create Plans before execution."
     bypass: "Direct instruction. Alius will execute without creating Plans."
@@ -565,6 +569,11 @@ workspace:
     description: "Alius is still reasoning. Choose whether to interrupt this run."
     confirm: "Interrupt execution"
     continue_waiting: "Continue waiting"
+  quit_confirm:
+    title: "Quit Alius?"
+    description: "Are you sure you want to quit?"
+    confirm: "Quit"
+    continue: "Continue working"
   tool_confirmation:
     title: "Tool Confirmation Required"
     description: "This tool operation requires your approval before executing"

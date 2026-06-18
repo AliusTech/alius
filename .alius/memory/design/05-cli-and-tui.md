@@ -92,14 +92,14 @@ crate::tui::workspace::run_workspace(session, initial_missing)
 
 | 模式 | 用途 |
 | --- | --- |
-| Plan | 先形成计划和确认，再执行 |
+| Plan | 先澄清目标并生成计划草稿，用户批准后执行计划 |
 | Bypass | 直接把输入交给模型执行 |
 
 关键按键:
 
 | 按键 | 行为 |
 | --- | --- |
-| `Shift+Tab` | Plan/Bypass 切换 |
+| `Shift+Tab` | 普通输入期切换 Plan/Bypass；已批准计划执行期切换 `计划模式 - Bypass Permissions` / `计划模式 - Accept Edits` |
 | `Ctrl+Enter` | 提交 |
 | `Ctrl+Tab` | Conversation/Agent Team 切换，仅 Agent Team 可见时生效 |
 | `Esc` | 清空输入或取消当前 decision |
@@ -107,13 +107,15 @@ crate::tui::workspace::run_workspace(session, initial_missing)
 
 ## Plan 模式当前行为
 
-用户在 Plan 模式输入目标后，当前实现会创建固定计划节点:
+用户在 Plan 模式输入目标后，TUI 先进入计划草稿阶段:
 
-1. understand
-2. decompose
-3. execute
-4. review
-5. finalize
+1. 模型作为 plan controller 澄清目标、前置条件、约束和验收标准。
+2. Plans 面板保持隐藏，直到模型返回计划提案。
+3. 用户批准计划提案后，计划节点才进入 Plans 面板。
+4. 批准后的默认执行标题是 `计划模式 - Bypass Permissions`。
+5. `计划模式 - Bypass Permissions` 连续执行计划列表，不在 Alius 工具确认点暂停。
+6. 执行期按 `Shift+Tab` 切换到 `计划模式 - Accept Edits` 后，后续高风险工具调用通过现有确认 UI 等待用户确认。
+7. `Bypass Permissions` 只跳过 Alius 自身权限/确认拦截，不绕过操作系统权限、文件不存在、命令失败、网络失败或工具实现错误。
 
 每个节点有:
 
@@ -125,7 +127,7 @@ crate::tui::workspace::run_workspace(session, initial_missing)
 - evidence
 - owner
 
-当前计划节点是 UI 状态和交互引导，不是由 LLM 动态生成的完整 plan schema。
+当前计划节点是 TUI 状态和交互引导。计划草稿由模型生成，Core plan event reduction 仍是后续深化方向。
 
 执行完成后:
 

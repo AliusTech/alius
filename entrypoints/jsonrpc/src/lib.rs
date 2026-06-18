@@ -171,20 +171,27 @@ pub fn dispatch_with_runtime(
 }
 
 /// `run_start`: Start a streaming run.
-/// Params: `{"text": "...", "mode": "Chat"|"Plan"}`
+/// Params: `{"text": "...", "mode": "Chat"|"Bypass"|"Plan"}`
 /// Returns: `{"run_ref": "...", "trace_id": "...", "session_ref": "..."}`
 fn handle_run_start(request: &JsonRpcRequest, manager: &CoreRuntimeManager) -> JsonRpcResponse {
     let text = match request.params.get("text").and_then(|v| v.as_str()) {
         Some(t) if !t.trim().is_empty() => t,
         _ => return invalid_params(request, "params.text is required and must be non-empty"),
     };
-    let mode = match request.params.get("mode").and_then(|v| v.as_str()) {
-        Some("Chat") => RuntimeMode::Chat,
-        Some("Plan") => RuntimeMode::Plan,
+    let mode = match request
+        .params
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("chat") => RuntimeMode::Chat,
+        Some("bypass") => RuntimeMode::Bypass,
+        Some("plan") => RuntimeMode::Plan,
         Some(other) => {
             return invalid_params(
                 request,
-                format!("params.mode must be 'Chat' or 'Plan', got '{other}'"),
+                format!("params.mode must be 'Chat', 'Bypass', or 'Plan', got '{other}'"),
             )
         }
         None => RuntimeMode::Chat, // default
@@ -418,7 +425,10 @@ async fn handle_run_stream_connection(
     let run_ref = protocol_interface::RunRef::from_existing(run_ref_str.to_string());
 
     // Send initial acknowledgment
-    let ack = success(&request, serde_json::json!({"streaming": true, "run_ref": run_ref_str}));
+    let ack = success(
+        &request,
+        serde_json::json!({"streaming": true, "run_ref": run_ref_str}),
+    );
     if let Ok(body) = serde_json::to_string(&ack) {
         let _ = writer.write_all(format!("{}\n", body).as_bytes()).await;
     }
@@ -453,12 +463,18 @@ async fn handle_run_stream_connection(
                             "created_at": env.payload.created_at.to_rfc3339(),
                         });
                         let line = serde_json::to_string(&event_json).unwrap_or_default();
-                        if writer.write_all(format!("{}\n", line).as_bytes()).await.is_err() {
+                        if writer
+                            .write_all(format!("{}\n", line).as_bytes())
+                            .await
+                            .is_err()
+                        {
                             return Ok(()); // Client disconnected
                         }
 
                         // Check if this is a FinalResult event
-                        if let protocol_interface::core::CoreEventKind::FinalResult = env.payload.kind {
+                        if let protocol_interface::core::CoreEventKind::FinalResult =
+                            env.payload.kind
+                        {
                             is_final = true;
                         }
                     }

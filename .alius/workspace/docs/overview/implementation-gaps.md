@@ -49,11 +49,11 @@ The REPL/TUI compatibility path should not retain a separate local `LlmClient`, 
 
 ## Default Workspace Tooling
 
-`ToolRegistry` exists, and Plan mode can use a registry through Core Runtime paths. All tools are implemented as Rust WASM modules; Core Runtime loads and schedules them but does not implement concrete tool business logic. The user-facing workspace should still be checked before claiming complete tool approval, evidence capture, and policy enforcement.
+`ToolRegistry` exists, and Chat/Bypass/Plan modes can use a registry through Core Runtime paths. Tools may be native, WASM-backed, or MCP-backed; Core Runtime loads and schedules them but does not implement concrete tool business logic. The user-facing workspace should still be checked before claiming complete evidence capture and policy enforcement.
 
 ## Permission Enforcement
 
-Permission types, config views, and Shell Gate modules exist. Enforcement is not yet uniform across every tool and product path.
+Permission types, config views, Shell Gate modules, confirmation events, and explicit `BypassPermissions` execution semantics exist. `AcceptEdits` remains the confirmation/enforcement strategy; `BypassPermissions` intentionally skips Alius permission gates for the active execution.
 
 Documentation must not imply that all shell, process, git, network, and filesystem operations are fully governed by one complete policy layer.
 
@@ -69,9 +69,9 @@ MCP server config, connection, and tool listing are implemented. MCP auto-initia
 
 ## Tool Confirmation Flow
 
-Plan mode tool confirmation is implemented end-to-end:
+Plan mode tool confirmation is implemented end-to-end when the active policy uses `AcceptEdits`:
 
-1. When a tool's `preview_confirmation()` returns `true` (e.g., high-risk shell commands, file writes in Plan mode), `tool_step::execute_tools()` emits a `ToolConfirmationRequired` event and blocks on a oneshot channel.
+1. When `permission_strategy = AcceptEdits` and a tool's `preview_confirmation()` returns `true` (e.g., high-risk shell commands or file writes), `tool_step::execute_tools()` emits a `ToolConfirmationRequired` event and blocks on a oneshot channel.
 
 2. The TUI streaming event loop receives this event and displays a confirmation prompt showing:
    - Tool name and tool_call_id
@@ -108,11 +108,13 @@ Plan mode tool confirmation is implemented end-to-end:
 - Delivery failure → TUI shows error, run is cancelled, tool not executed
 - All failures result in the tool NOT being executed (fail-closed)
 
-Tools that trigger confirmation in Plan mode:
+Tools that trigger confirmation in Plan `AcceptEdits` mode:
 - Shell commands (high-risk)
 - File write operations
 - File edit operations
-- MCP tools (all in Plan mode)
+- MCP tools (when their adapter preview requires confirmation)
+
+Default approved-plan execution uses `BypassPermissions`, so these confirmations are skipped unless the user switches the active plan to `计划模式 - Accept Edits`.
 
 Remaining gaps:
 - **TUI streaming-path integration test**: While the `ProtocolBridge` streaming acceptance test and unit tests verify the full bridge path and UI state, a test exercising the TUI event loop with actual key input simulation is still missing.
@@ -161,7 +163,7 @@ Plugin management and WASM host code exist. Production ABI, capability policy, s
 - Integration test uses fake LLM provider + fake tool, verifies output does NOT contain `[prompt]`/`[tool:*]` stub markers
 
 **Remaining for P5:**
-- Workflow-level tool confirmation handling (Plan mode tool confirmations in workflow context)
+- Workflow-level tool confirmation handling for `AcceptEdits` tool confirmations in workflow context
 - Workflow step retry/error recovery policies
 - Workflow variable persistence across sessions
 

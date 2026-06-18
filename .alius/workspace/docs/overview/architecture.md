@@ -36,12 +36,24 @@ Planned or partial surfaces:
 
 - Desktop application.
 - IDE extension.
-- Embedded SDK.
+- Agent Team connection from Agent CLI to an Agent Team Backend.
 - A2A remote agent integration.
 
 Product code should not own agent loop internals, provider-specific behavior, or storage internals.
 
 For default execution, product entrypoints should not assemble the model client, tool registry, memory stores, and `CoreRuntime` themselves. They should call the local `CoreRuntimeManager`, which owns that assembly and then enters `ProtocolInterface<CoreRuntime>`.
+
+## Agent Team Backend Boundary
+
+Agent Team is a planned product surface where each Agent CLI instance connects
+outbound to an Agent Team Backend through WebSocket. The backend coordinates
+Agent presence, work status, task leases, and team event streams.
+
+The Agent CLI remains responsible for local runtime execution, local tool
+permissions, Shell Gate enforcement, confirmation handling, and audit. The
+backend may assign tasks and send control messages only through the Agent Team
+protocol; it must not directly execute local shell, filesystem, plugin, or tool
+operations.
 
 ## Protocol Interface
 
@@ -77,7 +89,7 @@ Main responsibilities:
 - Build and own runtime state.
 - Manage sessions, turns, runs, and trace ids.
 - Adapt requests into loop input.
-- Run Chat and Plan modes through `LoopEngine`.
+- Run Chat, Bypass, and Plan modes through `LoopEngine`.
 - Emit and store Core events for runs.
 - Expose config, memory, session, tool, review, and health operations through `CoreRuntimeApi`.
 

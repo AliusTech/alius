@@ -1,8 +1,8 @@
 //! Tool step — executes tool calls requested by the model.
 //!
 //! Each tool call is dispatched through the ToolRegistry, with CoreEvent
-//! emission for start/completion. When a tool's `preview_confirmation` returns
-//! true (Plan mode + risky op, e.g. high-risk shell or file write), the step
+//! emission for start/completion. When the active permission strategy is
+//! `AcceptEdits` and a tool's `preview_confirmation` returns true, the step
 //! pauses: emits `ToolConfirmationRequired`, awaits the user's yes/no on a
 //! oneshot held by SessionManager, and resumes (or denies) accordingly.
 //!
@@ -73,6 +73,7 @@ pub async fn execute_tools(
     workspace: &Path,
     session_id: &str,
     mode: RuntimeMode,
+    permission_strategy: PermissionStrategy,
     session: Option<&SessionManager>,
     event_sink: &mut dyn FnMut(CoreEvent),
     run_ref: &RunRef,
@@ -114,7 +115,9 @@ pub async fn execute_tools(
 
         // Stage B: if this call needs confirmation, pause for user yes/no.
         let decision = if let Some(tool) = registry.get(&call.name) {
-            if tool.preview_confirmation(&call.args, mode) {
+            if permission_strategy == PermissionStrategy::AcceptEdits
+                && tool.preview_confirmation(&call.args, mode)
+            {
                 confirm_and_await(
                     &call.name, &call.id, &call.args, session, run_ref, trace_id, sequence,
                     event_sink, log_writer,
@@ -149,7 +152,16 @@ pub async fn execute_tools(
             continue;
         }
 
-        let output = match execute_single_tool(call, registry, workspace, session_id, mode).await {
+        let output = match execute_single_tool(
+            call,
+            registry,
+            workspace,
+            session_id,
+            mode,
+            permission_strategy,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(e) => e,
         };
@@ -382,8 +394,14 @@ async fn execute_single_tool(
     workspace: &Path,
     session_id: &str,
     mode: RuntimeMode,
+    permission_strategy: PermissionStrategy,
 ) -> Result<String, String> {
-    let ctx = ToolContext::new(workspace.to_path_buf(), session_id.to_string(), mode);
+    let ctx = ToolContext::new_with_permission_strategy(
+        workspace.to_path_buf(),
+        session_id.to_string(),
+        mode,
+        permission_strategy,
+    );
 
     match registry.get(&call.name) {
         Some(tool) => tool
@@ -486,7 +504,7 @@ mod tests {
         }
     }
 
-    /// Plan mode: approved confirmation → tool executes.
+    /// Plan AcceptEdits: approved confirmation → tool executes.
     #[tokio::test]
     async fn plan_approved_executes_tool() {
         let (registry, mgr, run_ref, trace_id) = setup();
@@ -508,6 +526,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -544,7 +563,43 @@ mod tests {
         }
     }
 
-    /// Plan mode: denied confirmation → tool NOT executed, batch_denied=true.
+    /// Plan mode with BypassPermissions: confirmation preview is ignored and
+    /// the tool executes without emitting ToolConfirmationRequired.
+    #[tokio::test]
+    async fn plan_bypass_permissions_skips_confirmation() {
+        let (registry, mgr, run_ref, trace_id) = setup();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let mut seq = 0u64;
+        let mgr = Arc::new(mgr);
+
+        let batch = execute_tools(
+            &[make_call("c1", "confirm_required")],
+            &registry,
+            Path::new("/tmp"),
+            "test",
+            RuntimeMode::Plan,
+            PermissionStrategy::BypassPermissions,
+            Some(&mgr),
+            &mut |e| events_clone.lock().unwrap().push(e),
+            &run_ref,
+            &trace_id,
+            &mut seq,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(!batch.batch_denied);
+        assert_eq!(batch.results.len(), 1);
+        assert_eq!(batch.results[0].2, "executed");
+        let evts = events.lock().unwrap();
+        assert!(!evts
+            .iter()
+            .any(|e| e.kind == CoreEventKind::ToolConfirmationRequired));
+    }
+
+    /// Plan AcceptEdits: denied confirmation → tool NOT executed, batch_denied=true.
     #[tokio::test]
     async fn plan_denied_does_not_execute_tool() {
         let (registry, mgr, run_ref, trace_id) = setup();
@@ -566,6 +621,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -623,6 +679,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -667,6 +724,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -707,6 +765,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             None,
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -744,6 +803,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Chat,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -791,6 +851,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -868,6 +929,7 @@ mod tests {
             Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&mgr_clone),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,

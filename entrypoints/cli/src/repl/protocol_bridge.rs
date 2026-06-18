@@ -74,6 +74,18 @@ impl ProtocolBridge {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
+    /// Start a streaming execution with an explicit loop policy.
+    pub fn start_streaming_with_policy(
+        &self,
+        text: &str,
+        mode: RuntimeMode,
+        policy: LoopPolicy,
+    ) -> Result<(RunRef, tokio::sync::mpsc::UnboundedReceiver<CoreEvent>)> {
+        self.manager
+            .start_streaming_with_policy(text, mode, policy)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
     /// Send a Chat-mode message with a streaming callback for each delta.
     #[allow(dead_code)]
     pub fn send_message_streaming<F>(&self, text: &str, on_delta: F) -> Result<String>
@@ -349,7 +361,11 @@ mod tests {
 
         // Start streaming Plan run.
         let (run_ref, mut rx) = bridge
-            .start_streaming("execute confirm_tool", RuntimeMode::Plan)
+            .start_streaming_with_policy(
+                "execute confirm_tool",
+                RuntimeMode::Plan,
+                LoopPolicy::plan_accept_edits(),
+            )
             .unwrap();
 
         // Wait for ToolConfirmationRequired event.
@@ -463,7 +479,11 @@ mod tests {
         let bridge = ProtocolBridge::from_runtime(tmp.path().to_path_buf(), runtime);
 
         let (run_ref, mut rx) = bridge
-            .start_streaming("execute confirm_tool", RuntimeMode::Plan)
+            .start_streaming_with_policy(
+                "execute confirm_tool",
+                RuntimeMode::Plan,
+                LoopPolicy::plan_accept_edits(),
+            )
             .unwrap();
 
         // Wait for ToolConfirmationRequired.

@@ -18,7 +18,7 @@ Primary paths:
 - Build runtime state from settings, model client, workspace root, and optional tool registry.
 - Manage sessions, turns, runs, and trace ids.
 - Convert request input into loop input.
-- Run Chat and Plan modes through `LoopEngine`.
+- Run Chat, Bypass, and Plan modes through `LoopEngine`.
 - Store run events through `SessionManager`.
 - Expose config, model, memory, tool, review, health, and log operations.
 

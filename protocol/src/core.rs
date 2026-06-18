@@ -143,7 +143,6 @@ impl<T> ProtocolEnvelope<T> {
 pub enum Origin {
     LocalCli,
     LocalTui,
-    EmbeddedSdk,
     IdeExtension,
     Desktop,
     RemoteA2A,
@@ -182,18 +181,6 @@ impl CapabilityScope {
 
     pub fn local_tui() -> Self {
         Self::local_cli()
-    }
-
-    pub fn embedded_sdk() -> Self {
-        Self {
-            capabilities: vec![
-                Capability::UseModel,
-                Capability::ReadMemory,
-                Capability::ReadConfig,
-            ],
-            allow_external_workspace_paths: false,
-            requires_human_approval: true,
-        }
     }
 
     pub fn remote_a2a() -> Self {
@@ -393,7 +380,16 @@ pub struct RunLoopInput {
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeMode {
     Chat,
+    Bypass,
     Plan,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionStrategy {
+    #[default]
+    AcceptEdits,
+    BypassPermissions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -403,6 +399,8 @@ pub struct LoopPolicy {
     pub planning_enabled: bool,
     pub require_convergence_check: bool,
     pub require_approval_for_tools: bool,
+    #[serde(default)]
+    pub permission_strategy: PermissionStrategy,
 }
 
 impl LoopPolicy {
@@ -413,6 +411,18 @@ impl LoopPolicy {
             planning_enabled: false,
             require_convergence_check: true,
             require_approval_for_tools: false,
+            permission_strategy: PermissionStrategy::AcceptEdits,
+        }
+    }
+
+    pub fn bypass() -> Self {
+        Self {
+            max_iterations: 10,
+            tools_enabled: true,
+            planning_enabled: false,
+            require_convergence_check: true,
+            require_approval_for_tools: false,
+            permission_strategy: PermissionStrategy::BypassPermissions,
         }
     }
 
@@ -422,7 +432,19 @@ impl LoopPolicy {
             tools_enabled: true,
             planning_enabled: true,
             require_convergence_check: true,
+            require_approval_for_tools: false,
+            permission_strategy: PermissionStrategy::BypassPermissions,
+        }
+    }
+
+    pub fn plan_accept_edits() -> Self {
+        Self {
+            max_iterations: 20,
+            tools_enabled: true,
+            planning_enabled: true,
+            require_convergence_check: true,
             require_approval_for_tools: true,
+            permission_strategy: PermissionStrategy::AcceptEdits,
         }
     }
 }
@@ -1037,13 +1059,49 @@ mod tests {
         assert!(!chat.planning_enabled);
         assert!(chat.require_convergence_check);
         assert!(!chat.require_approval_for_tools);
+        assert_eq!(chat.permission_strategy, PermissionStrategy::AcceptEdits);
+
+        let bypass = LoopPolicy::bypass();
+        assert_eq!(bypass.max_iterations, 10);
+        assert!(bypass.tools_enabled);
+        assert!(!bypass.planning_enabled);
+        assert!(bypass.require_convergence_check);
+        assert!(!bypass.require_approval_for_tools);
+        assert_eq!(
+            bypass.permission_strategy,
+            PermissionStrategy::BypassPermissions
+        );
 
         let plan = LoopPolicy::plan();
         assert_eq!(plan.max_iterations, 20);
         assert!(plan.tools_enabled);
         assert!(plan.planning_enabled);
         assert!(plan.require_convergence_check);
-        assert!(plan.require_approval_for_tools);
+        assert!(!plan.require_approval_for_tools);
+        assert_eq!(
+            plan.permission_strategy,
+            PermissionStrategy::BypassPermissions
+        );
+
+        let plan_accept_edits = LoopPolicy::plan_accept_edits();
+        assert_eq!(plan_accept_edits.max_iterations, 20);
+        assert!(plan_accept_edits.tools_enabled);
+        assert!(plan_accept_edits.planning_enabled);
+        assert!(plan_accept_edits.require_convergence_check);
+        assert!(plan_accept_edits.require_approval_for_tools);
+        assert_eq!(
+            plan_accept_edits.permission_strategy,
+            PermissionStrategy::AcceptEdits
+        );
+    }
+
+    #[test]
+    fn runtime_mode_bypass_round_trips_through_json() {
+        let encoded = serde_json::to_string(&RuntimeMode::Bypass).unwrap();
+        assert_eq!(encoded, "\"bypass\"");
+
+        let decoded: RuntimeMode = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, RuntimeMode::Bypass);
     }
 
     #[test]
@@ -1061,6 +1119,10 @@ mod tests {
                 assert_eq!(input.content, "implement feature");
                 assert_eq!(input.mode, RuntimeMode::Plan);
                 assert_eq!(input.policy.max_iterations, 20);
+                assert_eq!(
+                    input.policy.permission_strategy,
+                    PermissionStrategy::BypassPermissions
+                );
             }
             other => panic!("unexpected input: {:?}", other),
         }

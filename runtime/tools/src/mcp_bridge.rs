@@ -73,8 +73,8 @@ impl AliusTool for McpToolAdapter {
         _args: &JsonValue,
         mode: protocol_interface::RuntimeMode,
     ) -> bool {
-        // Remote MCP tools require confirmation in Plan mode.
-        // In Chat/Bypass mode they execute directly (same as shell write tools).
+        // Remote MCP tools can request confirmation. The Core tool step only
+        // pauses when the active permission strategy is AcceptEdits.
         mode == protocol_interface::RuntimeMode::Plan
     }
 

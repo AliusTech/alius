@@ -4,6 +4,21 @@ pub enum ExecutionMode {
     Bypass,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanPermissionMode {
+    AcceptEdits,
+    BypassPermissions,
+}
+
+impl PlanPermissionMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::AcceptEdits => Self::BypassPermissions,
+            Self::BypassPermissions => Self::AcceptEdits,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum WorkspaceAction {
     None,
@@ -52,5 +67,6 @@ pub enum DecisionKind {
     InitCommand,
     ExecutionInterrupt,
     ConfigExit,
+    QuitConfirm,
     PlanCompletion,
 }

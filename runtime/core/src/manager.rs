@@ -13,8 +13,8 @@ use protocol_interface::{
     ProtocolEnvelope, ProtocolInterface, ToolInfo,
 };
 use runtime_config::Settings;
-use runtime_model::LlmClient;
 use runtime_model::router::{ModelRouter, ModelRouterConfig};
+use runtime_model::LlmClient;
 use runtime_tools::ToolPackageResolver;
 
 use crate::{CoreRuntime, CoreRuntimeBuilder};
@@ -199,6 +199,24 @@ impl CoreRuntimeManager {
         mode: RuntimeMode,
     ) -> Result<Vec<ProtocolEnvelope<CoreEvent>>, ProtocolError> {
         let request = self.run_loop_request(text, mode)?;
+        self.run_request(request)
+    }
+
+    /// Run text input with an explicit loop policy.
+    pub fn run_text_with_policy(
+        &self,
+        text: &str,
+        mode: RuntimeMode,
+        policy: LoopPolicy,
+    ) -> Result<Vec<ProtocolEnvelope<CoreEvent>>, ProtocolError> {
+        let request = CoreRequest::run_loop(text, mode, policy)?;
+        self.run_request(request)
+    }
+
+    fn run_request(
+        &self,
+        request: CoreRequest,
+    ) -> Result<Vec<ProtocolEnvelope<CoreEvent>>, ProtocolError> {
         let envelope = self.request_envelope(request);
         let run_ref = self.interface.start(envelope)?;
         self.interface.subscribe(&run_ref)
@@ -211,6 +229,24 @@ impl CoreRuntimeManager {
         mode: RuntimeMode,
     ) -> Result<(RunRef, tokio::sync::mpsc::UnboundedReceiver<CoreEvent>), ProtocolError> {
         let request = self.run_loop_request(text, mode)?;
+        self.start_streaming_request(request)
+    }
+
+    /// Start a streaming execution with an explicit loop policy.
+    pub fn start_streaming_with_policy(
+        &self,
+        text: &str,
+        mode: RuntimeMode,
+        policy: LoopPolicy,
+    ) -> Result<(RunRef, tokio::sync::mpsc::UnboundedReceiver<CoreEvent>), ProtocolError> {
+        let request = CoreRequest::run_loop(text, mode, policy)?;
+        self.start_streaming_request(request)
+    }
+
+    fn start_streaming_request(
+        &self,
+        request: CoreRequest,
+    ) -> Result<(RunRef, tokio::sync::mpsc::UnboundedReceiver<CoreEvent>), ProtocolError> {
         self.interface
             .start_streaming(self.request_envelope(request))
     }
@@ -375,6 +411,7 @@ impl CoreRuntimeManager {
     ) -> Result<CoreRequest, ProtocolError> {
         let policy = match mode {
             RuntimeMode::Chat => LoopPolicy::chat(),
+            RuntimeMode::Bypass => LoopPolicy::bypass(),
             RuntimeMode::Plan => LoopPolicy::plan(),
         };
         CoreRequest::run_loop(text, mode, policy)

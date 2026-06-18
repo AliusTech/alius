@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use core_runtime::CoreRuntimeManager;
-use protocol_interface::core::{CoreEventPayload, RuntimeMode};
+use protocol_interface::core::{CoreEventPayload, LoopPolicy, RuntimeMode};
 use runtime_tools::{ToolContext, ToolRegistry};
 
 /// Result of a prompt step execution, including runtime correlation IDs.
@@ -55,7 +55,7 @@ pub trait LoopEngineHandle: Send + Sync {
 
     /// Execute a tool by name with JSON arguments and execution mode.
     /// Returns the tool's JSON output.
-    /// The `mode` parameter controls confirmation behavior ("chat" or "plan").
+    /// The `mode` parameter controls execution policy ("chat", "bypass", or "plan").
     async fn run_tool(
         &self,
         tool_name: &str,
@@ -81,13 +81,26 @@ impl RuntimeWorkflowHandle {
     }
 }
 
+fn runtime_mode_from_str(mode: &str) -> RuntimeMode {
+    match mode.to_lowercase().as_str() {
+        "bypass" => RuntimeMode::Bypass,
+        "plan" => RuntimeMode::Plan,
+        _ => RuntimeMode::Chat,
+    }
+}
+
+fn loop_policy_for_mode(mode: RuntimeMode) -> LoopPolicy {
+    match mode {
+        RuntimeMode::Chat => LoopPolicy::chat(),
+        RuntimeMode::Bypass => LoopPolicy::bypass(),
+        RuntimeMode::Plan => LoopPolicy::plan(),
+    }
+}
+
 #[async_trait]
 impl LoopEngineHandle for RuntimeWorkflowHandle {
     async fn run_prompt(&self, text: &str, mode: &str) -> Result<PromptResult> {
-        let rt_mode = match mode.to_lowercase().as_str() {
-            "plan" => RuntimeMode::Plan,
-            _ => RuntimeMode::Chat,
-        };
+        let rt_mode = runtime_mode_from_str(mode);
         let envelopes = self
             .manager
             .run_text(text, rt_mode)
@@ -159,24 +172,25 @@ impl LoopEngineHandle for RuntimeWorkflowHandle {
             .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
         let workspace = self.manager.workspace_root();
-        let rt_mode = match mode.to_lowercase().as_str() {
-            "plan" => RuntimeMode::Plan,
-            _ => RuntimeMode::Chat,
-        };
+        let rt_mode = runtime_mode_from_str(mode);
+        let policy = loop_policy_for_mode(rt_mode);
+        let ctx = ToolContext::new_with_permission_strategy(
+            workspace.to_path_buf(),
+            "workflow".to_string(),
+            rt_mode,
+            policy.permission_strategy,
+        );
 
-        // Fail-closed: workflow tool steps have no interactive confirmation
-        // channel. If the tool would require user confirmation (e.g. high-risk
-        // shell commands in Plan mode), reject the call rather than executing
-        // without approval.
-        if tool.preview_confirmation(&args, rt_mode) {
+        // Fail-closed for AcceptEdits: workflow tool steps have no interactive
+        // confirmation channel. If the tool would require user confirmation,
+        // reject the call rather than executing without approval.
+        if !ctx.bypass_permissions() && tool.preview_confirmation(&args, rt_mode) {
             anyhow::bail!(
                 "Tool '{}' requires confirmation but workflow has no confirmation channel. \
                  Use 'chat' mode or pre-approve the tool.",
                 tool_name
             );
         }
-
-        let ctx = ToolContext::new(workspace.to_path_buf(), "workflow".to_string(), rt_mode);
 
         let result = tool
             .execute(args.clone(), ctx)
@@ -252,7 +266,7 @@ pub struct Workflow {
     #[serde(default)]
     pub description: String,
     pub steps: Vec<Step>,
-    /// Workflow execution mode: "chat" or "plan". Default: "chat".
+    /// Workflow execution mode: "chat", "bypass", or "plan". Default: "chat".
     #[serde(default = "default_mode")]
     pub mode: String,
     /// Overall workflow timeout in milliseconds. None = no timeout.
@@ -274,13 +288,9 @@ fn default_mode() -> String {
 /// Handles `http://host`, `https://host/path`, `http://host:port/path`.
 /// Returns None if the URL doesn't match the expected format.
 fn extract_url_host(url: &str) -> Option<&str> {
-    let rest = if url.starts_with("https://") {
-        &url[8..]
-    } else if url.starts_with("http://") {
-        &url[7..]
-    } else {
-        return None;
-    };
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     // Host ends at `/` or `:` (port separator), whichever comes first
     let end = match (rest.find('/'), rest.find(':')) {
         (Some(a), Some(b)) => a.min(b),
@@ -309,8 +319,8 @@ fn validate_http_url(url: &str, allowed_domains: &[String]) -> Result<()> {
         );
     }
 
-    let host = extract_url_host(url)
-        .ok_or_else(|| anyhow::anyhow!("Invalid HTTP URL: '{}'", url))?;
+    let host =
+        extract_url_host(url).ok_or_else(|| anyhow::anyhow!("Invalid HTTP URL: '{}'", url))?;
 
     // Allow localhost/loopback for testing
     if host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -549,7 +559,11 @@ async fn execute_step_inner(
 
             // Permission gate: validate URL against allowed domains
             if let Err(e) = validate_http_url(&url, http_allowed_domains) {
-                return Ok(step_result(step.id.clone(), format!("HTTP denied: {}", e), false));
+                return Ok(step_result(
+                    step.id.clone(),
+                    format!("HTTP denied: {}", e),
+                    false,
+                ));
             }
 
             let method = step.method.as_deref().unwrap_or("POST");
@@ -795,7 +809,14 @@ async fn execute_workflow_inner(
         }
 
         println!("  Step: {} ({:?})", step.id, step.step_type);
-        let result = execute_step(step, &ctx, handle, &workflow.mode, &workflow.http_allowed_domains).await?;
+        let result = execute_step(
+            step,
+            &ctx,
+            handle,
+            &workflow.mode,
+            &workflow.http_allowed_domains,
+        )
+        .await?;
         let is_success = result.success;
 
         println!(
@@ -942,7 +963,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.output.contains("LLM response to"));
         assert_eq!(prompts.lock().unwrap().len(), 1);
@@ -964,7 +987,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.output.contains("read_file"));
         assert_eq!(tools.lock().unwrap().len(), 1);
@@ -991,7 +1016,9 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.output, "true");
     }
@@ -1017,7 +1044,9 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.output, "true");
     }
@@ -1243,11 +1272,11 @@ mod tests {
         );
     }
 
-    /// Workflow `run_tool` must fail-closed when a tool requires confirmation.
-    /// This prevents workflow tool steps from bypassing the confirmation gate
-    /// that the LoopEngine enforces in interactive mode.
+    /// Workflow `run_tool` must follow the RuntimeMode policy preset.
+    /// Plan defaults to BypassPermissions; Chat remains AcceptEdits and
+    /// fails closed because workflow has no interactive confirmation channel.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_workflow_run_tool_fails_on_confirmation_required() {
+    async fn test_workflow_run_tool_uses_runtime_mode_permission_policy() {
         use protocol_interface::core::WorkspaceRef;
         use runtime_model::{ChatEvent, ChatStream, LlmClient, LlmProvider, ToolCall};
         use runtime_tools::{AliusTool, ToolResult as RealToolResult};
@@ -1339,7 +1368,7 @@ mod tests {
                 _args: serde_json::Value,
                 _ctx: runtime_tools::ToolContext,
             ) -> Result<RealToolResult, protocol_interface::AliusError> {
-                Ok(RealToolResult::success("should-not-reach".to_string()))
+                Ok(RealToolResult::success("bypass-executed".to_string()))
             }
         }
 
@@ -1365,19 +1394,17 @@ mod tests {
 
         let handle = RuntimeWorkflowHandle::new(manager, registry);
 
-        // In plan mode: tool requires confirmation → must fail.
-        let err = handle
+        // In plan mode: default LoopPolicy::plan() uses BypassPermissions, so
+        // preview_confirmation is ignored and the tool executes.
+        let plan_result = handle
             .run_tool("dangerous_tool", serde_json::json!({}), "plan")
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("requires confirmation"),
-            "Expected confirmation error — got: {}",
-            err
-        );
+            .unwrap();
+        assert_eq!(plan_result["success"], true);
+        assert_eq!(plan_result["output"], "bypass-executed");
 
-        // In chat mode: tool still requires confirmation → must also fail.
-        // (preview_confirmation returns true regardless of mode for this tool)
+        // In chat mode: AcceptEdits requires confirmation, but workflow has no
+        // interactive confirmation channel, so it must fail closed.
         let err = handle
             .run_tool("dangerous_tool", serde_json::json!({}), "chat")
             .await
@@ -1561,7 +1588,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.started_at.is_some());
         assert!(result.finished_at.is_some());
@@ -1584,7 +1613,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.duration_ms.is_some());
         // Duration should be >= 0 (it's always 0+ for a fast mock)
         assert!(result.duration_ms.unwrap() < 10000); // sanity check: less than 10s
@@ -1706,7 +1737,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.output.contains("success"));
         assert_eq!(*remaining.lock().unwrap(), 0); // all retries consumed
@@ -1731,7 +1764,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(!result.success);
         assert!(result.output.contains("simulated failure"));
         // Should have tried 3 times total (1 initial + 2 retries)
@@ -1754,7 +1789,9 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = ExecutionContext::new();
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(!result.success);
         assert_eq!(*remaining.lock().unwrap(), 0); // only 1 attempt
     }
@@ -2413,7 +2450,9 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(
             result.success,
             "failed operator should return true when step failed"
@@ -2442,7 +2481,9 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         // When step succeeded, "failed" evaluates to false
         assert_eq!(
             result.output, "false",
@@ -2467,7 +2508,9 @@ mod tests {
             on_failure: OnFailurePolicy::default(),
             timeout_ms: None,
         };
-        let result = execute_step(&step, &ctx, &handle, "chat", &[]).await.unwrap();
+        let result = execute_step(&step, &ctx, &handle, "chat", &[])
+            .await
+            .unwrap();
         assert!(!result.success, "referencing nonexistent step should fail");
     }
 
@@ -2475,7 +2518,10 @@ mod tests {
 
     #[test]
     fn test_extract_url_host_https() {
-        assert_eq!(extract_url_host("https://api.example.com/data"), Some("api.example.com"));
+        assert_eq!(
+            extract_url_host("https://api.example.com/data"),
+            Some("api.example.com")
+        );
     }
 
     #[test]
@@ -2485,7 +2531,10 @@ mod tests {
 
     #[test]
     fn test_extract_url_host_with_port() {
-        assert_eq!(extract_url_host("https://api.example.com:8080/path"), Some("api.example.com"));
+        assert_eq!(
+            extract_url_host("https://api.example.com:8080/path"),
+            Some("api.example.com")
+        );
     }
 
     #[test]
@@ -2498,7 +2547,10 @@ mod tests {
     fn test_validate_http_empty_domains_denies_all() {
         let result = validate_http_url("https://api.example.com/data", &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no http_allowed_domains"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no http_allowed_domains"));
     }
 
     #[test]
@@ -2518,7 +2570,10 @@ mod tests {
         let domains = vec!["api.example.com".to_string()];
         let result = validate_http_url("https://evil.com/steal", &domains);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not in http_allowed_domains"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not in http_allowed_domains"));
     }
 
     #[test]

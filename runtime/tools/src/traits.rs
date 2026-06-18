@@ -5,25 +5,45 @@ use serde_json::Value as JsonValue;
 
 use crate::PermissionLevel;
 use protocol_interface::core::ToolSource;
-use protocol_interface::{AliusError, RuntimeMode};
+use protocol_interface::{AliusError, PermissionStrategy, RuntimeMode};
 
 /// Context for tool execution
 pub struct ToolContext {
     pub workspace: std::path::PathBuf,
     pub session_id: String,
     pub working_directory: std::path::PathBuf,
-    /// Plan → high-risk operations need confirmation; Chat → execute directly.
+    /// Runtime mode requested by the caller.
     pub mode: RuntimeMode,
+    /// Bypass Alius confirmation and permission gates for this execution.
+    pub permission_strategy: PermissionStrategy,
 }
 
 impl ToolContext {
     pub fn new(workspace: std::path::PathBuf, session_id: String, mode: RuntimeMode) -> Self {
+        let permission_strategy = match mode {
+            RuntimeMode::Bypass => PermissionStrategy::BypassPermissions,
+            RuntimeMode::Chat | RuntimeMode::Plan => PermissionStrategy::AcceptEdits,
+        };
+        Self::new_with_permission_strategy(workspace, session_id, mode, permission_strategy)
+    }
+
+    pub fn new_with_permission_strategy(
+        workspace: std::path::PathBuf,
+        session_id: String,
+        mode: RuntimeMode,
+        permission_strategy: PermissionStrategy,
+    ) -> Self {
         Self {
             working_directory: workspace.clone(),
             workspace,
             session_id,
             mode,
+            permission_strategy,
         }
+    }
+
+    pub fn bypass_permissions(&self) -> bool {
+        self.permission_strategy == PermissionStrategy::BypassPermissions
     }
 }
 

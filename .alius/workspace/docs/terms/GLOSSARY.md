@@ -4,6 +4,30 @@
 
 Project-level description of an Alius agent identity, capabilities, skills, and protocol exposure. The project source is represented through `.alius/config/soul.toml`.
 
+## Agent CLI
+
+The local Rust CLI process that represents an Agent in Team mode. It initiates an outbound WebSocket connection to the Agent Team Backend and keeps local runtime execution, permissions, confirmations, and audit under local control.
+
+## Agent Connection
+
+One long-lived WebSocket session between an Agent CLI and the Agent Team Backend. A connection has its own connection id, heartbeat stream, authorization state, and sequence position.
+
+## Agent Presence
+
+The connection-level status of an Agent CLI in Team mode, such as connecting, online, syncing, degraded, reconnecting, or offline.
+
+## Agent Team Backend
+
+The server-side coordination API for Agent Team mode. It maintains Agent registration, presence, work status, task leases, and team event streams.
+
+## Agent Task Lease
+
+A backend-issued ownership record that allows one Agent CLI to execute a task for a bounded time window.
+
+## Agent Work Status
+
+The execution-level status of an Agent CLI, such as idle, planning, running, streaming, waiting for approval, running tool, reviewing, blocked, completed, failed, or cancelled.
+
 ## Bypass Mode
 
 TUI mode that submits input directly for execution without first guiding the user through local plan review.
@@ -30,11 +54,15 @@ The unified execution layer implemented by `core-runtime`. It owns session lifec
 
 ## Loop Engine
 
-The module that executes Chat and Plan modes through one orchestration path controlled by `LoopPolicy`.
+The module that executes Chat, Bypass, and Plan modes through one orchestration path controlled by `LoopPolicy`.
+
+## Bypass Permissions
+
+A high-risk `LoopPolicy.permission_strategy` value that skips Alius confirmation and permission interception for the current execution path. It does not bypass operating-system permissions, missing paths, failed process execution, network failures, or tool implementation errors.
 
 ## Origin
 
-The product or adapter identity that submitted a protocol message, such as `LocalCli`, `LocalTui`, `JsonRpc`, `EmbeddedSdk`, `RemoteA2A`, or `PluginRpc`.
+The product or adapter identity that submitted a protocol message, such as `LocalCli`, `LocalTui`, `JsonRpc`, `RemoteA2A`, or `PluginRpc`.
 
 ## Plan Mode
 
@@ -46,7 +74,7 @@ The TUI panel and state model for plan nodes, statuses, ownership, acceptance cr
 
 ## Product Entrypoint
 
-A user-facing or integration-facing entrypoint such as CLI, TUI, JSON-RPC, desktop, IDE extension, embedded SDK, or remote agent protocol.
+A user-facing or integration-facing entrypoint such as CLI, TUI, JSON-RPC, desktop, IDE extension, or remote agent protocol.
 
 ## Protocol Envelope
 
@@ -75,4 +103,3 @@ The identifier chain that connects requests, commands, events, logs, and runtime
 ## Workspace
 
 The project root managed by Alius. Project config, memory, and workspace documentation live under `.alius/`.
-

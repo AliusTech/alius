@@ -1,6 +1,6 @@
 //! Unified Loop Engine.
 //!
-//! Chat and Plan modes both enter this engine. The mode-specific behavior is
+//! Chat, Bypass, and Plan modes all enter this engine. The mode-specific behavior is
 //! controlled by `LoopPolicy` rather than by separate DirectChat/AgentLoop
 //! execution paths.
 

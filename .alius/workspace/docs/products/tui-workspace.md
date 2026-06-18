@@ -17,7 +17,7 @@ The workspace implementation lives under `entrypoints/cli/src/tui/workspace/`.
 
 | Key | Behavior |
 | --- | --- |
-| `Shift+Tab` | Switch between Plan mode and Bypass mode. |
+| `Shift+Tab` | In normal input, switch between Plan mode and Bypass mode. During active approved-plan execution, switch between `计划模式 - Bypass Permissions` and `计划模式 - Accept Edits`. |
 | `Ctrl+Enter` | Submit or execute the current input. |
 | `Ctrl+Tab` | Switch Conversation and Agent Team tabs when Agent Team is visible. |
 | `Esc` | Clear input or cancel the current prompt or confirmation state. |
@@ -70,6 +70,15 @@ When the current directory is not inside a Git repository, the status bar shows 
 | Bypass | Send input directly to execution without local plan review. |
 
 Plan mode is not a fixed local sequence such as "understand objective, decompose, approve." The TUI keeps a draft planning state while the model asks clarifying questions. The Plans panel is hidden until the model returns a plan proposal and the user approves it. After approval, the approved nodes appear in the Plans panel and are executed one by one. When every node is complete, the user confirms plan completion and the Plans panel closes.
+
+After the user approves a plan proposal, the active execution title is `计划模式 - Bypass Permissions` by default. This mode runs the approved plan list continuously and does not pause at Alius tool confirmation points. It is intentionally high risk: it skips Alius confirmation, workspace-boundary, Shell Gate, and plugin host permission interception for that execution path, but it cannot bypass operating-system permissions, missing files, failed commands, failed process spawns, failed network calls, or tool implementation errors.
+
+During active plan execution, `Shift+Tab` switches only the plan permission strategy:
+
+- `计划模式 - Bypass Permissions` — continue automatically through plan steps until completion, failure, or user interrupt.
+- `计划模式 - Accept Edits` — subsequent high-risk shell, write, edit, WASM, or MCP tool calls use the existing `ToolConfirmationRequired` UI and wait for user confirmation.
+
+This execution-time switch does not leave Plan mode and does not switch to ordinary Bypass mode.
 
 Clarification prompts should minimize typing. The Conversation area displays the question, such as "What does this interface do?" The interaction surface displays model-proposed answers as single-select or multi-select options, such as "User login" and "Data query." Free-form input is used only when the model cannot safely reduce the question to choices.
 
@@ -210,6 +219,16 @@ Current state:
 - Agent Team is not live by default.
 - Do not claim live AgentNet or A2A traffic until runtime plumbing populates the Agent Team state.
 
+Target connection model:
+
+- Each Agent CLI initiates an outbound WebSocket connection to the Agent Team Backend.
+- The TUI must display Agent presence and work status from real Agent Team events.
+- Agent Team messages must render in the Agent Team tab with `IN` or `OUT` direction, sender, receiver, message type, status, and summary.
+- Local Conversation blocks must remain local workflow output unless a Team event is intentionally surfaced as a local status block.
+- Backend task assignment must not bypass local Core Runtime permissions, tool confirmation, Shell Gate, or audit.
+
+The detailed Agent CLI connection protocol is documented in `../modules/agent-team.md`.
+
 ## TUI Test Design
 
 The TUI workspace must have deterministic tests for state transitions, interaction surfaces, rendering reducers, keyboard and mouse behavior, and runtime event reduction. Test helpers must not leak into the release `alius` binary.
@@ -269,6 +288,7 @@ TUI tests should prioritize state-machine coverage over fragile terminal screens
 
 - workspace launch state, welcome block presence, and status bar rendering for Git and non-Git directories;
 - Plan and Bypass mode switching, including the rule that `Shift+Tab` does not change mode while a configuration task is active;
+- approved-plan permission switching: default `计划模式 - Bypass Permissions`, `Shift+Tab` during active execution toggles to `计划模式 - Accept Edits`, and confirmation UI appears only in `Accept Edits`;
 - plan drafting, clarification prompt rendering, plan proposal, approval, per-node execution, completion confirmation, and Plans panel close;
 - cancellation and interrupt flow through `Esc` while the model is drafting, while a tool confirmation is pending, and while execution is active;
 - `/init` wizard state transitions, resume/restart/exit behavior, progress persistence, and cleanup of completed or cancelled init state;

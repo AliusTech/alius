@@ -60,7 +60,7 @@ sequenceDiagram
   Protocol->>Protocol: validate version and capability ceiling
   Protocol->>Core: start request
   Core->>Session: create session or turn
-  Core->>Loop: run Chat or Plan mode
+  Core->>Loop: run Chat, Bypass, or Plan mode
   Loop->>Model: model request
   Model-->>Loop: model deltas
   Loop-->>Core: CoreEvent values

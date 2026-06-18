@@ -13,7 +13,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::state::ConversationBlock;
-use super::workspace::{WorkspaceAction, WorkspaceState};
+use super::workspace::{PlanPermissionMode, WorkspaceAction, WorkspaceState};
 
 // ── Key helpers ────────────────────────────────────────────────────────
 
@@ -236,6 +236,11 @@ impl TuiTestHarness {
         self.state.mode()
     }
 
+    /// Get the current Plan execution permission strategy.
+    pub fn plan_permission_mode(&self) -> PlanPermissionMode {
+        self.state.plan_permission_mode()
+    }
+
     /// Get the current focus zone.
     pub fn focus_zone(&self) -> super::workspace::FocusZone {
         self.state.focus_zone()
@@ -280,6 +285,11 @@ impl TuiTestHarness {
     /// Start execution mode.
     pub fn start_execution(&mut self, mode: super::workspace::ExecutionMode) {
         self.state.start_execution_for_test(mode);
+    }
+
+    /// Activate a minimal Plan execution.
+    pub fn activate_plan_execution(&mut self) {
+        self.state.activate_plan_execution_for_test();
     }
 
     // ── Folding ────────────────────────────────────────────────────────

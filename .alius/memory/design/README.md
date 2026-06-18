@@ -24,7 +24,7 @@
 8. [发布、文档与风险](08-release-and-documentation-risks.md)
    - npm/Homebrew 发布形态、版本解析、当前实现风险和文档同步事项。
 9. [Alius Architecture v10 实现对照文档](09-architecture-v10-implementation-reference.md)
-   - 三层架构、Core Runtime、A2A、Core Lite、Cargo Features 和实现检查清单。
+   - 三层架构、Core Runtime、A2A、Cargo Features 和实现检查清单。
 10. [协议层优化设计](10-protocol-interface-layer-design.md)
    - Protocol Interface Layer、统一 envelope、CoreRequest/CoreCommand/CoreEvent、传输映射和第一阶段落地计划。
 
@@ -44,7 +44,7 @@
 - `ROADMAP.md` 不作为实现依据，最新实现依据是 `SPEC.md` 和 `docs/` 下的术语、产品、接口、模块、overview 和规范文档。
 - workspace 图表主来源是 Markdown Mermaid，不使用外部绘图文件作为维护源。
 - 新架构中 CLI / TUI 应通过 Local Rust Interface 进入协议层，再进入 Core Public API；不应直接依赖 Core 内部模块或 provider stream。
-- shell/process/git 类命令必须经过 Shell Gate，作用范围不能超过 workspace，除非获得授权。
+- `AcceptEdits` 下 shell/process/git 类命令必须经过 Shell Gate，作用范围不能超过 workspace，除非获得授权；`BypassPermissions` 是显式高风险执行策略，必须保留事件和审计可见性。
 - runtime、error、exception、audit 日志必须实时记录，并关联 workspace、session、run、trace。
 
 ## 推荐目录形态
@@ -84,7 +84,6 @@
         GLOSSARY.md
       products/
         cli.md
-        embedded_sdk.md
         desktop_planning.md
         ide_extension_planning.md
         third_party_agent_app.md

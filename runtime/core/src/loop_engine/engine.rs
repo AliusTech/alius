@@ -79,9 +79,29 @@ impl LoopEngine {
 
         match input.mode {
             RuntimeMode::Chat if input.policy.tools_enabled => {
-                Self::run_chat_with_tools(run_ref, trace_id, ctx, event_sink).await
+                Self::run_chat_with_tools(
+                    run_ref,
+                    trace_id,
+                    input.mode,
+                    &input.policy,
+                    ctx,
+                    event_sink,
+                )
+                .await
+            }
+            RuntimeMode::Bypass if input.policy.tools_enabled => {
+                Self::run_chat_with_tools(
+                    run_ref,
+                    trace_id,
+                    input.mode,
+                    &input.policy,
+                    ctx,
+                    event_sink,
+                )
+                .await
             }
             RuntimeMode::Chat => Self::run_chat(run_ref, trace_id, ctx, event_sink).await,
+            RuntimeMode::Bypass => Self::run_chat(run_ref, trace_id, ctx, event_sink).await,
             RuntimeMode::Plan => Self::run_plan(run_ref, trace_id, input, ctx, event_sink).await,
         }
     }
@@ -182,6 +202,8 @@ impl LoopEngine {
     async fn run_chat_with_tools(
         run_ref: &RunRef,
         trace_id: &TraceId,
+        mode: RuntimeMode,
+        policy: &LoopPolicy,
         ctx: &LoopContext,
         event_sink: &mut dyn FnMut(CoreEvent),
     ) -> LoopExecutionResult {
@@ -312,7 +334,8 @@ impl LoopEngine {
             &registry,
             &ctx.workspace,
             &format!("chat-run-{}", run_ref.as_str()),
-            RuntimeMode::Chat,
+            mode,
+            policy.permission_strategy,
             ctx.session.as_ref().map(|a| a.as_ref()),
             event_sink,
             run_ref,
@@ -445,6 +468,7 @@ impl LoopEngine {
         let mut exit_reason = ExitReason::Success;
 
         let mut last_assistant_tool_calls: Option<Vec<runtime_model::ToolCall>> = None;
+        let mut loop_cycles: u32 = 0;
         loop {
             // Check for cancellation at the start of each iteration
             if let Some(token) = &ctx.cancel_token {
@@ -462,9 +486,13 @@ impl LoopEngine {
                 }
             }
 
-            iteration_index += 1;
+            loop_cycles += 1;
 
-            if iteration_index > max_iterations {
+            // Safety guard: prevent truly infinite loops (e.g. model stuck in
+            // tool-call cycles).  This limit is intentionally much higher than
+            // `max_iterations` — tool-call rounds are normal plan execution and
+            // do not count toward the convergence iteration limit.
+            if loop_cycles > max_iterations * 10 {
                 seq += 1;
                 event_sink(CoreEvent::new(
                     run_ref.clone(),
@@ -473,7 +501,10 @@ impl LoopEngine {
                     CoreEventKind::ErrorRaised,
                     CoreEventPayload::Error {
                         code: "max_iterations".to_string(),
-                        message: format!("max iterations ({}) reached", max_iterations),
+                        message: format!(
+                            "max loop cycles ({}) reached — model may be stuck in tool-call cycle",
+                            max_iterations * 10
+                        ),
                     },
                 ));
                 exit_reason = ExitReason::MaxIterations;
@@ -571,7 +602,26 @@ impl LoopEngine {
             last_assistant_tool_calls = model_result.tool_calls.clone();
 
             if !has_tool_calls {
-                // Model finished — no more tool calls
+                // Model finished — no more tool calls.
+                // Only count non-tool turns as real iterations.
+                iteration_index += 1;
+
+                if iteration_index > max_iterations {
+                    seq += 1;
+                    event_sink(CoreEvent::new(
+                        run_ref.clone(),
+                        trace_id.clone(),
+                        seq,
+                        CoreEventKind::ErrorRaised,
+                        CoreEventPayload::Error {
+                            code: "max_iterations".to_string(),
+                            message: format!("max iterations ({}) reached", max_iterations),
+                        },
+                    ));
+                    exit_reason = ExitReason::MaxIterations;
+                    break;
+                }
+
                 let iteration = LoopIteration {
                     index: iteration_index,
                     mode: RuntimeMode::Plan,
@@ -629,6 +679,7 @@ impl LoopEngine {
                 &ctx.workspace,
                 &format!("plan-run-{}", run_ref.as_str()),
                 input.mode,
+                input.policy.permission_strategy,
                 ctx.session.as_ref().map(|a| a.as_ref()),
                 event_sink,
                 run_ref,
@@ -918,6 +969,7 @@ fn indent_multiline(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol_interface::core::PermissionStrategy;
     use protocol_interface::MessageRole;
     use serde_json::json;
 
@@ -1163,6 +1215,7 @@ mod tests {
             std::path::Path::new("/tmp"),
             "test",
             RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
             Some(&session_manager),
             &mut |e| events_clone.lock().unwrap().push(e),
             &run_ref,
@@ -1510,8 +1563,8 @@ mod tests {
         }
     }
 
-    /// Engine-level: LoopEngine::run with fake MCP tool via Plan mode.
-    /// Plan mode: confirmation required, approved → executes correctly.
+    /// Engine-level: LoopEngine::run with fake MCP tool via Plan AcceptEdits.
+    /// Confirmation required, approved → executes correctly.
     #[tokio::test]
     async fn mcp_tool_executed_through_engine_plan_mode_with_confirmation() {
         use protocol_interface::core::ToolSource;
@@ -1525,7 +1578,7 @@ mod tests {
         let input = RunLoopInput {
             content: "call mcp tool".to_string(),
             mode: RuntimeMode::Plan,
-            policy: LoopPolicy::plan(),
+            policy: LoopPolicy::plan_accept_edits(),
         };
 
         // Spawn a task that approves the confirmation.
@@ -1577,5 +1630,38 @@ mod tests {
         let infos = registry.to_tool_infos();
         let mcp_echo_info = infos.iter().find(|i| i.name == "mcp_echo");
         assert_eq!(mcp_echo_info.unwrap().source, ToolSource::Mcp);
+    }
+
+    /// Engine-level: default Plan policy bypasses tool confirmations.
+    #[tokio::test]
+    async fn mcp_tool_executed_through_engine_plan_default_bypasses_confirmation() {
+        let (_registry, _sm, run_ref, trace_id, ctx) = setup_mcp_engine_test(true);
+
+        let input = RunLoopInput {
+            content: "call mcp tool".to_string(),
+            mode: RuntimeMode::Plan,
+            policy: LoopPolicy::plan(),
+        };
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+        let result = LoopEngine::run(&run_ref, &trace_id, &input, &ctx, &mut |e| {
+            events_clone.lock().unwrap().push(e)
+        })
+        .await;
+
+        assert!(
+            result.final_content.contains("mcp_echo: hello from mcp"),
+            "final_content must include MCP tool output, got: {}",
+            result.final_content
+        );
+
+        let evts = events.lock().unwrap();
+        assert!(
+            !evts
+                .iter()
+                .any(|e| e.kind == CoreEventKind::ToolConfirmationRequired),
+            "Plan default BypassPermissions must not emit ToolConfirmationRequired"
+        );
     }
 }

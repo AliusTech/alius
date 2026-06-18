@@ -4,11 +4,14 @@
 //! - Without WASM plugins, default registry contains native tools
 //! - ToolRegistry::get() and to_tool_defs() return native tools
 //! - Plan mode high-risk shell/write/edit need confirmation preview
-//! - Chat/Bypass mode workspace-internal ApprovalRequired executes, external paths denied
+//! - Chat mode workspace-internal ApprovalRequired executes, external paths denied
+//! - Bypass permission strategy skips Alius path gates while preserving OS failures
 
-use protocol_interface::RuntimeMode;
+use protocol_interface::{PermissionStrategy, RuntimeMode};
 use runtime_tools::package::ToolPackageResolver;
+use runtime_tools::traits::ToolContext;
 use serde_json::json;
+use tempfile::TempDir;
 
 #[test]
 fn test_default_registry_contains_native_tools() {
@@ -151,6 +154,7 @@ async fn test_chat_mode_workspace_internal_executes() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
 
     // Low-risk workspace-internal command should execute
@@ -167,8 +171,6 @@ async fn test_chat_mode_workspace_internal_executes() {
 
 #[tokio::test]
 async fn test_chat_mode_external_path_denied() {
-    use runtime_tools::traits::ToolContext;
-
     let workspace = std::env::current_dir().unwrap();
     let resolver = ToolPackageResolver::new(workspace.clone());
     let registry = resolver.build_registry_lossy();
@@ -180,6 +182,7 @@ async fn test_chat_mode_external_path_denied() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
 
     // External path command should be denied even in Chat mode
@@ -194,6 +197,46 @@ async fn test_chat_mode_external_path_denied() {
     assert!(
         tool_result.output.contains("denied by Shell Gate"),
         "Should contain denial message"
+    );
+}
+
+#[tokio::test]
+async fn test_bypass_permissions_allows_write_file_outside_workspace() {
+    let workspace = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let resolver = ToolPackageResolver::new(workspace.path().to_path_buf());
+    let registry = resolver.build_registry_lossy();
+
+    let write_file = registry
+        .get("write_file")
+        .expect("write_file tool should be present");
+    let target = outside.path().join("bypass-write.txt");
+    let ctx = ToolContext::new_with_permission_strategy(
+        workspace.path().to_path_buf(),
+        "test-session".to_string(),
+        RuntimeMode::Plan,
+        PermissionStrategy::BypassPermissions,
+    );
+
+    let result = write_file
+        .execute(
+            json!({
+                "path": target.to_string_lossy(),
+                "content": "bypass permissions writes outside workspace"
+            }),
+            ctx,
+        )
+        .await
+        .expect("write_file should execute");
+
+    assert!(
+        result.success,
+        "BypassPermissions should skip Alius workspace path denial, got: {}",
+        result.output
+    );
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "bypass permissions writes outside workspace"
     );
 }
 
@@ -336,6 +379,7 @@ async fn test_rm_rf_executes_when_confirmation_bypassed() {
         session_id: "test-session".to_string(),
         working_directory: workspace,
         mode: RuntimeMode::Chat,
+        permission_strategy: protocol_interface::PermissionStrategy::AcceptEdits,
     };
 
     // Direct execute (bypassing confirmation) — shell tool itself does not block

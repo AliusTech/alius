@@ -55,7 +55,8 @@
    - 创建 `SessionStore` 和 `ConversationStore`。
 6. workspace 渲染 header、conversation/plans、interaction、status bar。
 7. 用户输入:
-   - Plan 模式先生成计划节点和确认面板。
+   - Plan 模式先进入计划草稿和批准流程；批准后默认以 `BypassPermissions` 连续执行计划节点。
+   - Plan 执行期可以切换到 `AcceptEdits`，后续工具确认点等待用户确认。
    - Bypass 模式直接执行。
 8. 执行时调用 `collect_model_response()`。
 9. `collect_model_response()` 当前走 `client.chat_stream(&conversation)`。

@@ -99,8 +99,8 @@ Each entry is `operation:target`.
 - **network** — `fetch:<url-prefix>`. Prefix-matched at runtime.
 - **shell** — `exec:<scope>`. `readonly` = the read-only command set
   (ls/cat/grep/git-log/...). A literal command string allows exactly that
-  command. Every shell call additionally passes through Shell Gate regardless
-  of manifest — double insurance.
+  command. Under `AcceptEdits`, every shell call additionally passes through
+  Shell Gate regardless of manifest — double insurance.
 - **env** — `read:<VAR_NAME>`. Read specific environment variables.
 
 ## Host Function ABI (wasm → host imports)
@@ -130,7 +130,7 @@ which permission set to consult.
 
 ## Runtime Verification
 
-Every host-function call passes three gates before reaching the OS:
+Under `AcceptEdits`, every host-function call passes three gates before reaching the OS:
 
 1. **Manifest declaration** — the plugin's manifest must declare a matching
    permission in the relevant domain. Undeclared → deny.
@@ -150,6 +150,13 @@ Every host-function call passes three gates before reaching the OS:
    - filesystem still canonicalized at the boundary.
 
 Only after all three gates does the call reach the real OS.
+
+Under `BypassPermissions`, the WASM host import path skips the manifest,
+argument-scope, Shell Gate, env, and fetch-prefix checks for that execution.
+The call still reaches the same OS, filesystem, process, or network primitive,
+so operating-system permissions, missing files, command failures, process spawn
+errors, network failures, and runtime errors still apply. Host audit events
+must still be emitted where the import path has an audit sink.
 
 ### Worked example
 

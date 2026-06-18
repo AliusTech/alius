@@ -83,9 +83,11 @@ Runtime execution still uses `LoopPolicy::plan()`:
 - `tools_enabled = true`
 - `planning_enabled = true`
 - convergence check enabled
-- tool approval required by policy
+- `permission_strategy = BypassPermissions` after plan approval
 
-Plan mode can iterate through model calls and tool results when a tool registry is present. The TUI currently owns part of the visible plan drafting and panel lifecycle; deeper reduction from Core plan events remains the target architecture.
+Plan mode can iterate through model calls and tool results when a tool registry is present. In the default approved-plan strategy, Alius confirmation and permission gates are bypassed so plan nodes can run continuously until completion, failure, or user interruption. During active plan execution the TUI can switch to `LoopPolicy::plan_accept_edits()`; subsequent high-risk tools emit `ToolConfirmationRequired` and wait for user approval. Bypass does not bypass operating-system permissions, missing paths, process failures, command exit failures, network errors, or other lower-level tool errors.
+
+The TUI currently owns part of the visible plan drafting and panel lifecycle; deeper reduction from Core plan events remains the target architecture.
 
 ## Project Initialization Flow
 

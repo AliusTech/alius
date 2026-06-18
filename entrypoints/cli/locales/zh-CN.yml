@@ -318,6 +318,10 @@ workspace:
   mode:
     plan: "计划模式"
     bypass: "直达模式"
+    plan_bypass_permissions: "计划模式 - Bypass Permissions"
+    plan_accept_edits: "计划模式 - Accept Edits"
+  plan_permission:
+    switched: "计划权限策略已切换为 %{mode}。"
   placeholder:
     plan: "描述一个目标。Alius 会在执行前创建计划。"
     bypass: "直接指令。Alius 将不创建计划而直接执行。"
@@ -565,6 +569,11 @@ workspace:
     description: "Alius 仍在推理中。请选择是否中断本次运行。"
     confirm: "中断执行"
     continue_waiting: "继续等待"
+  quit_confirm:
+    title: "退出 Alius？"
+    description: "确定要退出吗？"
+    confirm: "退出"
+    continue: "继续工作"
   tool_confirmation:
     title: "工具确认请求"
     description: "此工具操作需要您的批准才能执行"

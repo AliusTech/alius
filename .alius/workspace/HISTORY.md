@@ -6,7 +6,17 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-19
+
+[2026-06-19 01:54] Codex: protocol/src/core.rs + runtime/core/src/loop_engine + runtime/tools/src + entrypoints/cli/src/tui + .alius/workspace/docs - Added Chat/Bypass/Plan runtime permission strategy semantics. Approved Plan execution now defaults to BypassPermissions, active plan execution can switch to AcceptEdits with Shift+Tab, and docs/tests describe the high-risk bypass boundary.
+
 ## 2026-06-18
+
+[2026-06-18 20:39] Codex: protocol/src/core.rs + protocol/src/interface.rs + runtime/config/src/views.rs + runtime/config/src/loaders/permissions.rs + runtime/tools/src/shell_gate + .alius/workspace/docs - Removed the deprecated SDK protocol origin and SDK permission block; renamed the internal Shell Gate SDK-style origin to WasmPlugin so WASM plugin safety uses plugin terminology.
+
+[2026-06-18 18:00] Codex: .alius/workspace/docs/modules/agent-team.md + .alius/workspace/SPEC.md + .alius/workspace/docs/standards/documentation-maintenance.md - Removed incorrect Team-mode execution-subject wording and added Agent-centered terminology rules for Agent Team documentation.
+
+[2026-06-18 17:56] Codex: .alius/workspace/docs/modules/agent-team.md + SPEC.md + docs/00-reading-path.md + docs/overview/architecture.md + docs/products/tui-workspace.md + docs/terms/GLOSSARY.md + docs/01-current-state.md - Added Agent CLI to Agent Team Backend WebSocket connection design, including FastAPI backend compatibility, Rust client library choices, registration, heartbeat, presence, work status, task lease, reconnect, permission, and TUI boundary rules.
 
 [2026-06-18 10:00] Alius: .github/workflows/release.yml - Added test-gate job before create-release; moved tag creation to after test-gate passes; added --locked to all release builds; added per-platform test-symbol scan before artifact upload; added cargo-audit to release test-gate.
 

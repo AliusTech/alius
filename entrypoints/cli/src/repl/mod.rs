@@ -216,9 +216,8 @@ impl ReplSession {
         session_store.save(&session_metadata)?;
 
         // Build ProtocolBridge through CoreRuntimeManager.
-        let bridge = {
-            protocol_bridge::ProtocolBridge::new(workspace_root.clone(), settings.clone()).ok()
-        };
+        let bridge =
+            { protocol_bridge::ProtocolBridge::new(workspace_root.clone(), settings.clone()).ok() };
 
         Ok(Self {
             settings: Arc::new(std::sync::RwLock::new(settings)),
@@ -311,7 +310,7 @@ impl ReplSession {
             return Ok(String::new());
         }
 
-        // Both Chat and Plan: use ProtocolBridge when available
+        // Chat, Bypass, and Plan use ProtocolBridge when available.
         if let Some(bridge) = &self.bridge {
             self.conversation.add_user_message(input.to_string());
             let mut stdout = std::io::stdout();

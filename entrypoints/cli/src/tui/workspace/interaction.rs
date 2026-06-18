@@ -256,6 +256,21 @@ impl DecisionState {
         }
     }
 
+    pub fn quit_confirm() -> Self {
+        Self {
+            title: t!("workspace.quit_confirm.title").to_string(),
+            scope_title: None,
+            options: vec![
+                t!("workspace.quit_confirm.confirm").to_string(),
+                t!("workspace.quit_confirm.continue").to_string(),
+            ],
+            selected: 1,
+            custom_input: InputBuffer::default(),
+            custom_focused: false,
+            kind: DecisionKind::QuitConfirm,
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> WorkspaceAction {
         if self.custom_focused {
             match key.code {
@@ -319,6 +334,7 @@ impl DecisionState {
                 DecisionKind::InitCommand => WorkspaceAction::CancelDecision,
                 DecisionKind::ExecutionInterrupt => WorkspaceAction::ContinueExecution,
                 DecisionKind::ConfigExit => WorkspaceAction::ContinueConfig,
+                DecisionKind::QuitConfirm => WorkspaceAction::CancelDecision,
                 DecisionKind::PlanCompletion => WorkspaceAction::ClosePlan,
             };
         }
@@ -348,6 +364,10 @@ impl DecisionState {
             DecisionKind::ConfigExit => match self.selected {
                 0 => WorkspaceAction::Submit("/cancel".to_string()),
                 _ => WorkspaceAction::ContinueConfig,
+            },
+            DecisionKind::QuitConfirm => match self.selected {
+                0 => WorkspaceAction::Quit,
+                _ => WorkspaceAction::CancelDecision,
             },
             DecisionKind::PlanCompletion => WorkspaceAction::ClosePlan,
         }
@@ -632,6 +652,7 @@ impl InteractionUi {
 
 pub struct InteractionState<'a> {
     pub mode: InteractionMode,
+    pub mode_title_override: Option<String>,
     pub active_tab: MainTab,
     pub input: &'a InputBuffer,
     pub prompt_input: Option<&'a PromptInputState>,
@@ -669,7 +690,13 @@ fn render_text_input(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", state.mode.title()))
+        .title(format!(
+            " {} ",
+            state
+                .mode_title_override
+                .clone()
+                .unwrap_or_else(|| state.mode.title())
+        ))
         .style(theme::base())
         .border_style(theme::border_state(focused, hovered));
     let inner = block.inner(area);
@@ -801,7 +828,12 @@ fn render_prompt_input(
         .scope_title
         .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| state.mode.title());
+        .unwrap_or_else(|| {
+            state
+                .mode_title_override
+                .clone()
+                .unwrap_or_else(|| state.mode.title())
+        });
     let block = Block::default()
         .borders(Borders::ALL)
         .style(theme::base())
@@ -918,7 +950,12 @@ fn render_decision(
         .scope_title
         .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| state.mode.title());
+        .unwrap_or_else(|| {
+            state
+                .mode_title_override
+                .clone()
+                .unwrap_or_else(|| state.mode.title())
+        });
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} - {} ", scope_title, decision.title))

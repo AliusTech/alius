@@ -8,9 +8,9 @@
 
 核心原则:
 
-- CLI / TUI / Desktop / IDE / Embedded / Third-party Agent 都不能直接调用 Core 内部模块。
+- CLI / TUI / Desktop / IDE / Third-party Agent 都不能直接调用 Core 内部模块。
 - 不同通信方式可以不同，但语义必须统一。
-- Core Runtime 不关心调用方使用 Rust、JSON-RPC、A2A 还是 FFI。
+- Core Runtime 不关心调用方使用 Rust、JSON-RPC 还是 A2A。
 - 工具审批、用户提问、取消、恢复、预算中断都必须通过协议层表达。
 
 目标形态:
@@ -31,7 +31,6 @@ flowchart TB
     CLI["CLI / TUI"]
     DESKTOP["Desktop"]
     IDE["IDE Extension"]
-    EMB["Embedded SDK"]
     THIRD["Third-party Agent"]
   end
 
@@ -40,7 +39,6 @@ flowchart TB
       LOCAL["Local Rust Transport"]
       JSONRPC["JSON-RPC Transport"]
       LSP["IDE RPC / LSP-like Transport"]
-      FFI["C ABI FFI Transport"]
       A2A["A2A Protocol Transport"]
     end
 
@@ -58,13 +56,11 @@ flowchart TB
   CLI --> LOCAL
   DESKTOP --> JSONRPC
   IDE --> LSP
-  EMB --> FFI
   THIRD --> A2A
 
   LOCAL --> CONTRACT
   JSONRPC --> CONTRACT
   LSP --> CONTRACT
-  FFI --> CONTRACT
   A2A --> CONTRACT
 
   CONTRACT --> NORMALIZER
@@ -78,7 +74,7 @@ flowchart TB
 
 | 子模块 | 职责 | 不应该做的事 |
 | --- | --- | --- |
-| Transport Adapters | 处理本地函数、JSON-RPC、LSP-like、FFI、A2A 的传输细节 | 不做 agent loop，不拼 prompt，不直接调用 provider |
+| Transport Adapters | 处理本地函数、JSON-RPC、LSP-like、A2A 的传输细节 | 不做 agent loop，不拼 prompt，不直接调用 provider |
 | Canonical Protocol Contract | 定义统一 envelope、request、command、event、error、capability | 不绑定具体产品 UI 或某个远程协议 |
 | Core Gateway | 把协议消息转成 Core Public API 调用，管理 stream、command、cancel | 不拥有 session 业务状态，不实现工具逻辑 |
 
@@ -110,10 +106,6 @@ alius-interface-local
 alius-interface-jsonrpc
   depends on alius-protocol
   depends on alius-core
-
-alius-interface-ffi
-  depends on alius-protocol
-  depends on alius-core-lite
 
 alius-core
   depends on alius-protocol
@@ -183,7 +175,7 @@ pub struct ProtocolEnvelope<T> {
 | `message_id` | 当前消息唯一 id |
 | `trace_id` | 跨 transport / Core / tool / storage 的追踪 id |
 | `parent_message_id` | 对应请求或事件的父消息 |
-| `origin` | 调用来源，例如 LocalCli、Desktop、Ide、Embedded、RemoteA2A |
+| `origin` | 调用来源，例如 LocalCli、Desktop、Ide、RemoteA2A |
 | `capability_scope` | 调用方被授予的能力边界 |
 | `session_ref` | session 引用，不暴露内部 session 状态 |
 | `run_ref` | 当前运行引用，用于 command、cancel、resume |
@@ -199,7 +191,6 @@ pub enum OriginKind {
     LocalTui,
     Desktop,
     IdeExtension,
-    EmbeddedSdk,
     RemoteA2A,
 }
 
@@ -234,7 +225,6 @@ pub struct CapabilityScope {
 | LocalCli / LocalTui | 可访问当前 workspace，危险操作需要审批 |
 | Desktop | 可访问用户授权 workspace，危险操作需要审批 |
 | IdeExtension | 默认限制在 IDE workspace，文件写入需遵守 IDE 权限 |
-| EmbeddedSdk | 无本地 shell、无本地 heavy tools、远程模型/记忆能力为主 |
 | RemoteA2A | 默认无本地文件和 shell 权限，只能使用 Agent Card 暴露的 skills 和 capability policy |
 
 ## CoreRequest
@@ -271,6 +261,21 @@ pub struct StartTurnRequest {
 - `requested_capabilities` 是请求能力，不是最终授权能力。
 - 最终能力由协议层 normalizer、Agent Card capability policy、Security Manager 共同收敛。
 - `idempotency_key` 用于 JSON-RPC、A2A、Desktop 重试时避免重复执行。
+
+当前 Core Runtime 入口使用三种 `RuntimeMode`:
+
+| RuntimeMode | 默认 LoopPolicy | 权限策略 |
+| --- | --- | --- |
+| `Chat` | `LoopPolicy::chat()` | `AcceptEdits` |
+| `Bypass` | `LoopPolicy::bypass()` | `BypassPermissions` |
+| `Plan` | `LoopPolicy::plan()` | `BypassPermissions` |
+
+`LoopPolicy` 必须显式携带 `permission_strategy`:
+
+- `AcceptEdits`: 高风险工具调用触发 `ToolConfirmationRequired`，由用户批准或拒绝。
+- `BypassPermissions`: 跳过 Alius 自身确认、workspace 边界、Shell Gate、插件 host permission 等拦截，连续执行当前策略下的工具调用。
+
+Plan 提案被用户批准后默认使用 `LoopPolicy::plan()`，即 `BypassPermissions`。TUI 执行期按 `Shift+Tab` 切换到 `LoopPolicy::plan_accept_edits()`，后续确认点必须等待用户确认。`BypassPermissions` 不能绕过操作系统权限、文件不存在、命令失败、进程启动失败、网络失败或工具实现错误。
 
 ## CoreCommand
 
@@ -451,28 +456,6 @@ IDE RPC / LSP-like Interface
 - UI 交互事件应可映射到 IDE notification、quick pick、confirmation dialog。
 - 不要把 IDE 插件工具和 Core Tool Executor 混成同一个概念；IDE 只是产品入口。
 
-### C ABI FFI Transport
-
-Embedded SDK 使用 FFI，需要窄接口和显式内存管理。
-
-建议 C ABI:
-
-```c
-alius_handle_t alius_init(const alius_config_t* config);
-alius_run_t alius_start_turn(alius_handle_t handle, const char* request_json);
-int alius_poll_event(alius_handle_t handle, alius_run_t run, alius_event_t* out_event);
-int alius_send_command(alius_handle_t handle, alius_run_t run, const char* command_json);
-void alius_free_string(char* ptr);
-void alius_shutdown(alius_handle_t handle);
-```
-
-FFI 约束:
-
-- FFI 层只暴露 JSON envelope 或稳定 C struct，不暴露 Rust 内部对象。
-- Embedded 默认走 `Core Lite`。
-- 默认没有 shell、本地 heavy tools、LanceDB、本地 embedding、plugin runtime。
-- 事件拉取可以用 poll，也可以后续增加 callback，但第一期建议先 poll，降低线程和生命周期复杂度。
-
 ### A2A Protocol Transport
 
 A2A 是外部 Agent 协议，不是 Alius 内部协议。协议层负责把 A2A envelope 映射为 Alius `CoreRequest / CoreCommand / CoreEvent`。
@@ -501,7 +484,7 @@ A2A 约束:
 
 ## 版本和能力协商
 
-协议层需要一开始就支持版本和能力协商，否则后续 Desktop、A2A、Embedded 很容易互相锁死。
+协议层需要一开始就支持版本和能力协商，否则后续 Desktop、IDE、A2A 很容易互相锁死。
 
 建议协议版本:
 
@@ -615,7 +598,6 @@ flowchart LR
 | `alius-core` | Core Public API、Session Manager、Agent Engine 入口 |
 | `alius-interface-local` | Local Rust transport，供 CLI / TUI 使用 |
 | `alius-interface-jsonrpc` | JSON-RPC server/client contract，供 Desktop / IDE 使用 |
-| `alius-interface-ffi` | C ABI FFI，供 Embedded SDK 使用 |
 | `alius-interface-a2a` | A2A protocol transport 和 Core event/task 映射 |
 
 如果第一期不想拆太多 crate，可以先放在:
@@ -682,7 +664,6 @@ Protocol Interface Layer
   Local Rust Interface
   JSON-RPC Interface
   IDE RPC / LSP-like Interface
-  C ABI FFI Interface
   A2A Protocol Interface
   Canonical Protocol Contract
 ```
@@ -694,7 +675,6 @@ Protocol Interface Layer
 | `Direct Rust API` | `Local Rust Interface` | 表达它仍属于协议层，不是直接访问 Core 内部 |
 | `Plugin RPC Adapter` | `IDE RPC / LSP-like Interface` | 避免和 WASM Plugin 混淆 |
 | `JSON-RPC Adapter` | `JSON-RPC Interface` | 强调稳定接口，不只是 adapter |
-| `C ABI FFI Adapter` | `C ABI FFI Interface` | 强调嵌入式唯一公开 ABI |
 | `A2A Protocol Adapter` | `A2A Protocol Interface` | 表示它是外部协议入口 |
 | `Interface -> Core Entry Bus` | `Canonical Protocol Contract / Core Gateway` | 更明确真实实现边界 |
 

@@ -310,6 +310,7 @@ async fn test_mcp_tool_executed_through_execute_tools() {
         std::path::Path::new("/tmp"),
         "test-session",
         protocol_interface::RuntimeMode::Chat,
+        protocol_interface::PermissionStrategy::AcceptEdits,
         Some(&session_manager),
         &mut |e| events.push(e),
         &run_ref,

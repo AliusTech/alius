@@ -61,7 +61,6 @@ Product Layer -> Protocol Interface Layer -> Core Runtime
         GLOSSARY.md
       products/
         cli.md
-        embedded_sdk.md
         desktop_planning.md
         ide_extension_planning.md
         third_party_agent_app.md
@@ -293,7 +292,7 @@ output_modes = ["text/plain", "application/json"]
 - plugin tool 暴露策略。
 - tool timeout。
 - tool confirmation 策略。
-- Shell 工具必须经 Shell Gate。
+- `AcceptEdits` 下 Shell 工具必须经 Shell Gate；`BypassPermissions` 是显式高风险例外。
 
 ### `permissions.toml`
 
@@ -342,7 +341,7 @@ alius/mcp.json
 - Local Rust Interface 是否启用。
 - JSON-RPC socket / stdio 配置。
 - A2A 是否启用。
-- FFI / Core Lite 能力开关。
+- 能力开关。
 - protocol version。
 - event stream buffer。
 - reconnect / resume 策略。
@@ -551,7 +550,6 @@ flowchart TB
     products/
       README.md
       cli.md
-      embedded_sdk.md
       desktop_planning.md
       ide_extension_planning.md
       third_party_agent_app.md
@@ -611,7 +609,7 @@ flowchart TB
 必须覆盖:
 
 - CLI 产品。
-- 嵌入式第三方 SDK 产品。
+- 第三方集成产品。
 - Desktop 规划产品。
 - IDE 插件规划产品。
 - 第三方 Agent 应用。
@@ -1025,7 +1023,6 @@ query
 .alius/workspace/HISTORY.md
 .alius/workspace/docs/terms/GLOSSARY.md
 .alius/workspace/docs/products/cli.md
-.alius/workspace/docs/products/embedded_sdk.md
 .alius/workspace/docs/technology/TECHNOLOGY_SELECTION.md
 .alius/workspace/docs/interfaces/product_interface_matrix.md
 .alius/workspace/docs/overview/ARCH.md

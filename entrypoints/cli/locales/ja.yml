@@ -318,6 +318,10 @@ workspace:
   mode:
     plan: "プランモード"
     bypass: "バイパスモード"
+    plan_bypass_permissions: "プランモード - Bypass Permissions"
+    plan_accept_edits: "プランモード - Accept Edits"
+  plan_permission:
+    switched: "プラン権限戦略を %{mode} に切り替えました。"
   placeholder:
     plan: "目標を入力してください。Alius は実行前に Plans を作成します。"
     bypass: "直接指示。Alius は Plans を作成せずに実行します。"
@@ -565,6 +569,11 @@ workspace:
     description: "Alius はまだ推論中です。この実行を中断するか選択してください。"
     confirm: "実行を中断"
     continue_waiting: "待機を続ける"
+  quit_confirm:
+    title: "Alius を終了しますか？"
+    description: "本当に終了しますか？"
+    confirm: "終了"
+    continue: "作業を続ける"
   tool_confirmation:
     title: "ツール確認が必要"
     description: "このツール操作を実行する前に承認が必要です"

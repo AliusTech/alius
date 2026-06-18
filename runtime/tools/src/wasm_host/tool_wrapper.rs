@@ -117,15 +117,12 @@ impl AliusTool for WasmPluginTool {
             self.plugin_id.clone(),
             ctx.workspace.clone(),
             ctx.session_id.clone(),
-        );
-
-        let result = call_plugin_tool_with_state(
-            &self.wasm_bytes,
-            &self.tool_def.name,
-            &args,
-            host_state,
         )
-        .map_err(|e| AliusError::Agent(e.to_string()))?;
+        .with_bypass_permissions(ctx.bypass_permissions());
+
+        let result =
+            call_plugin_tool_with_state(&self.wasm_bytes, &self.tool_def.name, &args, host_state)
+                .map_err(|e| AliusError::Agent(e.to_string()))?;
 
         let output = result
             .get("output")

@@ -86,6 +86,64 @@ fn mode_toggle_preserves_input_text() {
     assert_eq!(harness.mode(), InteractionMode::Bypass);
 }
 
+#[test]
+fn approved_plan_defaults_to_bypass_permissions() {
+    let mut harness = TuiTestHarness::new();
+
+    harness.activate_plan_execution();
+
+    assert_eq!(
+        harness.plan_permission_mode(),
+        PlanPermissionMode::BypassPermissions
+    );
+}
+
+#[test]
+fn shift_tab_during_plan_execution_toggles_to_accept_edits() {
+    rust_i18n::set_locale("en");
+    let mut harness = TuiTestHarness::new();
+    harness.activate_plan_execution();
+
+    let action = handle_execution_key(
+        harness.state_mut(),
+        crate::tui::testing::key_with(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+
+    assert!(matches!(action, ExecutionInputAction::None));
+    assert_eq!(harness.mode(), InteractionMode::Plan);
+    assert_eq!(harness.plan_permission_mode(), PlanPermissionMode::AcceptEdits);
+    assert!(
+        harness
+            .blocks()
+            .last()
+            .map(|block| block.content.contains("Accept Edits"))
+            .unwrap_or(false),
+        "switching plan permission mode should add a visible status block"
+    );
+}
+
+#[test]
+fn shift_tab_during_plan_execution_toggles_back_to_bypass_permissions() {
+    rust_i18n::set_locale("en");
+    let mut harness = TuiTestHarness::new();
+    harness.activate_plan_execution();
+
+    handle_execution_key(
+        harness.state_mut(),
+        crate::tui::testing::key_with(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    handle_execution_key(
+        harness.state_mut(),
+        crate::tui::testing::key_with(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+
+    assert_eq!(
+        harness.plan_permission_mode(),
+        PlanPermissionMode::BypassPermissions
+    );
+    assert_eq!(harness.mode(), InteractionMode::Plan);
+}
+
 // ── Config task: Shift+Tab guards mode ─────────────────────────────────
 
 #[test]
@@ -148,27 +206,51 @@ fn esc_on_empty_input_is_noop() {
     assert_eq!(harness.input_value(), "");
 }
 
-// ── Ctrl+C / Ctrl+D quit ───────────────────────────────────────────────
+// ── Ctrl+C / Ctrl+D quit confirmation ─────────────────────────────────
 
 #[test]
-fn ctrl_c_returns_quit_action() {
+fn ctrl_c_shows_quit_confirmation() {
     let mut harness = TuiTestHarness::new();
 
+    // Ctrl+C shows confirmation (returns None, not Quit)
     let action = harness.press_key_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert!(
-        matches!(action, WorkspaceAction::Quit),
-        "Ctrl+C should return Quit action, got {action:?}"
+        matches!(action, WorkspaceAction::None),
+        "Ctrl+C should return None (showing decision), got {action:?}"
+    );
+
+    // Default selection is "Continue working" → Enter cancels
+    let action = harness.press_key(KeyCode::Enter);
+    assert!(
+        matches!(action, WorkspaceAction::CancelDecision),
+        "Enter on quit confirmation should cancel, got {action:?}"
     );
 }
 
 #[test]
-fn ctrl_d_returns_quit_action() {
+fn ctrl_c_confirm_quit() {
+    let mut harness = TuiTestHarness::new();
+
+    // Ctrl+C shows confirmation
+    harness.press_key_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    // Select "Quit" (option 0)
+    harness.press_key(KeyCode::Up);
+    let action = harness.press_key(KeyCode::Enter);
+    assert!(
+        matches!(action, WorkspaceAction::Quit),
+        "Selecting Quit should return Quit action, got {action:?}"
+    );
+}
+
+#[test]
+fn ctrl_d_shows_quit_confirmation() {
     let mut harness = TuiTestHarness::new();
 
     let action = harness.press_key_with(KeyCode::Char('d'), KeyModifiers::CONTROL);
     assert!(
-        matches!(action, WorkspaceAction::Quit),
-        "Ctrl+D should return Quit action, got {action:?}"
+        matches!(action, WorkspaceAction::None),
+        "Ctrl+D should return None (showing decision), got {action:?}"
     );
 }
 

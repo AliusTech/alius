@@ -44,6 +44,15 @@ fn resolve_within_workspace(
     Ok(canon)
 }
 
+fn resolve_bypass_path(path: &str, ctx: &ToolContext) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        ctx.working_directory.join(p)
+    }
+}
+
 pub struct ReadFile;
 pub struct WriteFile;
 pub struct ListDir;
@@ -72,9 +81,13 @@ impl AliusTool for ReadFile {
             Some(p) => p,
             None => return Ok(ToolResult::error("path is required".into())),
         };
-        let resolved = match resolve_within_workspace(path, &ctx.workspace, true) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(e)),
+        let resolved = if ctx.bypass_permissions() {
+            resolve_bypass_path(path, &ctx)
+        } else {
+            match resolve_within_workspace(path, &ctx.workspace, true) {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolResult::error(e)),
+            }
         };
         match tokio::fs::read_to_string(&resolved).await {
             Ok(content) => Ok(ToolResult::success(content)),
@@ -89,14 +102,14 @@ impl AliusTool for WriteFile {
         "write_file"
     }
     fn description(&self) -> &'static str {
-        "Write text content to a workspace file (overwrites). Requires approval in Plan mode."
+        "Write text content to a file. AcceptEdits may require approval; BypassPermissions skips Alius path gates."
     }
     fn required_permission(&self) -> PermissionLevel {
         PermissionLevel::Write
     }
 
     fn preview_confirmation(&self, _args: &Value, mode: RuntimeMode) -> bool {
-        // File write/edit requires confirmation in Plan mode (Stage B pauses here).
+        // Callers only honor this preview when their permission strategy is AcceptEdits.
         mode == RuntimeMode::Plan
     }
     fn input_schema(&self) -> Value {
@@ -118,9 +131,13 @@ impl AliusTool for WriteFile {
             Some(c) => c,
             None => return Ok(ToolResult::error("content is required".into())),
         };
-        let resolved = match resolve_within_workspace(path, &ctx.workspace, false) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(e)),
+        let resolved = if ctx.bypass_permissions() {
+            resolve_bypass_path(path, &ctx)
+        } else {
+            match resolve_within_workspace(path, &ctx.workspace, false) {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolResult::error(e)),
+            }
         };
         match tokio::fs::write(&resolved, content).await {
             Ok(_) => Ok(ToolResult::success(format!("wrote {path}"))),
@@ -148,9 +165,13 @@ impl AliusTool for ListDir {
     }
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolResult, AliusError> {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let resolved = match resolve_within_workspace(path, &ctx.workspace, true) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(e)),
+        let resolved = if ctx.bypass_permissions() {
+            resolve_bypass_path(path, &ctx)
+        } else {
+            match resolve_within_workspace(path, &ctx.workspace, true) {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolResult::error(e)),
+            }
         };
         let mut entries = match tokio::fs::read_dir(&resolved).await {
             Ok(d) => d,
@@ -173,14 +194,14 @@ impl AliusTool for EditFile {
         "edit_file"
     }
     fn description(&self) -> &'static str {
-        "Replace all occurrences of `find` with `replace` in a workspace file. Requires approval in Plan mode."
+        "Replace all occurrences of `find` with `replace` in a file. AcceptEdits may require approval; BypassPermissions skips Alius path gates."
     }
     fn required_permission(&self) -> PermissionLevel {
         PermissionLevel::Write
     }
 
     fn preview_confirmation(&self, _args: &Value, mode: RuntimeMode) -> bool {
-        // File write/edit requires confirmation in Plan mode (Stage B pauses here).
+        // Callers only honor this preview when their permission strategy is AcceptEdits.
         mode == RuntimeMode::Plan
     }
     fn input_schema(&self) -> Value {
@@ -201,9 +222,13 @@ impl AliusTool for EditFile {
         };
         let find = args.get("find").and_then(|v| v.as_str()).unwrap_or("");
         let replace = args.get("replace").and_then(|v| v.as_str()).unwrap_or("");
-        let resolved = match resolve_within_workspace(path, &ctx.workspace, true) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(e)),
+        let resolved = if ctx.bypass_permissions() {
+            resolve_bypass_path(path, &ctx)
+        } else {
+            match resolve_within_workspace(path, &ctx.workspace, true) {
+                Ok(p) => p,
+                Err(e) => return Ok(ToolResult::error(e)),
+            }
         };
         let content = match tokio::fs::read_to_string(&resolved).await {
             Ok(c) => c,

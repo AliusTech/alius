@@ -28,7 +28,7 @@ impl AliusTool for Shell {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command (sh -c on Unix, cmd /C on Windows). Workspace-scoped; high-risk commands need approval in Plan mode."
+        "Run a shell command (sh -c on Unix, cmd /C on Windows). AcceptEdits is workspace-scoped; BypassPermissions skips Alius gates."
     }
 
     fn required_permission(&self) -> PermissionLevel {
@@ -36,8 +36,7 @@ impl AliusTool for Shell {
     }
 
     fn preview_confirmation(&self, args: &Value, _mode: RuntimeMode) -> bool {
-        // Both Chat and Plan modes: Shell Gate "ApprovalRequired" (High/Critical risk) → pause.
-        // This matches the policy matrix: Native Chat High = Confirm, Native Plan High = Confirm.
+        // Callers only honor this preview when their permission strategy is AcceptEdits.
         let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
         if command.is_empty() {
             return false;
@@ -80,21 +79,30 @@ impl AliusTool for Shell {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .max(1);
-        let cwd = match resolve_cwd(args.get("cwd").and_then(|v| v.as_str()), &ctx.workspace) {
-            Ok(path) => path,
-            Err(e) => return Ok(ToolResult::error(format!("invalid cwd: {e}"))),
+        let cwd = if ctx.bypass_permissions() {
+            match resolve_bypass_cwd(args.get("cwd").and_then(|v| v.as_str()), &ctx) {
+                Ok(path) => path,
+                Err(e) => return Ok(ToolResult::error(format!("invalid cwd: {e}"))),
+            }
+        } else {
+            match resolve_cwd(args.get("cwd").and_then(|v| v.as_str()), &ctx.workspace) {
+                Ok(path) => path,
+                Err(e) => return Ok(ToolResult::error(format!("invalid cwd: {e}"))),
+            }
         };
 
-        let req = ShellCommandRequest {
-            command: command.clone(),
-            args: command_args(&command),
-            cwd: cwd.clone(),
-            origin: ShellOrigin::LocalCli,
-            workspace_root: ctx.workspace.clone(),
-        };
-        let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
-        if let ShellGateDecision::Deny { reason } = decision {
-            return Ok(ToolResult::error(format!("denied by Shell Gate: {reason}")));
+        if !ctx.bypass_permissions() {
+            let req = ShellCommandRequest {
+                command: command.clone(),
+                args: command_args(&command),
+                cwd: cwd.clone(),
+                origin: ShellOrigin::LocalCli,
+                workspace_root: ctx.workspace.clone(),
+            };
+            let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
+            if let ShellGateDecision::Deny { reason } = decision {
+                return Ok(ToolResult::error(format!("denied by Shell Gate: {reason}")));
+            }
         }
         // Allow + ApprovalRequired both proceed. Plan-mode confirmation is
         // gated by preview_confirmation() at the tool_step level (Stage B).
@@ -138,6 +146,24 @@ impl AliusTool for Shell {
             metadata: Some(json!({ "exit_code": exit })),
         })
     }
+}
+
+fn resolve_bypass_cwd(cwd: Option<&str>, ctx: &ToolContext) -> Result<PathBuf, AliusError> {
+    let candidate = match cwd {
+        Some(c) if !c.is_empty() => {
+            let path = Path::new(c);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                ctx.working_directory.join(path)
+            }
+        }
+        _ => ctx.working_directory.clone(),
+    };
+
+    candidate
+        .canonicalize()
+        .map_err(|e| AliusError::Agent(format!("invalid cwd: {e}")))
 }
 
 fn resolve_cwd(cwd: Option<&str>, workspace: &Path) -> Result<PathBuf, AliusError> {
