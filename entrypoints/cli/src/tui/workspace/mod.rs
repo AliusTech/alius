@@ -10,7 +10,7 @@ mod status_bar;
 mod top_bar;
 
 // Re-export for testing module access
-pub(crate) use events::WorkspaceAction;
+pub(crate) use events::{ExecutionMode, WorkspaceAction};
 
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,7 @@ use crate::tui::TuiApp;
 use config_task::{
     ConfigPrompt, ConfigSaveTarget, ConfigSidePanel, ConfigTask, ConfigTaskKind, ConfigTaskOutcome,
 };
-use events::{CommandOutcome, DecisionKind, ExecutionMode};
+use events::{CommandOutcome, DecisionKind};
 use helpers::{sanitize_for_tui, truncate_chars};
 use interaction::{
     DecisionState, InputBuffer, InteractionState, InteractionUi, PromptChoice, PromptInputAction,
@@ -2235,7 +2235,7 @@ fn render_config_side_panel(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusZone {
+pub(crate) enum FocusZone {
     Input,
     Conversation,
     Plans,
@@ -2488,8 +2488,8 @@ pub(crate) struct WorkspaceState {
 }
 
 impl WorkspaceState {
-    #[cfg(test)]
-    fn new(initial_missing: Vec<String>) -> Self {
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn new(initial_missing: Vec<String>) -> Self {
         Self::new_with_welcome(initial_missing, None)
     }
 
@@ -2542,6 +2542,131 @@ impl WorkspaceState {
             block_row_map: std::collections::HashMap::new(),
             current_run_ref: None,
         }
+    }
+
+    /// Get a reference to the conversation blocks.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn blocks(&self) -> &[ConversationBlock] {
+        &self.blocks
+    }
+
+    /// Get the current interaction mode.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn mode(&self) -> InteractionMode {
+        self.mode
+    }
+
+    /// Get the current focus zone.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn focus_zone(&self) -> FocusZone {
+        self.focus_zone
+    }
+
+    /// Check if quit was requested.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn quit_requested(&self) -> bool {
+        self.quit_requested
+    }
+
+    /// Get the current input buffer value.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn input_value(&self) -> &str {
+        self.input.value()
+    }
+
+    /// Inject a mouse event for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        self.handle_mouse(mouse);
+    }
+
+    /// Set terminal dimensions for layout testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn set_terminal_size(&mut self, width: u16, height: u16) {
+        use ratatui::layout::Rect;
+        self.layout_rects = LayoutRects {
+            conversation: Rect::new(1, 1, width.saturating_sub(2), height.saturating_sub(4)),
+            agent_team: Rect::new(0, 0, 0, 0),
+            plans: Rect::new(0, 0, 0, 0),
+            interaction: Rect::new(1, height.saturating_sub(3), width.saturating_sub(2), 2),
+        };
+    }
+
+    /// Inject a pending tool confirmation state.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn inject_tool_confirmation(
+        &mut self,
+        tool_call_id: String,
+        tool_name: String,
+        details: String,
+        run_ref: protocol_interface::core::RunRef,
+    ) {
+        self.pending_tool_confirmation = Some(ToolConfirmationState {
+            tool_call_id,
+            tool_name,
+            details,
+            run_ref,
+        });
+    }
+
+    /// Clear any pending tool confirmation.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn clear_tool_confirmation(&mut self) {
+        self.pending_tool_confirmation = None;
+    }
+
+    /// Check if a tool confirmation is pending.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn has_pending_tool_confirmation(&self) -> bool {
+        self.pending_tool_confirmation.is_some()
+    }
+
+    /// Start a config task for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn start_config_task_for_test(&mut self) {
+        self.start_config_task(runtime_config::Settings::default());
+    }
+
+    /// Check if a config task is active.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn has_config_task(&self) -> bool {
+        self.config_task.is_some()
+    }
+
+    /// Push a conversation block for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn push_block_for_test(&mut self, block: ConversationBlock) {
+        self.push_block(block);
+    }
+
+    /// Update streaming text for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn update_streaming_text_for_test(&mut self, delta: &str) {
+        self.update_streaming_text(delta);
+    }
+
+    /// Start execution mode for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn start_execution_for_test(&mut self, mode: ExecutionMode) {
+        self.start_execution(mode);
+    }
+
+    /// Toggle global expand/collapse for testing.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn toggle_global_expand_for_test(&mut self) {
+        self.toggle_global_expand();
+    }
+
+    /// Check if globally expanded.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn is_globally_expanded(&self) -> bool {
+        self.global_expanded
+    }
+
+    /// Get the number of expanded blocks.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn expanded_block_count(&self) -> usize {
+        self.expanded_blocks.len()
     }
 
     fn render(&mut self, frame: &mut Frame, header: &AgentHeader, model: &str, models: &[String]) {
@@ -4296,4 +4421,13 @@ mod tool_confirmation_tests {
         assert!(result.ends_with("..."));
         assert!(result.chars().count() <= 13); // 10 chars + "..."
     }
+}
+
+/// TUI state-machine tests using `TuiTestHarness` and `VecEventSource`.
+///
+/// Included from a separate file so coverage tools can exclude it from
+/// production line coverage via --ignore-filename-regex.
+#[cfg(test)]
+mod tui_state_machine_tests {
+    include!("state_machine_tests.rs");
 }
