@@ -1399,27 +1399,31 @@ mod tests {
         );
 
         // Wait for status propagation — the cancel command may take time to
-        // be processed and update the run status.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // be processed and update the run status. Retry with backoff to
+        // handle race conditions in serial test execution.
+        let mut status = None;
+        for attempt in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
 
-        // Verify status is Cancelled — use expect() to fail loudly if missing
-        let sessions = rt
-            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
-            .unwrap();
-        let session = sessions
-            .first()
-            .expect("session must exist after streaming run");
-        let snapshot = rt.inspect(&session.session_ref).unwrap();
-        let run = snapshot
-            .runs
-            .iter()
-            .find(|r| r.run_ref == run_ref)
-            .expect("run must exist in session snapshot");
+            let sessions = rt
+                .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
+                .unwrap();
+            if let Some(session) = sessions.first() {
+                if let Ok(snapshot) = rt.inspect(&session.session_ref) {
+                    if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
+                        status = Some(run.status.clone());
+                        if matches!(status, Some(RunStatus::Cancelled)) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         assert_eq!(
-            run.status,
-            RunStatus::Cancelled,
-            "Expected Cancelled, got {:?}",
-            run.status
+            status,
+            Some(RunStatus::Cancelled),
+            "Expected Cancelled after cancel command"
         );
     }
 
