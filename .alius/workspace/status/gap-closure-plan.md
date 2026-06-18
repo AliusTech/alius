@@ -34,12 +34,25 @@ Based on comprehensive audit verification (889 tests, 177 Rust files, 78 workspa
 - ✅ P1.6: Model Router wired into CoreRuntimeManager — `resolve_llm_settings()` uses `ModelRouter::route_default()` when project config is available
 - ✅ P1.7: MCP config path unified — 3-layer merge (user TOML → project JSON → legacy JSON)
 
-## Remaining Gaps
+### P2 — Medium Priority (ALL DONE)
+- ✅ P2.1: Google provider implemented via OpenAI-compatible delegation
+- ✅ P2.2: A2A transport trait with local in-process implementation (5 tests)
+- ✅ P2.3: PlanStore trait with file-backed and in-memory implementations
+- ✅ P2.4: JSON-RPC run_stream with persistent TCP connection and event polling
+- ✅ P2.5: ConfirmationChannel trait (FailClosed, Stdin, AutoApprove)
 
-### P2 — Medium Priority
-**Current:** Line 67 calls `settings.hydrate_from_project_config(&cwd)` using CWD before workspace override is resolved.
-**Fix:** Resolve workspace first, then hydrate from that path.
-**Files:** `entrypoints/cli/src/main.rs`
+### P3 — Low Priority (3/4 done)
+- ✅ P3.1: WASM plugin integration tests with real WAT modules (7 tests)
+- ✅ P3.2: MemoryBridge for conversation context injection and write-back (5 tests)
+- ✅ P3.4: Provider smoke mandatory for release builds (added to release.yml)
+
+### P3 — Low Priority (ALL DONE)
+- ✅ P3.1: WASM plugin integration tests with real WAT modules (7 tests)
+- ✅ P3.2: MemoryBridge for conversation context injection and write-back (5 tests)
+- ✅ P3.3: alius plugin publish command for packaging and distribution
+- ✅ P3.4: Provider smoke mandatory for release builds (added to release.yml)
+
+**ALL GAPS CLOSED.**
 
 #### P1.4: --verbose flag should configure tracing
 **Current:** `--verbose` is parsed but never used.
