@@ -9,6 +9,7 @@ pub mod logging;
 pub mod loop_engine;
 pub mod manager;
 pub mod patch;
+pub mod plan_store;
 pub mod runtime;
 pub mod session;
 
@@ -18,6 +19,7 @@ pub mod mcp_manager;
 pub use event_adapter::EventAdapter;
 pub use loop_engine::{LoopContext, LoopEngine};
 pub use manager::{CoreRuntimeManager, RuntimeManagerContext};
+pub use plan_store::{FilePlanStore, InMemoryPlanStore, PlanNode, PlanNodeStatus, PlanStore};
 pub use runtime::{CoreRuntime, CoreRuntimeBuilder};
 pub use runtime_model::LlmClient;
 pub use session::SessionManager;
