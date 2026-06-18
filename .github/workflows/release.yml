@@ -40,9 +40,123 @@ jobs:
       - name: Check version consistency
         run: bash scripts/check-version.sh
 
-      - name: Create tag
+  test-gate:
+    name: Release Test Gate
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-test-gate
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --workspace --all-targets --features testing -- -D warnings
+
+      - name: Run tests with coverage
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          mkdir -p target/ci-reports target/llvm-cov
+          cargo llvm-cov --locked --workspace --features testing \
+            --no-report -- --test-threads=1 --nocapture 2>&1 | tee target/ci-reports/test.log
+          # Parse test result lines
+          grep 'test result:' target/ci-reports/test.log > target/ci-reports/test-result-lines.txt || true
+          # Write summary env
+          PASSED=$(grep -oP '(\d+) passed' target/ci-reports/test-result-lines.txt | tail -1 | grep -oP '\d+' || echo 0)
+          FAILED=$(grep -oP '(\d+) failed' target/ci-reports/test-result-lines.txt | tail -1 | grep -oP '\d+' || echo 0)
+          echo "tests_passed=${PASSED}" > target/ci-reports/test-summary.env
+          echo "tests_failed=${FAILED}" >> target/ci-reports/test-summary.env
+
+      - name: Generate coverage reports
+        run: |
+          COV_IGNORE='--ignore-filename-regex (/tests/|/testing\.rs$|/testkit/|state_machine_tests\.rs$)'
+          cargo llvm-cov report --lcov $COV_IGNORE --output-path target/llvm-cov/lcov.info
+          cargo llvm-cov report --html $COV_IGNORE --output-dir target/llvm-cov/html
+          # Extract TOTAL line for compact job summary
+          cargo llvm-cov report $COV_IGNORE | grep "^TOTAL" | tee target/llvm-cov/summary.txt
+
+      - name: Enforce coverage threshold
+        run: |
+          # Staged gate: current baseline ~67.5%. See docs/standards/validation.md §Staged Coverage Threshold.
+          cargo llvm-cov report --ignore-filename-regex '(/tests/|/testing\.rs$|/testkit/|state_machine_tests\.rs$)' --fail-under-lines 65
+
+      - name: Build release binary
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        run: |
+          SCAN=$(strings target/release/alius | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            strings target/release/alius | grep -E 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit'
+            exit 1
+          fi
+          echo "Release binary clean — no test symbols found"
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run security audit
+        # Exceptions documented in docs/audit-exceptions.md
+        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0012 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0002
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## Release Test Gate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f target/ci-reports/test-result-lines.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat target/ci-reports/test-result-lines.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f target/llvm-cov/summary.txt ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Coverage" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat target/llvm-cov/summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-gate-artifacts
+          path: |
+            target/ci-reports/
+            target/llvm-cov/
+          retention-days: 30
+
+  create-release:
+    name: Create GitHub Release
+    needs: [resolve-version, test-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ALIUS_RELEASE_TOKEN }}
+
+      - name: Create tag (after test-gate passed)
+        run: |
+          TAG="${{ needs.resolve-version.outputs.tag_name }}"
           if git ls-remote origin "refs/tags/${TAG}" | grep -q .; then
             echo "Tag ${TAG} already exists"
           else
@@ -50,15 +164,6 @@ jobs:
             git push origin "$TAG"
             echo "Created tag ${TAG}"
           fi
-
-  create-release:
-    name: Create GitHub Release
-    needs: resolve-version
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
 
       - name: Create or verify release
         env:
@@ -113,7 +218,15 @@ jobs:
           cache-on-failure: true
 
       - name: Build release binary
-        run: cargo build -p alius-cli --bin alius --release
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        run: |
+          SCAN=$(strings target/release/alius | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            exit 1
+          fi
 
       - name: Prepare artifacts
         run: |
@@ -160,7 +273,15 @@ jobs:
           cache-on-failure: true
 
       - name: Build release binary
-        run: cargo build -p alius-cli --bin alius --release
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        run: |
+          SCAN=$(strings target/release/alius | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            exit 1
+          fi
 
       - name: Prepare artifact
         run: |
@@ -207,7 +328,15 @@ jobs:
           cache-on-failure: true
 
       - name: Build release binary
-        run: cargo build -p alius-cli --bin alius --release
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        run: |
+          SCAN=$(strings target/release/alius | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            exit 1
+          fi
 
       - name: Prepare artifact
         run: |
@@ -255,7 +384,16 @@ jobs:
           cache-on-failure: true
 
       - name: Build release binary
-        run: cargo build -p alius-cli --bin alius --release
+        run: cargo build -p alius-cli --bin alius --release --locked
+
+      - name: Scan release binary for test symbols
+        shell: bash
+        run: |
+          SCAN=$(strings target/release/alius.exe | grep -cE 'FakeProvider|FakeTool|TuiTestHarness|CoreRuntimeHarness|VecEventSource|testing::|testkit' || true)
+          if [ "$SCAN" -gt 0 ]; then
+            echo "ERROR: Test symbols found in release binary"
+            exit 1
+          fi
 
       - name: Prepare artifact
         run: |

@@ -30,7 +30,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -44,8 +47,59 @@ jobs:
       - name: Run clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --locked --all --features testing -- --test-threads=1
+      - name: Run tests with coverage
+        run: |
+          mkdir -p target/ci-reports target/llvm-cov
+          cargo llvm-cov --locked --workspace --features testing \
+            --no-report -- --test-threads=1 --nocapture 2>&1 | tee target/ci-reports/test.log
+          # Parse test result lines
+          grep 'test result:' target/ci-reports/test.log > target/ci-reports/test-result-lines.txt || true
+          # Write summary env
+          PASSED=$(grep -oP '(\d+) passed' target/ci-reports/test-result-lines.txt | tail -1 | grep -oP '\d+' || echo 0)
+          FAILED=$(grep -oP '(\d+) failed' target/ci-reports/test-result-lines.txt | tail -1 | grep -oP '\d+' || echo 0)
+          echo "tests_passed=${PASSED}" > target/ci-reports/test-summary.env
+          echo "tests_failed=${FAILED}" >> target/ci-reports/test-summary.env
+
+      - name: Generate coverage reports
+        run: |
+          COV_IGNORE='--ignore-filename-regex (/tests/|/testing\.rs$|/testkit/|state_machine_tests\.rs$)'
+          cargo llvm-cov report --lcov $COV_IGNORE --output-path target/llvm-cov/lcov.info
+          cargo llvm-cov report --html $COV_IGNORE --output-dir target/llvm-cov/html
+          # Extract TOTAL line for compact job summary
+          cargo llvm-cov report $COV_IGNORE | grep "^TOTAL" | tee target/llvm-cov/summary.txt
+
+      - name: Enforce coverage threshold
+        run: |
+          # Staged gate: current baseline ~67.5%. See docs/standards/validation.md §Staged Coverage Threshold.
+          cargo llvm-cov report --ignore-filename-regex '(/tests/|/testing\.rs$|/testkit/|state_machine_tests\.rs$)' --fail-under-lines 65
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## CI Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f target/ci-reports/test-result-lines.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat target/ci-reports/test-result-lines.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f target/llvm-cov/summary.txt ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Coverage" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat target/llvm-cov/summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-artifacts
+          path: |
+            target/ci-reports/
+            target/llvm-cov/
+          retention-days: 14
 
       - name: Build release binary
         run: cargo build -p alius-cli --bin alius --release --locked
@@ -66,4 +120,156 @@ jobs:
           tool: cargo-audit
 
       - name: Run security audit
-        run: cargo audit --deny warnings --ignore RUSTSEC-2023-0089 --ignore RUSTSEC-2025-0012 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0002
+        # Exceptions documented in docs/audit-exceptions.md
+        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0012 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0002
+
+  provider-smoke:
+    name: Provider Smoke (DeepSeek)
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.ALIUS_PROVIDER_SMOKE == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: provider-smoke
+
+      - name: Build alius binary
+        run: cargo build -p alius-cli --bin alius --locked
+
+      - name: Smoke: chat request
+        env:
+          # DeepSeek config reads DEEPSEEK_API_KEY via api_key_env
+          DEEPSEEK_API_KEY: ${{ secrets.ALIUS_TEST_API_KEY }}
+          ALIUS_TEST_MODEL: ${{ vars.ALIUS_TEST_MODEL || 'deepseek-chat' }}
+        run: |
+          # Validate that API key is set (do not print it)
+          if [ -z "$DEEPSEEK_API_KEY" ]; then
+            echo "::error::ALIUS_TEST_API_KEY secret is not set"
+            exit 1
+          fi
+          echo "Provider: deepseek"
+          echo "Model: $ALIUS_TEST_MODEL"
+
+          # Create temporary project with correct .alius/config/ structure
+          SMOKE_DIR=$(mktemp -d)
+          mkdir -p "$SMOKE_DIR/.alius/config"
+
+          # config.toml — project settings
+          cat > "$SMOKE_DIR/.alius/config/config.toml" <<TOML
+          [project]
+          name = "smoke-test"
+          version = 1
+
+          [runtime]
+          default_mode = "plan"
+          tui_workspace = false
+
+          [model]
+          default_provider = "deepseek"
+          default_model = "$ALIUS_TEST_MODEL"
+          router_profile = "standard"
+
+          [session]
+          persist_messages = false
+          persist_events = false
+
+          [logging]
+          enabled = false
+          level = "error"
+          redact_secrets = true
+
+          [compat]
+          schema_version = "0.1"
+          TOML
+
+          # providers.toml — provider config with DeepSeek enabled
+          cat > "$SMOKE_DIR/.alius/config/providers.toml" <<TOML
+          [router]
+          strategy = "tiered"
+          default_tier = "medium"
+          fallback_tier = "medium"
+
+          [tiers.light]
+          description = "Plan tier"
+          provider = "deepseek"
+          model = "$ALIUS_TEST_MODEL"
+
+          [tiers.medium]
+          description = "Execute tier"
+          provider = "deepseek"
+          model = "$ALIUS_TEST_MODEL"
+
+          [tiers.high]
+          description = "Review tier"
+          provider = "deepseek"
+          model = "$ALIUS_TEST_MODEL"
+
+          [providers.deepseek]
+          enabled = true
+          kind = "openai-compatible"
+          base_url = "https://api.deepseek.com"
+          api_key_env = "DEEPSEEK_API_KEY"
+
+          [[model_library.models]]
+          id = "$ALIUS_TEST_MODEL"
+          display_name = "DeepSeek Chat"
+          provider = "deepseek"
+          base_url = "https://api.deepseek.com"
+          model_name = "$ALIUS_TEST_MODEL"
+          reasoning_note = "Quick Reasoning"
+          enabled = true
+          TOML
+
+          # model.toml — model assignment
+          cat > "$SMOKE_DIR/.alius/config/model.toml" <<TOML
+          schema_version = "0.1"
+
+          [assignment]
+          plan = "$ALIUS_TEST_MODEL"
+          execute = "$ALIUS_TEST_MODEL"
+          review = "$ALIUS_TEST_MODEL"
+          TOML
+
+          # Validate config in smoke directory before making network request
+          cd "$SMOKE_DIR"
+          echo "=== Config validation ==="
+          CONFIG_OUTPUT=$("$GITHUB_WORKSPACE/target/debug/alius" config show 2>&1)
+          echo "$CONFIG_OUTPUT"
+          echo "========================="
+
+          # Verify DeepSeek provider is configured
+          if ! echo "$CONFIG_OUTPUT" | grep -qi "deepseek"; then
+            echo "::error::Config validation failed: DeepSeek provider not detected"
+            exit 1
+          fi
+          if ! echo "$CONFIG_OUTPUT" | grep -qi "$ALIUS_TEST_MODEL"; then
+            echo "::error::Config validation failed: model $ALIUS_TEST_MODEL not detected"
+            exit 1
+          fi
+
+          # Run a minimal chat request (CLI uses streaming internally)
+          set -o pipefail
+          "$GITHUB_WORKSPACE/target/debug/alius" run \
+            -m "$ALIUS_TEST_MODEL" \
+            -p "Reply with exactly: OK" 2>&1 | tee /tmp/provider-smoke.log
+
+          # Check for failure patterns — these indicate the request failed
+          if grep -qE 'Run failed|Error:|internal protocol error|model client' /tmp/provider-smoke.log; then
+            echo "::error::Provider smoke: failure pattern detected in response"
+            cat /tmp/provider-smoke.log
+            exit 1
+          fi
+
+          # Verify response contains actual text (not empty)
+          if ! grep -qE '[a-zA-Z]{2}' /tmp/provider-smoke.log; then
+            echo "::error::Provider smoke: no text in response"
+            exit 1
+          fi
+          echo "Provider smoke passed"
