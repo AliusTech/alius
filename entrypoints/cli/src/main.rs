@@ -620,7 +620,92 @@ fn handle_plugin(cmd: PluginCommand) -> Result<()> {
             crate::plugin::remove_plugin(&id)?;
             println!("Removed plugin '{}'", id);
         }
+        PluginCommand::Publish { path, output } => {
+            handle_plugin_publish(&path, output.as_deref())?;
+        }
     }
+    Ok(())
+}
+
+/// Handle plugin publish: validate and package for distribution.
+fn handle_plugin_publish(path: &str, output: Option<&str>) -> Result<()> {
+    use std::path::PathBuf;
+
+    let source = PathBuf::from(path);
+
+    // Phase 1: Validate manifest and WASM module
+    println!("Validating plugin at {}...", source.display());
+
+    let plan = crate::plugin::plan_plugin_install(&source)?;
+    let manifest = &plan.manifest;
+
+    // Validate WASM module
+    let wasm_path = source.join("plugin.wasm");
+    if !wasm_path.exists() {
+        anyhow::bail!("plugin.wasm not found at {}", wasm_path.display());
+    }
+    let wasm_bytes = std::fs::read(&wasm_path)?;
+    runtime_tools::wasm_host::validate_wasm_module(&wasm_bytes)?;
+
+    // Discover tools in the WASM module
+    let tools = runtime_tools::wasm_host::list_plugin_tools(&wasm_bytes)?;
+
+    println!("Validation passed:");
+    println!("  ID:          {}", manifest.id);
+    println!("  Name:        {}", manifest.name);
+    println!("  Version:     {}", manifest.version);
+    println!("  Description: {}", manifest.description);
+    if let Some(author) = &manifest.author {
+        println!("  Author:      {}", author);
+    }
+    println!("  Tools:       {}", tools.len());
+    for t in &tools {
+        println!("    - {}: {}", t.name, t.description);
+    }
+    if !plan.summary.is_empty() {
+        println!("  Permissions:");
+        for line in &plan.summary {
+            println!("    {}", line);
+        }
+    }
+
+    // Phase 2: Package
+    let output_dir = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let package_name = format!("{}-{}.tar.gz", manifest.id, manifest.version);
+    let package_path = output_dir.join(&package_name);
+
+    // Create tar.gz archive
+    let tar_gz = std::fs::File::create(&package_path)?;
+    let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+    let mut tar = tar::Builder::new(enc);
+
+    // Add plugin.toml
+    let toml_path = source.join("plugin.toml");
+    if toml_path.exists() {
+        tar.append_path_with_name(&toml_path, "plugin.toml")?;
+    }
+
+    // Add plugin.wasm
+    tar.append_path_with_name(&wasm_path, "plugin.wasm")?;
+
+    // Add README if present
+    let readme_path = source.join("README.md");
+    if readme_path.exists() {
+        tar.append_path_with_name(&readme_path, "README.md")?;
+    }
+
+    tar.finish()?;
+
+    let size = std::fs::metadata(&package_path)?.len();
+    println!();
+    println!("Package created: {}", package_path.display());
+    println!("  Size: {} bytes", size);
+    println!();
+    println!("To install: alius plugin install {}", package_path.display());
+
     Ok(())
 }
 

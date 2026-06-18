@@ -194,6 +194,16 @@ pub enum PluginCommand {
         /// Plugin ID to remove.
         id: String,
     },
+
+    /// Validate and package a plugin for distribution.
+    #[command(about = "Validate and package a plugin for distribution")]
+    Publish {
+        /// Path to directory containing plugin.toml + plugin.wasm.
+        path: String,
+        /// Output directory for the packaged plugin (default: current directory).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 /// Subcommands for Soul management.
