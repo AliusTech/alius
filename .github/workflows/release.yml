@@ -142,9 +142,108 @@ jobs:
             target/llvm-cov/
           retention-days: 30
 
+  provider-smoke-gate:
+    name: Provider Smoke Gate
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-provider-smoke
+
+      - name: Build alius binary
+        run: cargo build -p alius-cli --bin alius --locked
+
+      - name: Smoke: chat request
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.ALIUS_TEST_API_KEY }}
+          ALIUS_TEST_MODEL: ${{ vars.ALIUS_TEST_MODEL || 'deepseek-chat' }}
+        run: |
+          if [ -z "$DEEPSEEK_API_KEY" ]; then
+            echo "::error::ALIUS_TEST_API_KEY secret is not set"
+            exit 1
+          fi
+          echo "Provider: deepseek"
+          echo "Model: $ALIUS_TEST_MODEL"
+
+          SMOKE_DIR=$(mktemp -d)
+          mkdir -p "$SMOKE_DIR/.alius/config"
+
+          cat > "$SMOKE_DIR/.alius/config/config.toml" <<TOML
+          [project]
+          name = "smoke-test"
+          version = 1
+
+          [runtime]
+          default_mode = "plan"
+          tui_workspace = false
+
+          [model]
+          default_provider = "deepseek"
+          default_model = "${ALIUS_TEST_MODEL}"
+          TOML
+
+          cat > "$SMOKE_DIR/.alius/config/providers.toml" <<TOML
+          [router]
+          strategy = "tier"
+          default_tier = "medium"
+          fallback_tier = "light"
+
+          [tiers.medium]
+          provider = "deepseek"
+          model = "${ALIUS_TEST_MODEL}"
+
+          [tiers.light]
+          provider = "deepseek"
+          model = "${ALIUS_TEST_MODEL}"
+
+          [providers.deepseek]
+          enabled = true
+          kind = "deepseek"
+          base_url = "https://api.deepseek.com"
+          api_key_env = "DEEPSEEK_API_KEY"
+          TOML
+
+          cd "$SMOKE_DIR"
+          timeout 60 ../target/release/alius run \
+            --provider deepseek \
+            --model "$ALIUS_TEST_MODEL" \
+            -p "Reply with exactly: OK" 2>&1 | tee /tmp/provider-smoke.log
+
+          if grep -qE 'Run failed|Error:|internal protocol error|model client' /tmp/provider-smoke.log; then
+            echo "::error::Provider smoke test failed"
+            cat /tmp/provider-smoke.log
+            exit 1
+          fi
+
+          if ! grep -qE '[a-zA-Z]{2}' /tmp/provider-smoke.log; then
+            echo "::error::Provider smoke test produced no output"
+            cat /tmp/provider-smoke.log
+            exit 1
+          fi
+
+          echo "Provider smoke test passed"
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## Provider Smoke Gate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/provider-smoke.log ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -20 /tmp/provider-smoke.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
   create-release:
     name: Create GitHub Release
-    needs: [resolve-version, test-gate]
+    needs: [resolve-version, test-gate, provider-smoke-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: write
