@@ -117,6 +117,7 @@ pub async fn run() -> Result<()> {
                 if !message.is_empty() {
                     eprintln!("{}", message);
                 }
+                std::process::exit(1);
             }
 
             println!();
