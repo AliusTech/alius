@@ -46,6 +46,11 @@ impl TuiApp {
     pub fn draw(&mut self, f: impl FnOnce(&mut ratatui::Frame)) -> Result<()> {
         self.terminal.draw(|frame| {
             let area = frame.area();
+            // Clear the whole screen each frame: ratatui's set_style only sets
+            // colors, it does NOT erase stale glyphs. Without this, any gap
+            // between panels (margins, borders, unfilled rows) retains the
+            // previous frame's characters — visible as "ghosting" after scroll.
+            frame.render_widget(ratatui::widgets::Clear, area);
             frame.render_widget(Block::default().style(theme::base()), area);
             f(frame);
         })?;

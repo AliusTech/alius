@@ -18,17 +18,51 @@ use crate::{ChatEvent, Conversation, ToolCall};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Anthropic builtin model list (fallback when /v1/models fails or is unsupported).
+pub const ANTHROPIC_DEFAULT_MODELS: &[&str] = &[
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+    "claude-haiku-4-5-20251001",
+];
+
+/// Token Plan builtin model list.
+pub const TOKEN_PLAN_DEFAULT_MODELS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-omni"];
+
+/// Authentication style for Anthropic-compatible APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStyle {
+    /// Standard Anthropic: `x-api-key` header.
+    ApiKey,
+    /// OpenAI-style Anthropic proxy: `Authorization: Bearer`.
+    Bearer,
+}
+
 /// Anthropic native LLM provider.
+///
+/// Serves as the base for all Anthropic-protocol providers. Vendor-specific
+/// behavior (auth style, default models) is configured via constructor variants.
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     base_url: String,
     model: String,
+    auth_style: AuthStyle,
+    default_models: Vec<String>,
 }
 
 impl AnthropicProvider {
-    /// Create a new Anthropic provider from LLM settings.
+    /// Create a standard Anthropic provider.
     pub fn new(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, AuthStyle::ApiKey, ANTHROPIC_DEFAULT_MODELS)
+    }
+
+    /// Create a Token Plan proxy provider (Anthropic headers, Xiaomi models).
+    pub fn new_token_plan(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, AuthStyle::ApiKey, TOKEN_PLAN_DEFAULT_MODELS)
+    }
+
+    /// Internal constructor shared by all variants.
+    fn build(config: &LlmSettings, auth_style: AuthStyle, default_models: &[&str]) -> Result<Self> {
         let api_key = config.get_api_key().ok_or_else(|| {
             anyhow::anyhow!("API key not found. Set it in config or environment variable.")
         })?;
@@ -41,7 +75,17 @@ impl AnthropicProvider {
             api_key,
             base_url: normalize_anthropic_api_base(&config.get_base_url()),
             model: config.model.clone(),
+            auth_style,
+            default_models: default_models.iter().map(|s| s.to_string()).collect(),
         })
+    }
+
+    /// Apply authentication header to a request builder.
+    fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.auth_style {
+            AuthStyle::Bearer => builder.bearer_auth(&self.api_key),
+            AuthStyle::ApiKey => builder.header("x-api-key", &self.api_key),
+        }
     }
 
     /// Build Anthropic messages array from conversation.
@@ -168,12 +212,13 @@ impl AnthropicProvider {
         loop {
             let url = format!("{}/v1/messages", self.base_url);
             let resp = self
-                .client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("content-type", "application/json")
-                .json(&body)
+                .apply_auth(
+                    self.client
+                        .post(&url)
+                        .header("anthropic-version", ANTHROPIC_VERSION)
+                        .header("content-type", "application/json")
+                        .json(&body),
+                )
                 .send()
                 .await;
 
@@ -317,12 +362,13 @@ impl AnthropicProvider {
         loop {
             let url = format!("{}/v1/messages", self.base_url);
             let resp = self
-                .client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("content-type", "application/json")
-                .json(&body)
+                .apply_auth(
+                    self.client
+                        .post(&url)
+                        .header("anthropic-version", ANTHROPIC_VERSION)
+                        .header("content-type", "application/json")
+                        .json(&body),
+                )
                 .send()
                 .await;
 
@@ -570,18 +616,19 @@ impl LlmProvider for AnthropicProvider {
             loop {
                 let url = format!("{}/v1/models", self.base_url);
                 let resp = self
-                    .client
-                    .get(&url)
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .header("content-type", "application/json")
+                    .apply_auth(
+                        self.client
+                            .get(&url)
+                            .header("anthropic-version", ANTHROPIC_VERSION)
+                            .header("content-type", "application/json"),
+                    )
                     .send()
                     .await;
 
                 match resp {
                     Ok(resp) if resp.status().is_success() => {
                         let body: JsonValue = resp.json().await?;
-                        let models = body
+                        let models: Vec<String> = body
                             .get("data")
                             .and_then(|d| d.as_array())
                             .map(|arr| {
@@ -592,15 +639,17 @@ impl LlmProvider for AnthropicProvider {
                                     .collect()
                             })
                             .unwrap_or_default();
+                        if models.is_empty() {
+                            tracing::info!("No models returned, using default model list");
+                            return Ok(self.default_models.clone());
+                        }
                         return Ok(models);
                     }
                     Ok(resp) if resp.status().as_u16() == 429 => {
                         attempts += 1;
                         if attempts >= max_retries {
-                            return Err(anyhow::anyhow!(
-                                "Rate limited (429) after {} retries. Please wait before trying again.",
-                                max_retries
-                            ));
+                            tracing::warn!("Rate limited, using default model list");
+                            return Ok(self.default_models.clone());
                         }
                         tracing::warn!(
                             "Rate limited (429), retrying after {} seconds (attempt {}/{})",
@@ -614,18 +663,17 @@ impl LlmProvider for AnthropicProvider {
                         continue;
                     }
                     Ok(resp) => {
-                        let status = resp.status();
-                        let text = resp.text().await?;
-                        return Err(anyhow::anyhow!(
-                            "Anthropic list models error ({}): {}",
-                            status,
-                            text
-                        ));
+                        tracing::warn!(
+                            "Anthropic list models error ({}), using default model list",
+                            resp.status()
+                        );
+                        return Ok(self.default_models.clone());
                     }
                     Err(e) => {
                         attempts += 1;
                         if attempts >= max_retries {
-                            return Err(anyhow::anyhow!("Anthropic API error: {}", e));
+                            tracing::warn!("Anthropic API error: {}, using default model list", e);
+                            return Ok(self.default_models.clone());
                         }
                         tracing::warn!("Anthropic API error, retrying: {}", e);
                         tokio::time::sleep(delay).await;
@@ -955,7 +1003,9 @@ mod tests {
         };
         let provider = AnthropicProvider::new(&settings).unwrap();
         let result = provider.list_models().await;
-        assert!(result.is_err());
+        // On connection error, falls back to default models
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
     }
 
     #[test]

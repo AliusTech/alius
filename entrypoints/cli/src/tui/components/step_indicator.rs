@@ -22,20 +22,22 @@ impl StepIndicator {
 
         for (i, label) in self.steps.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled(" ── ", theme::secondary()));
+                spans.push(Span::styled(" -- ", theme::secondary()));
             }
 
             let span = if i < self.current {
                 Span::styled(
-                    format!("✓ {}", label),
+                    format!("[x] {}", label),
                     theme::base()
-                        .fg(theme::SUCCESS)
+                        .fg(theme::success())
                         .add_modifier(Modifier::BOLD),
                 )
             } else if i == self.current {
                 Span::styled(
-                    format!("▶ {}", label),
-                    theme::base().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+                    format!("> {}", label),
+                    theme::base()
+                        .fg(theme::text_color())
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(label.clone(), theme::secondary())

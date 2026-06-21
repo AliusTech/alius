@@ -6,7 +6,27 @@ All entries use the format:
 [YYYY-MM-DD HH:MM] [author]: [path] - [summary]
 ```
 
+## 2026-06-21
+
+[2026-06-21 11:22] Alius: entrypoints/cli/src/tui/workspace/{conversation,plans,agent_team,mod}.rs + entrypoints/cli/src/tui/state.rs - Fixed scroll residual characters (added ratatui Clear widget before repaint in all 4 scrollable panels; root cause: set_style only colors, does not erase stale glyphs when content shrinks below area height). Replaced two-letter ASCII block/status symbols (RQ/UN/PL/EX/OK/ER/CF and PD/RN/RV/AP/RE/BL/CN) with terminal-safe single-cell Unicode glyphs forming a pseudo left column (▶◈☰●◐◆✓✗▤, ○◐✓◆✎▮⊘). Continuation lines connect via │ indent. Tool-call blocks now show a per-tool icon (shell=▸ read_file=▤ write_file/edit_file=✎ list_dir=▣ search_code=⚲ run_local_service=◉) via a new ConversationBlock.tool_name field.
+
+[2026-06-21 09:23] Alius: entrypoints/cli/src/tui/theme.rs + entrypoints/cli/src/tui/{components,workspace} + entrypoints/cli/src/main.rs + runtime/config/src/{settings.rs,default.toml} - Unified TUI colors under a runtime-configurable theme system. Replaced the 12 hardcoded `pub const` 16-color values with a process-global `ThemeColors` palette driven by `[ui] theme` config, and swapped the terminal 16-color enum for a low-saturation RGB `dark` palette (textured deep blue-grey background, distinct ACCENT/SELECTED_BACKGROUND hues). All ~40 `theme::TOKEN` call sites now use `theme::token()` accessors; theme is applied at startup and re-applied on `/config`,`/init` live changes mirroring `set_locale`.
+
+[2026-06-21 08:22] Alius: entrypoints/cli/src/tui/workspace/config_task.rs + entrypoints/cli/src/tui/workspace/mod.rs - Fixed welcome page Plan/Review "Not configured" false negative. `/config` empty model pool now enters the add-model sub-flow (previously only showed a hint and left the user stuck), so Plan/Review assignments can actually be completed and persisted to model.toml. `assigned_welcome_model` gains a tiers fallback (light=Plan/medium=Execute/high=Review) so already-configured models display even when absent from the model library.
+
 ## 2026-06-19
+
+[2026-06-19 20:40] Codex: entrypoints/cli/src/tui + entrypoints/cli/src/repl/completion.rs + entrypoints/cli/src/mcp_handler.rs + .alius/workspace/docs/products/tui-workspace.md - Replaced dynamic TUI emoji icons with terminal-safe fixed-width text symbols and fixed slash-command matched detection so root commands with optional subcommands (`/mode`, `/session`, `/review`, `/memory`, `/trace`, `/confirm`) use ACCENT once fully typed.
+
+[2026-06-19 20:30] Codex: entrypoints/cli/src/tui/workspace + .alius/workspace/docs/products/tui-workspace.md - Updated slash-command input styling so incomplete commands use SECONDARY_TEXT and complete matches use ACCENT; changed Tab completion to cycle multiple slash-command candidates only when the input box is focused and the input starts with `/`.
+
+[2026-06-19 20:10] Codex: entrypoints/cli/src/tui + entrypoints/cli/locales + .alius/workspace/docs/products/tui-workspace.md - Fixed TUI text copy diagnosability with drag-copy feedback and OSC52 clipboard fallback; removed mouse click-to-toggle folding in favor of the global Control+O/Ctrl+O shortcut; updated Conversation and Plans icons to semantic symbols; constrained loading/status colors to theme priority colors; documented slash-command text as theme-blue; simplified quit confirmation to Cancel/Confirm without mode-prefix title; rendered model-pool titles as dot-separated breadcrumbs with the current step highlighted.
+
+[2026-06-19 20:25] Codex: entrypoints/cli/src/tui + entrypoints/cli/locales + .alius/workspace/docs/products/tui-workspace.md - Expanded normal TUI input mode switching from two states to Chat, Bypass, and Plan; Chat mode now dispatches through RuntimeMode::Chat instead of Bypass semantics, and Shift+Tab cycles Plan -> Chat -> Bypass -> Plan while approved-plan execution still toggles permission strategy.
+
+[2026-06-19 09:59] Codex: entrypoints/cli/src/repl + entrypoints/cli/src/tui/workspace + runtime/config/src/loaders/model_assignment.rs + .alius/workspace/docs - Allowed model-pool deletion of assigned models, added request-time Plan/Execute/Review readiness checks with TUI redirection to model pool management, and documented layered model-pool add/delete step titles.
+
+[2026-06-19 06:48] Codex: entrypoints/cli/src/tui + runtime/config/src/init_wizard.rs + runtime/model/src + .alius/workspace/docs - Corrected TUI slash-command matched-state rendering, removed default Prompt/Status/Output/Error labels from conversation blocks while preserving icons and custom titles, and documented Xiaomi MiMo China/Singapore OpenAI and Anthropic endpoint choices.
 
 [2026-06-19 01:54] Codex: protocol/src/core.rs + runtime/core/src/loop_engine + runtime/tools/src + entrypoints/cli/src/tui + .alius/workspace/docs - Added Chat/Bypass/Plan runtime permission strategy semantics. Approved Plan execution now defaults to BypassPermissions, active plan execution can switch to AcceptEdits with Shift+Tab, and docs/tests describe the high-risk bypass boundary.
 
@@ -267,3 +287,5 @@ All entries use the format:
 [2026-06-17 23:59] Codex: entrypoints/jsonrpc/src/lib.rs - E1 legacy dispatch() stub marked #[cfg(test)].
 
 [2026-06-17 23:59] Codex: runtime/core/src/runtime.rs - E2 start() method documented as non-cancellation-capable.
+
+[2026-06-19 17:42] Codex: runtime/tools/src/native + runtime/core/src/loop_engine + entrypoints/cli/src/tui/workspace + .alius/workspace/docs - Added workspace-bound search_code, local service verification tools, Plan step local verification guidance, and TUI local service URL summaries.

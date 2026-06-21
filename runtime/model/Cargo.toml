@@ -9,7 +9,6 @@ description = "LLM client and agent for Alius runtime"
 [features]
 default = ["std"]
 std = []
-embedded = []
 testing = ["protocol-interface/testing", "runtime-config/testing", "runtime-tools/testing"]
 
 [dependencies]

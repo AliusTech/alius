@@ -64,3 +64,17 @@ Check for:
 - old package path references from earlier layouts
 - overclaims about Agent Team, A2A, MCP, Plugin, Workflow, Google provider, Shell Gate, and permission enforcement
 - README claims that conflict with current code
+
+## Agent Team Terminology
+
+Agent Team documentation must use Agent-centered terminology:
+
+- Agent
+- Agent CLI
+- Agent Connection
+- Agent Presence
+- Agent Work Status
+- Agent Task Lease
+- Agent Team Backend
+
+Do not introduce another product-facing execution-subject name for Team mode.

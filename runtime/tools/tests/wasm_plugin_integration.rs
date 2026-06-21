@@ -12,10 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 fn make_workspace() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "alius_wasm_integration_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("alius_wasm_integration_{}", std::process::id()));
     std::fs::create_dir_all(dir.join("data")).unwrap();
     std::fs::write(dir.join("data/hello.txt"), "hello world").unwrap();
     dir
@@ -31,7 +28,8 @@ fn wati_write_str(wat: &mut String, offset: usize, s: &str) -> usize {
     for (i, b) in bytes.iter().enumerate() {
         wat.push_str(&format!(
             "                (i32.store8 (i32.const {}) (i32.const {}))\n",
-            offset + i, b
+            offset + i,
+            b
         ));
     }
     bytes.len()
@@ -52,14 +50,16 @@ fn make_simple_plugin_wasm() -> Vec<u8> {
 
             ;; alius_plugin_list_tools() -> i32
             (func $list_tools (result i32)
-    "#);
+    "#,
+    );
 
     // Write list JSON at offset 0: [len:4][json:len]
-    let list_len = list_json.as_bytes().len();
+    let list_len = list_json.len();
     let lb = (list_len as u32).to_le_bytes();
     for (i, b) in lb.iter().enumerate() {
         wat.push_str(&format!(
-            "                (i32.store8 (i32.const {}) (i32.const {}))\n", i, b
+            "                (i32.store8 (i32.const {}) (i32.const {}))\n",
+            i, b
         ));
     }
     wati_write_str(&mut wat, 4, list_json);
@@ -68,15 +68,14 @@ fn make_simple_plugin_wasm() -> Vec<u8> {
 
     // alius_plugin_call_tool(name_ptr, name_len, args_ptr, args_len) -> i32
     // Returns fixed {"output":"ok","success":true} at offset 4096
-    wat.push_str(
-        "            (func $call_tool (param i32 i32 i32 i32) (result i32)\n"
-    );
-    let call_len = call_json.as_bytes().len();
+    wat.push_str("            (func $call_tool (param i32 i32 i32 i32) (result i32)\n");
+    let call_len = call_json.len();
     let cb = (call_len as u32).to_le_bytes();
     for (i, b) in cb.iter().enumerate() {
         wat.push_str(&format!(
             "                (i32.store8 (i32.const {}) (i32.const {}))\n",
-            4096 + i, b
+            4096 + i,
+            b
         ));
     }
     wati_write_str(&mut wat, 4100, call_json);
@@ -226,31 +225,42 @@ async fn test_plugin_requires_confirmation() {
     let list_json = r#"[{"name":"dangerous","description":"needs confirm","inputSchema":{},"requires_confirmation":true}]"#;
     let call_json = r#"{"output":"done","success":true}"#;
 
-    let mut wat = String::from(r#"
+    let mut wat = String::from(
+        r#"
         (module
             (memory (export "memory") 2)
             (func $list_tools (result i32)
-    "#);
-    let ll = list_json.as_bytes().len();
+    "#,
+    );
+    let ll = list_json.len();
     let lb = (ll as u32).to_le_bytes();
     for (i, b) in lb.iter().enumerate() {
-        wat.push_str(&format!("                (i32.store8 (i32.const {}) (i32.const {}))\n", i, b));
+        wat.push_str(&format!(
+            "                (i32.store8 (i32.const {}) (i32.const {}))\n",
+            i, b
+        ));
     }
     wati_write_str(&mut wat, 4, list_json);
     wat.push_str("                (i32.const 0)\n            )\n\n");
     wat.push_str("            (func $call_tool (param i32 i32 i32 i32) (result i32)\n");
-    let cl = call_json.as_bytes().len();
+    let cl = call_json.len();
     let cb = (cl as u32).to_le_bytes();
     for (i, b) in cb.iter().enumerate() {
-        wat.push_str(&format!("                (i32.store8 (i32.const {}) (i32.const {}))\n", 4096 + i, b));
+        wat.push_str(&format!(
+            "                (i32.store8 (i32.const {}) (i32.const {}))\n",
+            4096 + i,
+            b
+        ));
     }
     wati_write_str(&mut wat, 4100, call_json);
     wat.push_str("                (i32.const 4096)\n            )\n\n");
-    wat.push_str(r#"
+    wat.push_str(
+        r#"
             (export "alius_plugin_list_tools" (func $list_tools))
             (export "alius_plugin_call_tool" (func $call_tool))
         )
-    "#);
+    "#,
+    );
 
     let wasm = wat::parse_str(&wat).unwrap();
     let tools = WasmPluginTool::from_wasm_bytes(

@@ -84,7 +84,7 @@ api_key_env = "BIGMODEL_API_KEY"
 [providers.xiaomi_mimo]
 enabled = false
 kind = "openai-compatible"
-base_url = "https://api.xiaomimimo.com/v1"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
 api_key_env = "XIAOMI_MIMO_API_KEY"
 
 [providers.deepseek]
@@ -94,8 +94,33 @@ base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 "#;
 
-const DEFAULT_SOUL_TOML: &str = r#"[soul]
-role = ""
+const DEFAULT_SOUL_TOML: &str = r#"[agent]
+name = ""
+description = ""
+version = "0.1.0"
+
+[agent_card]
+documentation_url = ""
+icon_url = ""
+export_path = ".well-known/agent-card.json"
+
+[[supported_interfaces]]
+url = ""
+protocol_binding = "HTTP+JSON"
+protocol_version = "1.0"
+
+[provider]
+organization = ""
+url = ""
+
+[capabilities]
+streaming = true
+push_notifications = false
+extended_agent_card = false
+
+[interaction]
+default_input_modes = ["text/plain", "application/json"]
+default_output_modes = ["text/plain", "application/json"]
 "#;
 
 const DEFAULT_TOOLS_TOML: &str = r#"[tools]
@@ -115,14 +140,54 @@ enabled = true
 "#;
 
 const DEFAULT_PROTOCOL_TOML: &str = r#"[protocol]
-version = "0.1"
+major = 1
+minor = 0
+trace_enabled = true
+event_sequence_enabled = true
+
+[local_rust]
+enabled = true
+transport = "in-process"
+default_origin = "LocalTui"
 
 [json_rpc]
 enabled = false
+transport = "stdio-or-socket"
 socket_path = ".alius/run/alius.sock"
+method_prefix = "alius"
 
-[agent_card]
+[ide_rpc]
+enabled = false
+transport = "lsp-like"
+workspace_scoped_filesystem = true
+
+[a2a]
+enabled = false
+server_enabled = false
+client_enabled = false
 agent_card_source = ".alius/config/soul.toml"
+default_remote_capability = "minimal"
+
+[ffi]
+enabled = false
+core = "lite"
+event_delivery = "poll"
+
+[events]
+buffer_size = 1024
+persist = true
+allow_resume = true
+visibility_default = "ProductVisible"
+
+[commands]
+approve_tool = true
+reject_tool = true
+answer_question = true
+select_option = true
+update_plan = true
+cancel_run = true
+pause_run = false
+resume_run = true
 "#;
 
 const DEFAULT_MCP_JSON: &str = "{}\n";
@@ -409,8 +474,42 @@ mod tests {
 
         let config = std::fs::read_to_string(dir.path().join(".alius/config/config.toml")).unwrap();
         let soul = std::fs::read_to_string(dir.path().join(".alius/config/soul.toml")).unwrap();
-        assert!(!config.contains("[ui]"));
-        assert!(soul.contains("role = \"\""));
+        assert!(config.contains("[project]"));
+        assert!(soul.contains("[agent]"));
+    }
+
+    #[test]
+    fn ensure_project_defaults_creates_loadable_config() {
+        let dir = TempDir::new().unwrap();
+
+        ensure_project_defaults(dir.path()).unwrap();
+
+        // Verify the config can be loaded successfully
+        let snapshot = crate::config_manager::load_project_config(dir.path())
+            .expect("load_project_config should succeed after ensure_project_defaults");
+
+        // Verify basic structure
+        assert_eq!(snapshot.project.version, 1);
+        assert_eq!(snapshot.model.router_profile, "standard");
+        assert!(snapshot.session.persist_messages);
+        assert!(snapshot.logging.enabled);
+        assert_eq!(snapshot.protocol.protocol.major, 1);
+        assert_eq!(snapshot.soul.agent.version, "0.1.0");
+    }
+
+    #[test]
+    fn reset_project_defaults_creates_loadable_config() {
+        let dir = TempDir::new().unwrap();
+
+        reset_project_defaults(dir.path()).unwrap();
+
+        // Verify the config can be loaded successfully
+        let snapshot = crate::config_manager::load_project_config(dir.path())
+            .expect("load_project_config should succeed after reset_project_defaults");
+
+        // Verify basic structure
+        assert_eq!(snapshot.project.version, 1);
+        assert!(snapshot.soul.agent.name.is_empty());
     }
 
     #[test]

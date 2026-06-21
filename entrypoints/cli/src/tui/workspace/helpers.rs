@@ -1,4 +1,5 @@
 use ratatui::prelude::*;
+use unicode_width::UnicodeWidthChar;
 
 /// Estimate the number of visual lines after word-wrap at the given width.
 pub fn count_visual_lines(lines: &[Line], width: u16) -> usize {
@@ -42,6 +43,23 @@ pub fn truncate_chars(text: &str, max: usize) -> String {
 
 pub fn char_len(text: &str) -> usize {
     Line::from(text.to_string()).width()
+}
+
+/// Convert a terminal cell column offset to a byte offset in `text`.
+///
+/// Accounts for wide (CJK) characters that occupy 2 cells.
+/// Returns `text.len()` if `col` exceeds the text width.
+pub fn col_to_byte_offset(text: &str, col: u16) -> usize {
+    let col = col as usize;
+    let mut cell_x = 0;
+    for (byte_idx, ch) in text.char_indices() {
+        if cell_x >= col {
+            return byte_idx;
+        }
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        cell_x += w;
+    }
+    text.len()
 }
 
 pub fn fit_left_right(left: &str, right: &str, width: usize) -> String {

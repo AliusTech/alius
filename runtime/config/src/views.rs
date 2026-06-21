@@ -537,8 +537,6 @@ pub struct PermissionConfig {
     pub project_documents: ProjectDocumentPermission,
     /// Remote A2A permissions.
     pub remote_a2a: RemoteA2APermission,
-    /// Embedded SDK permissions.
-    pub embedded_sdk: EmbeddedSdkPermission,
 }
 
 /// Filesystem permissions.
@@ -580,7 +578,7 @@ pub struct ShellPermission {
 }
 
 /// Shell scope configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShellScopeConfig {
     /// Allow read outside workspace.
     pub allow_read_outside_workspace: bool,
@@ -634,7 +632,7 @@ pub struct ProjectDocumentPermission {
 }
 
 /// Remote A2A permissions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RemoteA2APermission {
     /// Enable remote A2A.
     pub enabled: bool,
@@ -648,19 +646,61 @@ pub struct RemoteA2APermission {
     pub allowed_tools: Vec<String>,
 }
 
-/// Embedded SDK permissions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddedSdkPermission {
-    /// Allow shell access.
-    pub allow_shell: bool,
-    /// Allow local tools.
-    pub allow_local_tools: bool,
-    /// Allow LanceDB.
-    pub allow_lancedb: bool,
-    /// Allow local embedding.
-    pub allow_local_embedding: bool,
-    /// Allow plugin runtime.
-    pub allow_plugin_runtime: bool,
+// Default implementations for permission structs
+
+impl Default for ShellPermission {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_confirmation: true,
+            workspace_scoped: true,
+            deny_unknown_scope: true,
+            require_confirmation_for_outside_workspace: true,
+            allowlist: vec![],
+            denylist: vec![
+                "rm -rf /".to_string(),
+                "rm -rf ~".to_string(),
+                "rm -rf .".to_string(),
+                "rm -rf *".to_string(),
+                "git reset --hard".to_string(),
+                "git checkout --".to_string(),
+                "sudo".to_string(),
+                "dd".to_string(),
+            ],
+            scope: ShellScopeConfig::default(),
+        }
+    }
+}
+
+impl Default for NetworkPermission {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_confirmation: true,
+            allowlist: vec![],
+            denylist: vec![],
+        }
+    }
+}
+
+impl Default for MemoryPermission {
+    fn default() -> Self {
+        Self {
+            allow_read: true,
+            allow_write: true,
+            allow_semantic_index_rebuild: true,
+        }
+    }
+}
+
+impl Default for ProjectDocumentPermission {
+    fn default() -> Self {
+        Self {
+            allow_update: true,
+            require_history_entry: true,
+            root: ".alius/workspace".to_string(),
+        }
+    }
 }
 
 /// Resolved permission configuration for runtime use.

@@ -44,7 +44,6 @@ Current origins include:
 
 - `LocalCli`
 - `LocalTui`
-- `EmbeddedSdk`
 - `IdeExtension`
 - `Desktop`
 - `RemoteA2A`
@@ -62,7 +61,6 @@ Current convenience scopes include:
 
 - `local_cli`
 - `local_tui`
-- `embedded_sdk`
 - `remote_a2a`
 
 Capabilities include workspace, model, tools, shell, MCP, memory, config, and remote A2A access.
@@ -133,4 +131,3 @@ Responsibilities:
 - Subscribe to events.
 - Wrap events back into protocol envelopes.
 - Apply capability checks for config, model, session, memory, tool, review, and log operations.
-

@@ -77,6 +77,15 @@ Use `LoopPolicy::plan_accept_edits()` for step-by-step confirmation mode:
 
 Plan mode requires a tool registry for tool execution. If no registry is available, the loop emits an error and final failure.
 
+Plan step prompts must drive a complete local execution loop for implementation work:
+
+- inspect existing backend/frontend code with `search_code`, `read_file`, and `list_dir` before editing when local context is needed
+- run relevant tests, checks, or build commands after implementation or bug fixes
+- when the task affects a locally runnable app or API, call `run_local_service` to verify a loopback service URL
+- include commands run, test/build outcome, verified local service URL when applicable, whether that service was stopped, and changed files in the step result
+
+The default `run_local_service` behavior is evidence-oriented: unless `keep_running=true` is explicitly requested, the service is verified and then stopped before the tool returns.
+
 ## Tool Step
 
 `tool_step` dispatches model tool calls through `ToolRegistry`.

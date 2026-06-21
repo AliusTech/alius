@@ -23,16 +23,28 @@ mod tests {
     #[test]
     fn openai_endpoint_url_normalizes_to_api_base() {
         assert_eq!(
-            normalize_openai_api_base("https://api.xiaomimimo.com/v1/chat/completions"),
-            "https://api.xiaomimimo.com/v1"
+            normalize_openai_api_base("https://token-plan-cn.xiaomimimo.com/v1/chat/completions"),
+            "https://token-plan-cn.xiaomimimo.com/v1"
+        );
+        assert_eq!(
+            normalize_openai_api_base("https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"),
+            "https://token-plan-sgp.xiaomimimo.com/v1"
         );
     }
 
     #[test]
     fn anthropic_messages_url_normalizes_to_api_base() {
         assert_eq!(
-            normalize_anthropic_api_base("https://api.xiaomimimo.com/anthropic/v1/messages"),
-            "https://api.xiaomimimo.com/anthropic"
+            normalize_anthropic_api_base(
+                "https://token-plan-cn.xiaomimimo.com/anthropic/v1/messages"
+            ),
+            "https://token-plan-cn.xiaomimimo.com/anthropic"
+        );
+        assert_eq!(
+            normalize_anthropic_api_base(
+                "https://token-plan-sgp.xiaomimimo.com/anthropic/v1/messages"
+            ),
+            "https://token-plan-sgp.xiaomimimo.com/anthropic"
         );
     }
 }

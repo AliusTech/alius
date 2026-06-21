@@ -17,7 +17,7 @@ The workspace implementation lives under `entrypoints/cli/src/tui/workspace/`.
 
 | Key | Behavior |
 | --- | --- |
-| `Shift+Tab` | In normal input, switch between Plan mode and Bypass mode. During active approved-plan execution, switch between `计划模式 - Bypass Permissions` and `计划模式 - Accept Edits`. |
+| `Shift+Tab` | In normal input, cycle `Plan → Chat → Bypass → Plan`. During active approved-plan execution, switch between `计划模式 - Bypass Permissions` and `计划模式 - Accept Edits`. |
 | `Ctrl+Enter` | Submit or execute the current input. |
 | `Ctrl+Tab` | Switch Conversation and Agent Team tabs when Agent Team is visible. |
 | `Esc` | Clear input or cancel the current prompt or confirmation state. |
@@ -35,7 +35,7 @@ During an active configuration task, the input surface stays inside the main wor
 | `Enter` | Send the selected or typed answer for validation. |
 | `Esc` | Exit configuration immediately when unchanged; show an exit confirmation when unsaved changes exist. |
 
-`Shift+Tab` does not switch Plan and Bypass modes while the configuration task is active.
+`Shift+Tab` does not switch Chat, Bypass, and Plan modes while the configuration task is active.
 
 ## Main Areas
 
@@ -46,6 +46,8 @@ During an active configuration task, the input surface stays inside the main wor
 | Plans | Plan nodes, status, acceptance criteria, evidence, and ownership. |
 | Interaction surface | Text input, inline single-select, inline multi-select, custom input, or approval controls. |
 | Status bar | Current workspace, git status, and runtime state. |
+
+Conversation block icons and Plans status icons must be semantic rather than a repeated generic circle. Dynamic TUI panes must use terminal-safe single-cell-width Unicode geometric/math symbols (▶ ◈ ☰ ● ◐ ◆ ✓ ✗ ▤ for conversation blocks; ○ ◐ ✓ ◆ ✎ ▮ ⊘ for plan-node status) instead of emoji, because emoji glyph fallback varies by terminal and can render as question marks. These glyphs form a pseudo left "column" via a leading-space + glyph layout, with continuation rows connected by a `│` indent. Tool-call blocks show a per-tool icon (shell=▸, read_file=▤, write_file/edit_file=✎, list_dir=▣, search_code=⚲, run_local_service=◉, unknown/MCP=◈) via the block's `tool_name` field, in place of the generic block-type symbol. Color is centralized in `tui/theme.rs` and driven by the `[ui] theme` config key (a named palette, e.g. `dark`): every color must come from the `theme::` accessors (`theme::accent()`, `theme::info()`, …) or the style helpers (`theme::base()`, `theme::title()`, `theme::selected()`, `theme::border_state()`). Terminal 16-color enum literals (`Color::Cyan`, `Color::Black`, …) and one-off RGB values must NOT appear outside `theme.rs`. Scrollable panels (conversation, plans, agent_team, config side panel) must render the `Clear` widget into their inner rect before repainting content, so that rows below the content (after scroll or when content shrinks via folding) do not retain stale glyphs from the prior frame. Icon and status styling reuses the semantic priority colors — `ACCENT`, `INFO`, `SUCCESS`, `WARNING`, `REVIEW`, `ERROR`, `SECONDARY_TEXT`. Slash-command input text uses `SECONDARY_TEXT` while incomplete and switches to `ACCENT` only after the command is fully matched. `Tab` completion only triggers when the input surface is focused and the input starts with `/`; if multiple completions are available, repeated `Tab` cycles through those choices.
 
 Every workspace launch starts with a dedicated welcome block in the Conversation area. The block is not rendered as an `Output` block and does not show Agent Workspace copy, Protocol details, operation menus, release notes, or help tips.
 
@@ -108,24 +110,35 @@ short sanitized output summary. These tool progress blocks are UI-only and must
 not be inserted into the model conversation between assistant `tool_calls` and
 tool results.
 
+`run_local_service` completion output is rendered as a human-readable local
+verification summary instead of raw JSON:
+
+- verified local service URL
+- whether the service remains running or was verified and stopped
+- `service_id` when `keep_running=true`
+- short sanitized log tail
+
+The default service lifecycle is "verified and stopped"; a still-running service
+must only appear when the tool result explicitly reports `keep_running=true`.
+
 ## Conversation Block Folding
 
 Long conversation blocks (more than 3 logical lines including the title) are automatically folded:
 
 - **Title Line Format**: The title and first content line are merged: `○ Title First line content`
 - **Collapsed Display**: Shows title+first-line merged, second line, and third line with fold hint
-- **Fold Hint**: Appears at the end of the third line: `… 点击展开 / Ctrl+O 全部展开`
-- **Click to Toggle**: Click anywhere on a folded block to expand/collapse it
-- **Global Toggle**: `Ctrl+O` expands all foldable blocks; press again to restore default folding
+- **Fold Hint**: Appears at the end of the third line: `… Control+O 全部展开` on macOS and `… Ctrl+O 全部展开` on other platforms.
+- **Global Toggle**: `Control+O` on macOS or `Ctrl+O` on other platforms expands all foldable blocks; press again to restore default folding
 - **Non-Foldable**: Welcome, ConfigOverview, and empty Execution (loading) blocks are never folded
 - **New Content**: Defaults to folded unless global expand is active
 
 ## Text Selection and Copy
 
-- **Native Selection**: Hold `Shift` to temporarily release mouse capture for terminal native text selection
-- **Right-Click Menu**: Use the terminal/system native right-click context menu to copy
-- **No Built-in Menu**: Alius does not show its own right-click menu or "copied" status
-- **Fallback**: If the terminal doesn't support native right-click, use Shift + system copy shortcut (Cmd+C / Ctrl+Shift+C)
+- **Native Selection**: Hold `Shift` to temporarily release mouse capture for terminal native text selection where the terminal sends standalone Shift key events.
+- **Drag Copy**: Drag across Conversation, Plans, or Interaction text and release the mouse button to copy the selected text.
+- **Copy Feedback**: Alius records copied/failed feedback in the Conversation area. Clipboard failures must not be silently ignored.
+- **Clipboard Fallback**: The app first uses the system clipboard API, then falls back to OSC52 terminal clipboard escape sequences.
+- **No Click Folding**: Mouse click does not expand/collapse folded blocks; folding is controlled by the global shortcut only.
 
 ## Workspace Configuration Center
 
@@ -200,11 +213,13 @@ The pool reads entries from `.alius/config/providers.toml` and displays concrete
 GLM-5-Turbo    BigModel GLM (Coding Plan)    OpenAI API
 ```
 
-`Add Model` is the explicit remote operation. It asks for provider, API mode, Base URL, and API Key, then fetches models from that provider. Provider choices are limited to `BigModel GLM (Coding Plan)`, `Xiaomi MiMo (Token Plan)`, and `DeepSeek`. API mode choices are `OpenAI API` and `Anthropic API`.
+`Add Model` is the explicit remote operation. It asks for provider, API mode, Base URL, and API Key, then fetches models from that provider. Provider choices are limited to `BigModel GLM (Coding Plan)`, `Xiaomi MiMo (Token Plan)`, and `DeepSeek`. API mode choices are `OpenAI API` and `Anthropic API`. Xiaomi MiMo exposes China and Singapore region Base URLs for both API modes; the selected exact URL is persisted on the imported model entry and provider settings.
 
 API Key input is plaintext, accepts keyboard input and paste, and is not masked while the user edits it. Saved keys are still not shown in session output or model details.
 
-Returned models are shown as a multi-select list. Manual model-name entry is not part of the add flow. Imported and deleted model-pool entries are written to `.alius/config/providers.toml` immediately, so reopening `/config` sees the current model pool. Deleting a model is blocked while it is assigned to `Plan Model`, `Execute Model`, or `Review Model`; the user must change the assignment in `/config` first.
+Returned models are shown as a multi-select list. Manual model-name entry is not part of the add flow. Imported and deleted model-pool entries are written to `.alius/config/providers.toml` immediately, so reopening `/config` sees the current model pool. Model deletion is allowed even when the entry is currently referenced by `Plan Model`, `Execute Model`, or `Review Model`; the assignment may remain temporarily stale. The next user request must validate all three assignments before starting runtime execution. If any assignment is empty, points to a deleted model, or points to a disabled model, the workspace stops the request, shows the missing assignment details, and automatically opens `/model` model pool management so the user can add models or reassign Plan/Execute/Review.
+
+`/model` also exposes Plan/Execute/Review assignment so the automatic redirect forms a complete repair path. Model-pool interaction titles render as a breadcrumb with dot separators, not hyphenated text: `Model Pool Management · <action> · <step>`. The current operation step is highlighted with the same selected style used by the config navigation. In Chinese this renders as `模型池管理 · 添加模型 · 选择服务商`, `模型池管理 · 添加模型 · 选择API类型`, `模型池管理 · 添加模型 · BaseUrl`, `模型池管理 · 添加模型 · API Key`, `模型池管理 · 添加模型 · 选择模型`, `模型池管理 · 删除模型 · 选择模型`, and `模型池管理 · 删除模型 · 确认删除`.
 
 Saving `/config` synchronizes compatibility fields: `Plan Model` maps to `tiers.light`, `Execute Model` maps to `tiers.medium` and the active legacy runtime model, and `Review Model` maps to `tiers.high` and `Settings.llm.review_model`.
 
@@ -287,7 +302,7 @@ Production modules must not import `crate::testing::*` or package testing module
 TUI tests should prioritize state-machine coverage over fragile terminal screenshots. Required coverage:
 
 - workspace launch state, welcome block presence, and status bar rendering for Git and non-Git directories;
-- Plan and Bypass mode switching, including the rule that `Shift+Tab` does not change mode while a configuration task is active;
+- Chat, Bypass, and Plan mode switching, including the rule that `Shift+Tab` does not change mode while a configuration task is active;
 - approved-plan permission switching: default `计划模式 - Bypass Permissions`, `Shift+Tab` during active execution toggles to `计划模式 - Accept Edits`, and confirmation UI appears only in `Accept Edits`;
 - plan drafting, clarification prompt rendering, plan proposal, approval, per-node execution, completion confirmation, and Plans panel close;
 - cancellation and interrupt flow through `Esc` while the model is drafting, while a tool confirmation is pending, and while execution is active;
@@ -295,8 +310,8 @@ TUI tests should prioritize state-machine coverage over fragile terminal screens
 - `/config` tab navigation, immediate apply-on-select behavior, validation feedback, and silent exit when nothing is unsaved;
 - `/model` add/view/delete flows with local provider fixtures and no real network dependency;
 - interaction-surface variants: text input, single select, multi select, approval controls, and validation errors;
-- folding behavior, global expand/collapse, and click-to-toggle for long conversation blocks;
-- mouse capture release for native text selection and absence of custom right-click copy UI;
+- folding behavior and global expand/collapse for long conversation blocks;
+- mouse capture release for native text selection, drag-copy extraction, clipboard fallback, and copy failure feedback;
 - responsive welcome layouts for wide, medium, compact, and tiny terminal sizes;
 - Core event reduction for tool start/completion/error, plan events, status events, and output streaming.
 

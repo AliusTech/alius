@@ -76,7 +76,7 @@ Model imports from `/model` and `/init` persist the provider model library immed
 
 Each entry records the concrete provider, Base URL, provider-native model name, display name, legacy reasoning note, and enabled state.
 
-Built-in provider choices are limited to `bigmodel`, `xiaomi_mimo`, and `deepseek`. Each supports OpenAI-compatible and Anthropic-compatible Base URLs; `/model` records the selected protocol URL on the imported model entry so `/config` assignments can restore the correct runtime provider mode.
+Built-in provider choices are limited to `bigmodel`, `xiaomi_mimo`, and `deepseek`. Each supports OpenAI-compatible and Anthropic-compatible Base URLs; Xiaomi MiMo offers both China and Singapore region URLs for each API mode. `/model` records the selected exact protocol and region URL on the imported model entry so `/config` assignments can restore the correct runtime provider mode.
 
 `.alius/config/model.toml` stores the assignment:
 
@@ -84,7 +84,9 @@ Built-in provider choices are limited to `bigmodel`, `xiaomi_mimo`, and `deepsee
 - `Execute Model`
 - `Review Model`
 
-The `/config` flow assigns each role from enabled model-pool entries only. It does not accept manual model names, Base URLs, or API keys in the assignment flow.
+The `/config` flow assigns each role from enabled model-pool entries only. `/model` model pool management exposes the same assignment path for request-readiness repair. Neither flow accepts manual model names, Base URLs, or API keys in the assignment step.
+
+Deleting a model from `/model` is allowed even when `model.toml` still references that entry. The assignment is not silently cleared or rewritten during deletion. Runtime request entrypoints must validate the three assignments immediately before starting a model request: every role must be configured, the referenced model id must exist in the model library, and the entry must be enabled. TUI request paths stop and open model pool management when validation fails; legacy REPL paths print the same issue list and direct the user to `/model`.
 
 Compatibility writes are still maintained:
 

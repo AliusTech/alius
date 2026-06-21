@@ -261,10 +261,10 @@ impl DecisionState {
             title: t!("workspace.quit_confirm.title").to_string(),
             scope_title: None,
             options: vec![
+                t!("workspace.quit_confirm.cancel").to_string(),
                 t!("workspace.quit_confirm.confirm").to_string(),
-                t!("workspace.quit_confirm.continue").to_string(),
             ],
-            selected: 1,
+            selected: 0,
             custom_input: InputBuffer::default(),
             custom_focused: false,
             kind: DecisionKind::QuitConfirm,
@@ -272,6 +272,10 @@ impl DecisionState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> WorkspaceAction {
+        if self.kind == DecisionKind::QuitConfirm {
+            return self.handle_quit_confirm_key(key);
+        }
+
         if self.custom_focused {
             match key.code {
                 KeyCode::Esc => {
@@ -321,8 +325,23 @@ impl DecisionState {
         if text.is_empty() {
             return;
         }
+        if self.kind == DecisionKind::QuitConfirm {
+            return;
+        }
         self.custom_focused = true;
         self.custom_input.paste(text);
+    }
+
+    fn handle_quit_confirm_key(&mut self, key: KeyEvent) -> WorkspaceAction {
+        match key.code {
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+                self.selected = 1 - self.selected.min(1);
+                WorkspaceAction::None
+            }
+            KeyCode::Enter => self.confirm(),
+            KeyCode::Esc => WorkspaceAction::CancelDecision,
+            _ => WorkspaceAction::None,
+        }
     }
 
     fn confirm(&mut self) -> WorkspaceAction {
@@ -366,7 +385,8 @@ impl DecisionState {
                 _ => WorkspaceAction::ContinueConfig,
             },
             DecisionKind::QuitConfirm => match self.selected {
-                0 => WorkspaceAction::Quit,
+                0 => WorkspaceAction::CancelDecision,
+                1 => WorkspaceAction::Quit,
                 _ => WorkspaceAction::CancelDecision,
             },
             DecisionKind::PlanCompletion => WorkspaceAction::ClosePlan,
@@ -658,6 +678,7 @@ pub struct InteractionState<'a> {
     pub prompt_input: Option<&'a PromptInputState>,
     pub has_agent_team: bool,
     pub command_hint: Option<String>,
+    pub command_matched: bool,
     pub config_section: Option<crate::tui::workspace::config_task::ConfigSection>,
     pub init_nav: Option<InitNavSnapshot>,
 }
@@ -688,15 +709,16 @@ fn render_text_input(
         return;
     }
 
+    let title = state
+        .mode_title_override
+        .clone()
+        .unwrap_or_else(|| state.mode.title());
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(
-            " {} ",
-            state
-                .mode_title_override
-                .clone()
-                .unwrap_or_else(|| state.mode.title())
-        ))
+        .title(Line::from(Span::styled(
+            format!(" {title} "),
+            mode_title_style(state),
+        )))
         .style(theme::base())
         .border_style(theme::border_state(focused, hovered));
     let inner = block.inner(area);
@@ -709,11 +731,7 @@ fn render_text_input(
 
     let placeholder = state.mode.placeholder(state.active_tab);
     let input_line = state.input.display_with_cursor(&placeholder);
-    let input_style = if state.input.is_empty() {
-        theme::secondary()
-    } else {
-        theme::text()
-    };
+    let input_style = text_input_style(state.input, state.command_matched);
     frame.render_widget(
         Paragraph::new(input_line)
             .style(input_style)
@@ -736,16 +754,88 @@ fn render_text_input(
     );
 }
 
+fn text_input_style(input: &InputBuffer, command_matched: bool) -> Style {
+    if input.is_empty() {
+        theme::secondary()
+    } else if command_matched {
+        Style::default().fg(theme::accent()).bg(theme::background())
+    } else if input.value().starts_with('/') {
+        Style::default()
+            .fg(theme::secondary_text())
+            .bg(theme::background())
+    } else {
+        theme::text()
+    }
+}
+
+fn mode_title_style(state: &InteractionState<'_>) -> Style {
+    if state
+        .mode_title_override
+        .as_deref()
+        .is_some_and(|title| title.contains("Bypass Permissions"))
+        || state.mode == InteractionMode::Bypass
+    {
+        theme::base()
+            .fg(theme::warning())
+            .add_modifier(Modifier::BOLD)
+    } else if state.mode == InteractionMode::Plan {
+        theme::base().fg(theme::info()).add_modifier(Modifier::BOLD)
+    } else {
+        theme::text()
+    }
+}
+
+fn prompt_title_line(scope_title: &str, prompt_title: &str) -> Line<'static> {
+    if scope_title == t!("workspace.config_task.model_pool.title").as_ref() {
+        return model_pool_title_line(scope_title, prompt_title);
+    }
+
+    let title = if prompt_title.trim().is_empty() {
+        format!(" {scope_title} ")
+    } else {
+        format!(" {scope_title} - {prompt_title} ")
+    };
+    Line::from(title)
+}
+
+fn model_pool_title_line(scope_title: &str, prompt_title: &str) -> Line<'static> {
+    let title_style = Style::default()
+        .fg(theme::secondary_text())
+        .add_modifier(Modifier::BOLD);
+    let normal = theme::text();
+    let highlight = Style::default()
+        .bg(theme::selected_background())
+        .fg(theme::selected_text());
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(format!(" {scope_title} "), title_style)];
+
+    let parts = prompt_title
+        .split(" - ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for (index, part) in parts.iter().enumerate() {
+        spans.push(Span::raw("·"));
+        let style = if index + 1 == parts.len() {
+            highlight
+        } else {
+            normal
+        };
+        spans.push(Span::styled(format!(" {part} "), style));
+    }
+
+    Line::from(spans)
+}
+
 /// Build the config-section nav bar as a styled title line:
 /// `配置 · 模型 · 语言 · 灵魂` with the active section highlighted.
 fn config_nav_line(active: ConfigSection) -> Line<'static> {
     let title_style = Style::default()
-        .fg(theme::SECONDARY_TEXT)
+        .fg(theme::secondary_text())
         .add_modifier(Modifier::BOLD);
     let normal = theme::text();
     let highlight = Style::default()
-        .bg(theme::SELECTED_BACKGROUND)
-        .fg(theme::SELECTED_TEXT);
+        .bg(theme::selected_background())
+        .fg(theme::selected_text());
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(
             format!(" {} ", t!("workspace.config_task.nav_title")),
@@ -772,13 +862,13 @@ fn config_nav_line(active: ConfigSection) -> Line<'static> {
 /// Completed stages get a ✓ prefix; the active stage is highlighted.
 fn init_nav_line(snapshot: &InitNavSnapshot) -> Line<'static> {
     let title_style = Style::default()
-        .fg(theme::SECONDARY_TEXT)
+        .fg(theme::secondary_text())
         .add_modifier(Modifier::BOLD);
     let normal = theme::text();
     let highlight = Style::default()
-        .bg(theme::SELECTED_BACKGROUND)
-        .fg(theme::SELECTED_TEXT);
-    let done_style = Style::default().fg(theme::SUCCESS);
+        .bg(theme::selected_background())
+        .fg(theme::selected_text());
+    let done_style = Style::default().fg(theme::success());
     let stage_label = |stage: InitStage| match stage {
         InitStage::Language => t!("workspace.init_task.scope.select_language").to_string(),
         InitStage::ModelPool => t!("workspace.init_task.scope.configure_model_pool").to_string(),
@@ -843,12 +933,7 @@ fn render_prompt_input(
     } else if let Some(nav) = &state.init_nav {
         block.title(init_nav_line(nav))
     } else {
-        let title = if prompt.title.trim().is_empty() {
-            format!(" {} ", scope_title)
-        } else {
-            format!(" {} - {} ", scope_title, prompt.title)
-        };
-        block.title(title)
+        block.title(prompt_title_line(&scope_title, &prompt.title))
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -946,24 +1031,15 @@ fn render_decision(
     state: &InteractionState<'_>,
     hovered: bool,
 ) {
-    let scope_title = decision
-        .scope_title
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            state
-                .mode_title_override
-                .clone()
-                .unwrap_or_else(|| state.mode.title())
-        });
+    let title = decision_panel_title(decision, state);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} - {} ", scope_title, decision.title))
+        .title(format!(" {title} "))
         .style(theme::base())
         .border_style(if hovered {
-            Style::default().fg(theme::ACCENT).bg(theme::BACKGROUND)
+            Style::default().fg(theme::accent()).bg(theme::background())
         } else {
-            Style::default().fg(theme::WARNING).bg(theme::BACKGROUND)
+            Style::default().fg(theme::warning()).bg(theme::background())
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -985,23 +1061,25 @@ fn render_decision(
         ]));
     }
 
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        t!("workspace.decision.reply").to_string(),
-        if decision.custom_focused {
-            theme::emphasis()
-        } else {
-            theme::secondary()
-        },
-    )));
-    let custom = decision
-        .custom_input
-        .display_with_cursor(if decision.custom_focused { "" } else { ">" });
-    lines.push(Line::from(vec![
-        Span::styled("  → ", theme::secondary()),
-        Span::styled(custom, theme::text()),
-    ]));
-    lines.push(Line::default());
+    if decision.kind != DecisionKind::QuitConfirm {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            t!("workspace.decision.reply").to_string(),
+            if decision.custom_focused {
+                theme::emphasis()
+            } else {
+                theme::secondary()
+            },
+        )));
+        let custom = decision
+            .custom_input
+            .display_with_cursor(if decision.custom_focused { "" } else { ">" });
+        lines.push(Line::from(vec![
+            Span::styled("  → ", theme::secondary()),
+            Span::styled(custom, theme::text()),
+        ]));
+        lines.push(Line::default());
+    }
     lines.push(Line::from(Span::styled(
         t!("workspace.decision.help").to_string(),
         theme::secondary(),
@@ -1013,6 +1091,24 @@ fn render_decision(
     );
 }
 
+fn decision_panel_title(decision: &DecisionState, state: &InteractionState<'_>) -> String {
+    if decision.kind == DecisionKind::QuitConfirm {
+        return decision.title.clone();
+    }
+
+    let scope_title = decision
+        .scope_title
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            state
+                .mode_title_override
+                .clone()
+                .unwrap_or_else(|| state.mode.title())
+        });
+    format!("{} - {}", scope_title, decision.title)
+}
+
 // ---------------------------------------------------------------------------
 // InteractionMode helpers
 // ---------------------------------------------------------------------------
@@ -1020,6 +1116,7 @@ fn render_decision(
 impl InteractionMode {
     pub fn title(self) -> String {
         match self {
+            Self::Chat => t!("workspace.mode.chat").to_string(),
             Self::Plan => t!("workspace.mode.plan").to_string(),
             Self::Bypass => t!("workspace.mode.bypass").to_string(),
         }
@@ -1027,10 +1124,12 @@ impl InteractionMode {
 
     pub fn placeholder(self, active_tab: MainTab) -> String {
         match (active_tab, self) {
+            (MainTab::AgentTeam, Self::Chat) => t!("workspace.placeholder.team_chat").to_string(),
             (MainTab::AgentTeam, Self::Plan) => t!("workspace.placeholder.team_plan").to_string(),
             (MainTab::AgentTeam, Self::Bypass) => {
                 t!("workspace.placeholder.team_bypass").to_string()
             }
+            (_, Self::Chat) => t!("workspace.placeholder.chat").to_string(),
             (_, Self::Plan) => t!("workspace.placeholder.plan").to_string(),
             (_, Self::Bypass) => t!("workspace.placeholder.bypass").to_string(),
         }
@@ -1050,6 +1149,45 @@ mod tests {
         input.insert('很');
 
         assert_eq!(input.value(), "你很好");
+    }
+
+    #[test]
+    fn incomplete_slash_command_input_uses_secondary_color() {
+        let mut input = InputBuffer::default();
+        input.paste("/he");
+
+        let style = text_input_style(&input, false);
+
+        assert_eq!(style.fg, Some(theme::secondary_text()));
+        assert_eq!(style.bg, Some(theme::background()));
+    }
+
+    #[test]
+    fn complete_slash_command_input_uses_accent_color() {
+        let mut input = InputBuffer::default();
+        input.paste("/help");
+
+        let style = text_input_style(&input, true);
+
+        assert_eq!(style.fg, Some(theme::accent()));
+        assert_eq!(style.bg, Some(theme::background()));
+    }
+
+    #[test]
+    fn model_pool_prompt_title_uses_breadcrumb_and_highlights_current_step() {
+        rust_i18n::set_locale("zh-CN");
+
+        let line = prompt_title_line("模型池管理", "添加模型 - 选择服务商");
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(rendered, " 模型池管理 · 添加模型 · 选择服务商 ");
+        let current = line.spans.last().expect("current step span");
+        assert_eq!(current.style.fg, Some(theme::selected_text()));
+        assert_eq!(current.style.bg, Some(theme::selected_background()));
     }
 
     #[test]
@@ -1118,6 +1256,49 @@ mod tests {
             WorkspaceAction::RevisePlan(text) => assert_eq!(text, "no"),
             action => panic!("expected custom plan revision, got {action:?}"),
         }
+    }
+
+    #[test]
+    fn quit_confirmation_uses_plain_title_and_two_actions() {
+        rust_i18n::set_locale("zh-CN");
+        let input = InputBuffer::default();
+        let decision = DecisionState::quit_confirm();
+        let state = InteractionState {
+            mode: InteractionMode::Plan,
+            mode_title_override: None,
+            active_tab: MainTab::Conversation,
+            input: &input,
+            prompt_input: None,
+            has_agent_team: false,
+            command_hint: None,
+            command_matched: false,
+            config_section: None,
+            init_nav: None,
+        };
+
+        assert_eq!(decision.title, "确定退出 Alius？");
+        assert_eq!(
+            decision.options,
+            vec!["取消".to_string(), "确定".to_string()]
+        );
+        assert_eq!(decision.selected, 0);
+        assert_eq!(decision_panel_title(&decision, &state), "确定退出 Alius？");
+    }
+
+    #[test]
+    fn quit_confirmation_confirm_requires_second_option() {
+        let mut decision = DecisionState::quit_confirm();
+
+        assert!(matches!(
+            decision.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            WorkspaceAction::CancelDecision
+        ));
+
+        decision.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(matches!(
+            decision.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            WorkspaceAction::Quit
+        ));
     }
 
     #[test]

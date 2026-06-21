@@ -59,7 +59,7 @@ The built-in provider catalog is intentionally limited to:
 | Provider key | Product label | OpenAI-compatible Base URL | Anthropic-compatible Base URL |
 | --- | --- | --- | --- |
 | `bigmodel` | `BigModel GLM (Coding Plan)` | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/anthropic` |
-| `xiaomi_mimo` | `Xiaomi MiMo (Token Plan)` | `https://api.xiaomimimo.com/v1` | `https://api.xiaomimimo.com/anthropic` |
+| `xiaomi_mimo` | `Xiaomi MiMo (Token Plan)` | China: `https://token-plan-cn.xiaomimimo.com/v1`<br>Singapore: `https://token-plan-sgp.xiaomimimo.com/v1` | China: `https://token-plan-cn.xiaomimimo.com/anthropic`<br>Singapore: `https://token-plan-sgp.xiaomimimo.com/anthropic` |
 | `deepseek` | `DeepSeek` | `https://api.deepseek.com` | `https://api.deepseek.com/anthropic` |
 
 The local provider entry stores the last selected Base URL and a compatible `kind`; each imported model-library entry keeps the exact Base URL chosen during `/model`.
@@ -98,7 +98,9 @@ Each model-library entry contains:
 | `[assignment].execute` | Model-library entry id selected for `Execute Model`. |
 | `[assignment].review` | Model-library entry id selected for `Review Model`. |
 
-`/config` only assigns these fields from enabled entries in the local model pool. It does not allow manual model-name, Base URL, or API key entry in the assignment flow.
+`/config` assigns these fields from enabled entries in the local model pool. `/model` model pool management also exposes the same Plan/Execute/Review assignment repair path because runtime readiness failures automatically redirect there. Neither flow allows manual model-name, Base URL, or API key entry in the assignment step.
+
+Assignments are allowed to be temporarily stale after model-pool edits. For example, deleting a model from `/model` does not rewrite `model.toml`. Before any runtime request starts, Alius validates that `Plan Model`, `Execute Model`, and `Review Model` are all configured and each points to an enabled entry in `providers.toml` `[[model_library.models]]`. Validation failure stops the request and asks the user to repair the assignment in model pool management.
 
 For compatibility, saving assignments also updates existing fields:
 

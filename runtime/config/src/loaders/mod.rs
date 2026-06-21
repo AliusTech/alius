@@ -17,10 +17,11 @@ mod providers;
 mod soul;
 mod tools;
 
-pub use config::load_config;
+pub use config::{load_config, ConfigToml};
 pub use model_assignment::{
-    load_model_assignment, load_or_migrate_model_assignment, save_model_assignment,
-    validate_model_assignment,
+    load_model_assignment, load_or_migrate_model_assignment, model_assignment_readiness_issues,
+    save_model_assignment, validate_model_assignment, ModelAssignmentReadinessIssue,
+    ModelAssignmentReadinessIssueKind,
 };
 pub use permissions::load_permissions;
 pub use protocol::load_protocol;

@@ -86,8 +86,9 @@ fn apply_cli_overrides(cli: &Cli) -> Result<(Settings, std::path::PathBuf)> {
         settings.llm.model = model.clone();
     }
 
-    // Apply saved locale before any UI output
+    // Apply saved locale and TUI theme before any UI output
     set_locale(&settings.ui.locale);
+    crate::tui::theme::set_theme(&settings.ui.theme);
 
     Ok((settings, workspace_root))
 }
@@ -131,6 +132,13 @@ pub async fn run() -> Result<()> {
             // Subcommand-level --model overrides global --model
             if let Some(m) = model {
                 settings.llm.model = m;
+            }
+            let assignment_issues = crate::repl::model_assignment_readiness_issues(&workspace_root);
+            if !assignment_issues.is_empty() {
+                anyhow::bail!(
+                    "{}",
+                    crate::repl::model_assignment_required_message(&assignment_issues)
+                );
             }
 
             let manager = CoreRuntimeManager::new_local(workspace_root, settings)?;
@@ -257,7 +265,11 @@ pub async fn run() -> Result<()> {
 /// Handle configuration subcommands.
 ///
 /// Dispatches to the appropriate handler for show, validate, or soul commands.
-fn handle_config(settings: &Settings, cmd: ConfigCommand, workspace_root: &std::path::Path) -> Result<()> {
+fn handle_config(
+    settings: &Settings,
+    cmd: ConfigCommand,
+    workspace_root: &std::path::Path,
+) -> Result<()> {
     match cmd {
         // Display current configuration
         ConfigCommand::Show => {
@@ -290,7 +302,9 @@ fn handle_config(settings: &Settings, cmd: ConfigCommand, workspace_root: &std::
             println!("  Soul: {}", soul_display);
 
             // Display new-system config if available
-            if let Ok(snapshot) = runtime_config::config_manager::load_project_config(workspace_root) {
+            if let Ok(snapshot) =
+                runtime_config::config_manager::load_project_config(workspace_root)
+            {
                 println!();
                 println!("Routing:");
                 println!(
@@ -332,6 +346,9 @@ fn handle_config(settings: &Settings, cmd: ConfigCommand, workspace_root: &std::
         }
         // Validate configuration file
         ConfigCommand::Validate => {
+            let mut all_issues = Vec::new();
+
+            // Legacy settings validation
             let mut missing = settings.missing_chat_requirements();
             if let Some(soul_id) = crate::formula::current_project_soul() {
                 missing.retain(|item| item != "soul");
@@ -339,14 +356,50 @@ fn handle_config(settings: &Settings, cmd: ConfigCommand, workspace_root: &std::
                     missing.push("soul prompts (re-install required)".to_string());
                 }
             }
-            if missing.is_empty() {
+            if !missing.is_empty() {
+                all_issues.extend(missing.iter().map(|m| format!("Legacy: {}", m)));
+            }
+
+            // Project config validation
+            match runtime_config::config_manager::load_project_config(workspace_root) {
+                Ok(snapshot) => {
+                    // Validate model assignment
+                    let model_issues = runtime_config::loaders::validate_model_assignment(
+                        &snapshot.model_assignment,
+                        &snapshot.providers,
+                    );
+                    all_issues.extend(model_issues);
+
+                    // Validate permissions
+                    if snapshot.permissions.shell.enabled
+                        && snapshot.permissions.shell.denylist.is_empty()
+                    {
+                        all_issues.push(
+                            "Permissions: Shell enabled but denylist is empty (security risk)"
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    all_issues.push(format!("Project config: {}", e));
+                }
+            }
+
+            if all_issues.is_empty() {
                 println!("{}", t!("cli.configuration_valid"));
             } else {
                 println!(
                     "{}",
-                    t!("cli.configuration_incomplete", items = missing.join(", "))
+                    t!(
+                        "cli.configuration_incomplete",
+                        items = all_issues.join(", ")
+                    )
                 );
                 println!("{}", t!("cli.run_init_hint"));
+                return Err(anyhow::anyhow!(
+                    "Configuration validation failed with {} issue(s)",
+                    all_issues.len()
+                ));
             }
         }
         // Set the soul role
@@ -704,7 +757,10 @@ fn handle_plugin_publish(path: &str, output: Option<&str>) -> Result<()> {
     println!("Package created: {}", package_path.display());
     println!("  Size: {} bytes", size);
     println!();
-    println!("To install: alius plugin install {}", package_path.display());
+    println!(
+        "To install: alius plugin install {}",
+        package_path.display()
+    );
 
     Ok(())
 }
@@ -765,7 +821,11 @@ fn handle_mcp(cmd: McpCommand) -> Result<()> {
 }
 
 /// Handle workflow management subcommands.
-async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings, workspace_root: &std::path::Path) -> Result<()> {
+async fn handle_workflow(
+    cmd: WorkflowCommand,
+    settings: &Settings,
+    workspace_root: &std::path::Path,
+) -> Result<()> {
     match cmd {
         WorkflowCommand::List => {
             let dir = crate::workflow::workflows_dir();
@@ -800,8 +860,9 @@ async fn handle_workflow(cmd: WorkflowCommand, settings: &Settings, workspace_ro
             };
 
             // Build real CoreRuntimeManager and ToolRegistry for workflow execution.
-            let manager = CoreRuntimeManager::new_local(workspace_root.to_path_buf(), settings.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e))?;
+            let manager =
+                CoreRuntimeManager::new_local(workspace_root.to_path_buf(), settings.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to build runtime: {}", e))?;
             let registry = manager
                 .tool_registry()
                 .ok_or_else(|| anyhow::anyhow!("No tool registry available"))?;

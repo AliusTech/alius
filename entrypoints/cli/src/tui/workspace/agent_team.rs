@@ -76,8 +76,12 @@ pub fn render(
     scroll.snap_to_bottom(max_off);
     scroll.clamp(max_off);
 
+    // Clear stale glyphs before repaint (see conversation.rs for rationale), and
+    // set the theme background so unfilled rows are themed, not default.
+    frame.render_widget(ratatui::widgets::Clear, inner);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
+            .style(theme::base())
             .wrap(Wrap { trim: false })
             .scroll((scroll.offset, 0)),
         inner,

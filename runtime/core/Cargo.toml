@@ -9,7 +9,6 @@ description = "Core Runtime implementation for Alius"
 [features]
 default = ["std", "mcp"]
 std = []
-embedded = ["dep:critical-section"]
 mcp = ["dep:runtime-mcp", "dep:dirs"]
 testing = ["protocol-interface/testing", "runtime-config/testing", "runtime-model/testing", "runtime-store/testing", "runtime-tools/testing", "dep:tempfile"]
 
@@ -34,9 +33,6 @@ tiktoken = { workspace = true }
 regex = "1"
 dirs = { version = "5", optional = true }
 tracing = { workspace = true }
-
-# Optional: for embedded mode
-critical-section = { version = "1.0", optional = true }
 
 # Required for a2a module
 async-trait = { workspace = true }

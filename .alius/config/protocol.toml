@@ -1,5 +1,3 @@
-# Protocol Interface Layer configuration
-
 [protocol]
 major = 1
 minor = 0

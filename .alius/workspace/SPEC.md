@@ -160,3 +160,19 @@ Acceptance criteria:
 - `CoreRuntimeManager` does not replace `CoreRuntimeApi`; it is a local facade over the existing protocol contract.
 - Bootstrap and administration surfaces may temporarily call subsystem crates directly only for init, config management, credential management, and plugin management.
 - Temporary subsystem direct calls are documented in `docs/overview/implementation-gaps.md`.
+
+## F-014 Agent Team CLI Connection
+
+Agent Team mode must be based on Agent CLI instances that initiate outbound long-lived connections to an Agent Team Backend. The product-facing subject is the Agent.
+
+Acceptance criteria:
+
+- Documentation uses `Agent`, `Agent CLI`, `Agent Connection`, `Agent Presence`, `Agent Work Status`, and `Agent Task Lease` terminology.
+- Documentation states that Agent CLI connects outbound to the Agent Team Backend through WebSocket and does not open a local inbound port.
+- Documentation states that the FastAPI backend can expose the WebSocket route on the same HTTPS port as its REST API.
+- Documentation states that production traffic uses `wss://`, while local development may use `ws://localhost:<port>`.
+- Documentation recommends the Rust client stack for Agent CLI: `tokio`, `tokio-tungstenite`, `futures`, `serde`, `serde_json`, `uuid`, `tokio-util`, `tracing`, and `reqwest`.
+- Documentation defines connection authentication, application-level `RegisterAgent`, backend-granted capabilities, heartbeat, degraded/offline timeout behavior, work status, task lease, reconnect, and replay semantics.
+- Documentation states that WebSocket transport does not provide business permissions by itself; each backend control message must still be authorized by team, workspace, capability, and active lease.
+- Documentation states that the backend must not silently approve local high-risk operations and must not bypass the Agent CLI/Core Runtime permission and confirmation chain.
+- Documentation states that TUI Agent Team state is populated only by real Agent Team events and remains separate from local Conversation workflow.

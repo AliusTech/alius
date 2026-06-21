@@ -36,8 +36,8 @@ pub enum ShellOrigin {
     LocalCli,
     /// Remote A2A protocol (restricted).
     RemoteA2A,
-    /// Embedded SDK (restricted).
-    Embedded,
+    /// WASM plugin runtime (restricted).
+    WasmPlugin,
 }
 
 /// Result of a full Shell Gate analysis.

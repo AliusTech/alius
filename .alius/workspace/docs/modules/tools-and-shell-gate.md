@@ -42,7 +42,7 @@ Primary paths:
 Tools fall into two categories:
 
 - **WASM plugin tools** — sandboxed, third-party-distributable, pure-computation (no direct OS access). Loaded through `WasmPluginTool`.
-- **Native tools** (`runtime/tools/src/native/`) — built-in Rust `AliusTool` impls that need OS syscalls the WASM sandbox cannot provide (shell execution, filesystem access). They reuse the same security primitives (Shell Gate, workspace boundary).
+- **Native tools** (`runtime/tools/src/native/`) — built-in Rust `AliusTool` impls that need OS syscalls the WASM sandbox cannot provide (shell execution, filesystem access, code search, local service verification). They reuse the same security primitives (Shell Gate, workspace boundary).
 
 `AliusTool` is the trait both categories implement. `ToolRegistry` stores `Arc<dyn AliusTool>` so native and WASM-backed tools coexist in one map. Native tools are registered by `native::register_native_tools` during registry build (`package.rs` `build_registry`/`build_registry_lossy`).
 
@@ -74,7 +74,7 @@ Git commands are classified by subcommand:
 
 **Workspace boundary violations are hard-denied under `AcceptEdits`**: commands that reference paths outside the workspace (via absolute paths, `../` escape, redirections like `> /tmp/out`, or flags like `--output=/external`) are rejected with `ShellGateDecision::Deny`. `ApprovalRequired` is reserved for high-risk commands that remain within workspace boundaries (e.g., `rm -rf ./build`).
 
-When `permission_strategy = AcceptEdits`, `ApprovalRequired` shell decisions trigger user confirmation before execution. When `permission_strategy = BypassPermissions`, Shell Gate is skipped for that execution and the command result comes from the underlying OS/process.
+When `permission_strategy = AcceptEdits`, `ApprovalRequired` shell decisions trigger user confirmation before execution. For the raw `shell` tool, `permission_strategy = BypassPermissions` skips Alius Shell Gate interception and the command result comes from the underlying OS/process. Native tools may apply stricter hard boundaries even in Bypass mode when their product contract requires it.
 
 ## Rust WASM Module Tools
 
@@ -94,6 +94,10 @@ Built-in tools under `runtime/tools/src/native/`. Each implements `AliusTool` di
 - **`write_file`** — `Write`. `AcceptEdits` uses workspace boundary and may require confirmation through the runtime confirmation chain; `BypassPermissions` resolves the target directly and writes if the OS allows it.
 - **`list_dir`** — `Read`. Same path strategy as `read_file`; sorted `file\tname` / `dir\tname` lines.
 - **`edit_file`** — `Write`. Same path strategy as `write_file`; replaces all occurrences of `find` with `replace`; `AcceptEdits` may require confirmation.
+- **`search_code`** (`native/search_code.rs`) — `Read`. Searches source text inside the workspace using `rg` when available and `grep` as fallback. Inputs are `query`, `path`, `glob`, `context`, `case_sensitive`, and `max_results`. The tool always resolves `path` inside the workspace and rejects absolute paths, `../` escape, and symlink escape; this read boundary is not relaxed by Bypass mode. Output is stable JSON with `matches[]` entries containing `file`, `line`, `column`, `text`, and `truncated`.
+- **`run_local_service`** (`native/local_service.rs`) — `Execute`. Starts a long-running local command, waits for a loopback readiness URL, returns the verified local URL, and stops the child before returning unless `keep_running=true`. Inputs are `command`, `cwd`, `expected_url`, `port`, `readiness_path`, `timeout_secs`, and `keep_running`. Readiness URLs must be `localhost`, `127.0.0.1`, `0.0.0.0` normalized to `127.0.0.1`, or `[::1]`; external URLs are rejected. The command uses Shell Gate hard-deny checks even in Bypass mode, but Bypass mode skips `ToolConfirmationRequired` for approval-required commands.
+- **`local_service_status`** — `Read`. Reports status, URL, PID, uptime, and log tail for a service that was intentionally kept running.
+- **`stop_local_service`** — `Execute`. Stops a kept-running local service by `service_id`.
 
 `resolve_within_workspace(path, workspace, must_exist)` is the shared boundary helper (join + canonicalize + `startswith workspace`). It rejects absolute paths, `../` traversal, and symlink escape in one place.
 

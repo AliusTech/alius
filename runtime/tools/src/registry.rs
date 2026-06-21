@@ -128,6 +128,10 @@ mod tests {
         assert!(registry.has("write_file"));
         assert!(registry.has("list_dir"));
         assert!(registry.has("edit_file"));
+        assert!(registry.has("search_code"));
+        assert!(registry.has("run_local_service"));
+        assert!(registry.has("local_service_status"));
+        assert!(registry.has("stop_local_service"));
     }
 
     #[test]
@@ -157,6 +161,10 @@ mod tests {
         assert!(names.contains(&"write_file".to_string()));
         assert!(names.contains(&"list_dir".to_string()));
         assert!(names.contains(&"edit_file".to_string()));
+        assert!(names.contains(&"search_code".to_string()));
+        assert!(names.contains(&"run_local_service".to_string()));
+        assert!(names.contains(&"local_service_status".to_string()));
+        assert!(names.contains(&"stop_local_service".to_string()));
     }
 
     #[test]
@@ -180,7 +188,17 @@ mod tests {
         let registry = ToolRegistry::new();
         native::register_native_tools(&registry);
 
-        for name in &["shell", "read_file", "write_file", "list_dir", "edit_file"] {
+        for name in &[
+            "shell",
+            "read_file",
+            "write_file",
+            "list_dir",
+            "edit_file",
+            "search_code",
+            "run_local_service",
+            "local_service_status",
+            "stop_local_service",
+        ] {
             let result = registry.register(FakeTool::new(name));
             assert!(result.is_err(), "duplicate '{}' must be rejected", name);
         }
@@ -238,9 +256,9 @@ mod tests {
             .count();
         let mcp_count = infos.iter().filter(|i| i.source == ToolSource::Mcp).count();
 
-        assert_eq!(native_count, 5); // shell, read_file, write_file, list_dir, edit_file
+        assert_eq!(native_count, 9);
         assert_eq!(mcp_count, 1); // mcp_search
-        assert_eq!(infos.len(), 6);
+        assert_eq!(infos.len(), 10);
     }
 
     #[test]

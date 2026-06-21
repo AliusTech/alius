@@ -130,8 +130,12 @@ impl LlmProvider for GoogleProvider {
         assistant_tool_calls: &'a [ToolCall],
         tools: &'a [ToolDef],
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>> {
-        self.inner
-            .continue_with_tool_results(conversation, tool_results, assistant_tool_calls, tools)
+        self.inner.continue_with_tool_results(
+            conversation,
+            tool_results,
+            assistant_tool_calls,
+            tools,
+        )
     }
 }
 

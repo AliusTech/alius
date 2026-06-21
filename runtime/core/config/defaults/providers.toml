@@ -29,7 +29,13 @@ api_key_env = "BIGMODEL_API_KEY"
 [providers.xiaomi_mimo]
 enabled = false
 kind = "openai-compatible"
-base_url = "https://api.xiaomimimo.com/v1"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+api_key_env = "XIAOMI_MIMO_API_KEY"
+
+[providers.xiaomi_mimo_anthropic]
+enabled = false
+kind = "anthropic"
+base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
 api_key_env = "XIAOMI_MIMO_API_KEY"
 
 [providers.deepseek]

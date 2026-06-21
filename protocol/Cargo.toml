@@ -9,7 +9,6 @@ description = "Shared types and protocols for Alius"
 [features]
 default = ["std"]
 std = []
-embedded = []
 testing = []
 
 [dependencies]

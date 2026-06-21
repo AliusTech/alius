@@ -52,6 +52,7 @@ pub enum PlanNodeStatus {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InteractionMode {
+    Chat,
     Plan,
     Bypass,
 }
@@ -185,6 +186,11 @@ pub struct ConversationBlock {
     pub block_type: ConversationBlockType,
     pub title: Option<String>,
     pub content: String,
+    /// When this block represents a tool call, the raw tool name (e.g. "shell",
+    /// "read_file") so the header can show a per-tool icon instead of the
+    /// generic block-type symbol. `None` for non-tool blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,15 +262,15 @@ impl PlanNodeStatus {
     #[allow(dead_code)]
     pub fn icon(&self) -> &'static str {
         match self {
-            PlanNodeStatus::Pending => "○",
-            PlanNodeStatus::Running => "⏺",
-            PlanNodeStatus::Completed => "✓",
-            PlanNodeStatus::Review => "◎",
-            PlanNodeStatus::Approved => "✔",
-            PlanNodeStatus::Revising => "↻",
-            PlanNodeStatus::Failed => "×",
-            PlanNodeStatus::Blocked => "⚠",
-            PlanNodeStatus::Cancelled => "⊘",
+            PlanNodeStatus::Pending => "PD",
+            PlanNodeStatus::Running => "RN",
+            PlanNodeStatus::Completed => "OK",
+            PlanNodeStatus::Review => "RV",
+            PlanNodeStatus::Approved => "AP",
+            PlanNodeStatus::Revising => "RE",
+            PlanNodeStatus::Failed => "ER",
+            PlanNodeStatus::Blocked => "BL",
+            PlanNodeStatus::Cancelled => "CN",
         }
     }
 

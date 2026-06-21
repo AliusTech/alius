@@ -1,33 +1,153 @@
 //! Loader for permissions.toml.
+//!
+//! Supports two schema formats:
+//! - **New format** (simplified): `[filesystem] mode`, `[[filesystem.roots]]`, `[network]`
+//! - **Old format** (full): all sections explicitly defined
+//!
+//! The new format uses defaults for missing sections. The old format requires all fields.
 
 use crate::error::ConfigResult;
 use crate::views::{
-    EmbeddedSdkPermission, FilesystemPermission, MemoryPermission, NetworkPermission,
-    PermissionConfig, ProjectDocumentPermission, RemoteA2APermission, ShellPermission,
-    ShellScopeConfig,
+    FilesystemPermission, MemoryPermission, NetworkPermission, PermissionConfig,
+    ProjectDocumentPermission, RemoteA2APermission, ShellPermission, ShellScopeConfig,
 };
 use std::path::Path;
 
 /// Load permissions.toml from the given path.
+///
+/// Tries the new simplified schema first, then falls back to the old full schema.
 pub fn load_permissions(path: &Path) -> ConfigResult<PermissionConfig> {
-    let raw: PermissionsToml = super::load_toml(path)?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| crate::error::ConfigError::io(path, e))?;
+
+    // Try new simplified schema first (must have roots)
+    if let Ok(raw) = toml::from_str::<NewPermissionsToml>(&content) {
+        // Validate that the new schema has roots defined
+        if !raw.filesystem.roots.is_empty() {
+            return Ok(raw.into());
+        }
+    }
+
+    // Fall back to old full schema
+    let raw: OldPermissionsToml =
+        toml::from_str(&content).map_err(|e| crate::error::ConfigError::parse(path, e))?;
     Ok(raw.into())
 }
 
-/// permissions.toml raw structure.
+/// Load permissions.toml from the given path (for testing).
+///
+/// Returns the raw content and which schema was used.
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn load_permissions_debug(path: &Path) -> ConfigResult<(PermissionConfig, &'static str)> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| crate::error::ConfigError::io(path, e))?;
+
+    // Try new simplified schema first
+    if let Ok(raw) = toml::from_str::<NewPermissionsToml>(&content) {
+        return Ok((raw.into(), "new"));
+    }
+
+    // Fall back to old full schema
+    let raw: OldPermissionsToml =
+        toml::from_str(&content).map_err(|e| crate::error::ConfigError::parse(path, e))?;
+    Ok((raw.into(), "old"))
+}
+
+/// New simplified permissions.toml structure.
+///
+/// Only requires `[filesystem]` and optionally `[network]`. Other sections use defaults.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct PermissionsToml {
+struct NewPermissionsToml {
+    filesystem: NewFilesystemConfig,
+    #[serde(default)]
+    network: Option<NewNetworkConfig>,
+}
+
+/// New filesystem configuration with mode and roots.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
+struct NewFilesystemConfig {
+    #[serde(default = "default_fs_mode")]
+    mode: String,
+    #[serde(default)]
+    roots: Vec<FilesystemRoot>,
+}
+
+/// Filesystem root entry.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FilesystemRoot {
+    root: String,
+    #[serde(default = "default_true")]
+    read: bool,
+    #[serde(default)]
+    write: bool,
+}
+
+/// New network configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct NewNetworkConfig {
+    #[serde(default)]
+    enabled: bool,
+}
+
+fn default_fs_mode() -> String {
+    "workspace".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl From<NewPermissionsToml> for PermissionConfig {
+    fn from(raw: NewPermissionsToml) -> Self {
+        let fs = raw.filesystem;
+        let workspace_root = fs
+            .roots
+            .first()
+            .map(|r| r.root.clone())
+            .unwrap_or_else(|| ".".to_string());
+        let allow_read = fs.roots.first().map(|r| r.read).unwrap_or(true);
+        let allow_write = fs.roots.first().map(|r| r.write).unwrap_or(false);
+
+        let network = raw.network.unwrap_or(NewNetworkConfig { enabled: false });
+
+        Self {
+            filesystem: FilesystemPermission {
+                workspace_root,
+                allow_read,
+                allow_write,
+                allow_delete: false,
+                require_confirmation_for_write: true,
+                require_confirmation_for_delete: true,
+            },
+            shell: ShellPermission::default(),
+            network: NetworkPermission {
+                enabled: network.enabled,
+                require_confirmation: true,
+                allowlist: vec![],
+                denylist: vec![],
+            },
+            memory: MemoryPermission::default(),
+            project_documents: ProjectDocumentPermission::default(),
+            remote_a2a: RemoteA2APermission::default(),
+        }
+    }
+}
+
+/// Old full permissions.toml structure (requires all sections).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OldPermissionsToml {
     filesystem: FilesystemPermission,
     shell: ShellPermission,
     network: NetworkPermission,
     memory: MemoryPermission,
     project_documents: ProjectDocumentPermission,
     remote_a2a: RemoteA2APermission,
-    embedded_sdk: EmbeddedSdkPermission,
 }
 
-impl From<PermissionsToml> for PermissionConfig {
-    fn from(raw: PermissionsToml) -> Self {
+impl From<OldPermissionsToml> for PermissionConfig {
+    fn from(raw: OldPermissionsToml) -> Self {
         Self {
             filesystem: raw.filesystem,
             shell: raw.shell,
@@ -35,7 +155,6 @@ impl From<PermissionsToml> for PermissionConfig {
             memory: raw.memory,
             project_documents: raw.project_documents,
             remote_a2a: raw.remote_a2a,
-            embedded_sdk: raw.embedded_sdk,
         }
     }
 }
@@ -100,13 +219,6 @@ impl Default for PermissionConfig {
                 allow_shell: false,
                 allow_network: false,
                 allowed_tools: vec![],
-            },
-            embedded_sdk: EmbeddedSdkPermission {
-                allow_shell: false,
-                allow_local_tools: false,
-                allow_lancedb: false,
-                allow_local_embedding: false,
-                allow_plugin_runtime: false,
             },
         }
     }

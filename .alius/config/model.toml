@@ -1,6 +1,6 @@
 schema_version = "0.1"
 
 [assignment]
-plan = "glm-4.7-thinking"
-execute = "claude-sonnet-4.5"
-review = "gpt-5.5"
+plan = ""
+execute = ""
+review = ""

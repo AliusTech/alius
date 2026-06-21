@@ -85,7 +85,7 @@ impl Default for ProviderConfig {
                     ProviderSettings {
                         enabled: false,
                         kind: "openai-compatible".to_string(),
-                        base_url: "https://api.xiaomimimo.com/v1".to_string(),
+                        base_url: "https://token-plan-cn.xiaomimimo.com/v1".to_string(),
                         api_key_env: "XIAOMI_MIMO_API_KEY".to_string(),
                     },
                 );

@@ -58,7 +58,7 @@ async fn handle_mcp_subcommand(
             // List tools from the connected server
             if let Some(client) = registry.get_server(&name).await {
                 let tools = client.list_tools().await?;
-                println!("✓ Connected successfully!");
+                println!("[ok] Connected successfully!");
                 println!("\nAvailable tools ({}):", tools.len());
                 for tool in tools {
                     let desc = tool.description.as_deref().unwrap_or("(no description)");
@@ -71,7 +71,7 @@ async fn handle_mcp_subcommand(
             println!("Disconnecting from MCP server: {}...", name);
             // Note: Current implementation doesn't maintain persistent connections
             // This is a no-op for now
-            println!("✓ Server {} disconnected", name);
+            println!("[ok] Server {} disconnected", name);
         }
 
         McpCommand::Tools { server } => {
@@ -110,10 +110,10 @@ async fn handle_mcp_subcommand(
                 } else {
                     println!("\nMCP Tools by Server:\n");
                     for (server_name, tools) in all_tools {
-                        println!("📦 {}", server_name);
+                        println!("[server] {}", server_name);
                         for tool in tools {
                             let desc = tool.description.as_deref().unwrap_or("(no description)");
-                            println!("  🔧 {} - {}", tool.name, desc);
+                            println!("  [tool] {} - {}", tool.name, desc);
                         }
                         println!();
                     }
@@ -143,7 +143,7 @@ async fn handle_mcp_subcommand(
             println!("Calling tool: {}...", tool);
             let result = registry.call_tool(&server, &tool, arguments).await?;
 
-            println!("\n✓ Tool executed successfully!");
+            println!("\n[ok] Tool executed successfully!");
             println!("\nResult:");
             for content in result.content {
                 match content {
@@ -158,7 +158,7 @@ async fn handle_mcp_subcommand(
             }
 
             if let Some(true) = result.is_error {
-                println!("\n⚠ Tool reported an error");
+                println!("\n[warn] Tool reported an error");
             }
         }
     }

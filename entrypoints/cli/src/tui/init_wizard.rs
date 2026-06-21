@@ -19,8 +19,10 @@ use crate::tui::theme;
 const PROVIDERS: &[&str] = &["bigmodel", "xiaomi_mimo", "deepseek"];
 const BIGMODEL_OPENAI_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 const BIGMODEL_ANTHROPIC_BASE_URL: &str = "https://open.bigmodel.cn/api/anthropic";
-const XIAOMI_MIMO_OPENAI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
-const XIAOMI_MIMO_ANTHROPIC_BASE_URL: &str = "https://api.xiaomimimo.com/anthropic";
+const XIAOMI_MIMO_OPENAI_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
+const XIAOMI_MIMO_OPENAI_SGP_BASE_URL: &str = "https://token-plan-sgp.xiaomimimo.com/v1";
+const XIAOMI_MIMO_ANTHROPIC_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/anthropic";
+const XIAOMI_MIMO_ANTHROPIC_SGP_BASE_URL: &str = "https://token-plan-sgp.xiaomimimo.com/anthropic";
 const DEEPSEEK_OPENAI_BASE_URL: &str = "https://api.deepseek.com";
 const DEEPSEEK_ANTHROPIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 const CUSTOM_BASE_URL: &str = "http://localhost:8080/v1";
@@ -100,11 +102,17 @@ pub async fn run_init_wizard() -> Result<Option<Settings>> {
 }
 
 fn run_wizard_loop(app: &mut TuiApp) -> Result<Option<Settings>> {
-    let locale = Settings::load()
-        .ok()
-        .map(|s| s.ui.locale)
+    let loaded = Settings::load().ok();
+    let locale = loaded
+        .as_ref()
+        .map(|s| s.ui.locale.clone())
         .unwrap_or_else(|| "en".to_string());
+    let theme = loaded
+        .as_ref()
+        .map(|s| s.ui.theme.clone())
+        .unwrap_or_else(|| "dark".to_string());
     crate::set_locale(&locale);
+    crate::tui::theme::set_theme(&theme);
 
     let mut provider: ProviderType = ProviderType::BigModel;
     let mut provider_mode: Option<ProviderMode> = None;
@@ -462,7 +470,10 @@ fn run_wizard_loop(app: &mut TuiApp) -> Result<Option<Settings>> {
                                         },
                                         agent: runtime_config::AgentSettings::default(),
                                         soul: runtime_config::SoulSettings { role: soul_role },
-                                        ui: runtime_config::UiSettings { locale },
+                                        ui: runtime_config::UiSettings {
+                                            locale,
+                                            theme: "dark".to_string(),
+                                        },
                                         update: runtime_config::UpdateSettings::default(),
                                     };
                                     settings.save_to_project_config()?;
@@ -577,12 +588,20 @@ fn base_url_choices(
         ],
         ProviderType::XiaomiMimo => vec![
             BaseUrlChoice {
-                label: "OpenAI API",
+                label: "OpenAI API (China)",
                 url: Some(XIAOMI_MIMO_OPENAI_BASE_URL),
             },
             BaseUrlChoice {
-                label: "Anthropic API",
+                label: "OpenAI API (Singapore)",
+                url: Some(XIAOMI_MIMO_OPENAI_SGP_BASE_URL),
+            },
+            BaseUrlChoice {
+                label: "Anthropic API (China)",
                 url: Some(XIAOMI_MIMO_ANTHROPIC_BASE_URL),
+            },
+            BaseUrlChoice {
+                label: "Anthropic API (Singapore)",
+                url: Some(XIAOMI_MIMO_ANTHROPIC_SGP_BASE_URL),
             },
             BaseUrlChoice {
                 label: "Custom",
@@ -712,6 +731,30 @@ mod tests {
         assert_eq!(choices.len(), 3);
         assert_eq!(choices[0].url, Some("https://api.deepseek.com"));
         assert_eq!(choices[1].url, Some("https://api.deepseek.com/anthropic"));
+    }
+
+    #[test]
+    fn test_xiaomi_base_url_choices_include_regions() {
+        let choices = base_url_choices(&ProviderType::XiaomiMimo, &None);
+
+        assert_eq!(choices.len(), 5);
+        assert_eq!(
+            choices[0].url,
+            Some("https://token-plan-cn.xiaomimimo.com/v1")
+        );
+        assert_eq!(
+            choices[1].url,
+            Some("https://token-plan-sgp.xiaomimimo.com/v1")
+        );
+        assert_eq!(
+            choices[2].url,
+            Some("https://token-plan-cn.xiaomimimo.com/anthropic")
+        );
+        assert_eq!(
+            choices[3].url,
+            Some("https://token-plan-sgp.xiaomimimo.com/anthropic")
+        );
+        assert_eq!(choices[4].url, None);
     }
 
     #[test]

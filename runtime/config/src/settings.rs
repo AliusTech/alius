@@ -467,8 +467,10 @@ impl LlmSettings {
                 _ => "https://generativelanguage.googleapis.com/v1beta".to_string(),
             },
             ProviderType::XiaomiMimo => match self.provider_mode {
-                Some(ProviderMode::Native) => "https://api.xiaomimimo.com/anthropic".to_string(),
-                _ => "https://api.xiaomimimo.com/v1".to_string(),
+                Some(ProviderMode::Native) => {
+                    "https://token-plan-cn.xiaomimimo.com/anthropic".to_string()
+                }
+                _ => "https://token-plan-cn.xiaomimimo.com/v1".to_string(),
             },
             ProviderType::DeepSeek => match self.provider_mode {
                 Some(ProviderMode::Native) => "https://api.deepseek.com/anthropic".to_string(),
@@ -517,16 +519,24 @@ pub struct UiSettings {
     /// Locale for the UI (e.g., "en", "zh-CN", "ja").
     #[serde(default = "default_locale")]
     pub locale: String,
+    /// Named TUI color theme (e.g., "dark"). Unknown names fall back to dark.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 fn default_locale() -> String {
     "en".to_string()
 }
 
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
             locale: default_locale(),
+            theme: default_theme(),
         }
     }
 }

@@ -54,7 +54,9 @@ impl MemoryBridge {
     /// conversation or injected as a system message. Returns empty string
     /// if no relevant memories are found.
     pub fn retrieve_context(&self, user_message: &str) -> Result<String> {
-        let hits = self.semantic.keyword_search(user_message, self.max_context_hits)?;
+        let hits = self
+            .semantic
+            .keyword_search(user_message, self.max_context_hits)?;
 
         // Filter by minimum score
         let hits: Vec<_> = hits
@@ -135,7 +137,8 @@ mod tests {
     fn test_bridge_max_hits_respected() {
         let sem = Arc::new(SemanticStore::open_in_memory().unwrap());
         for i in 0..10 {
-            sem.upsert_fact(&format!("fact {}", i), "workspace").unwrap();
+            sem.upsert_fact(&format!("fact {}", i), "workspace")
+                .unwrap();
         }
 
         let bridge = MemoryBridge::new(sem).with_max_hits(3);
@@ -169,6 +172,9 @@ mod tests {
         // Should be retrievable
         let bridge2 = MemoryBridge::new(sem);
         let ctx = bridge2.retrieve_context("Rust").unwrap();
-        assert!(!ctx.is_empty(), "recorded interaction should be retrievable");
+        assert!(
+            !ctx.is_empty(),
+            "recorded interaction should be retrievable"
+        );
     }
 }

@@ -1059,6 +1059,8 @@ impl CoreRuntimeApi for CoreRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use runtime_model::{ChatEvent, ChatStream, LlmProvider, ToolCall, ToolResponse};
 
     fn test_runtime() -> CoreRuntime {
         let _lock = TEST_ENV_LOCK
@@ -1069,6 +1071,90 @@ mod tests {
 
     fn test_runtime_unlocked() -> CoreRuntime {
         CoreRuntime::new(WorkspaceRef::new("/tmp/test-workspace"))
+    }
+
+    struct SlowProvider;
+
+    impl LlmProvider for SlowProvider {
+        fn chat_stream<'a>(
+            &'a self,
+            _conversation: &'a runtime_model::Conversation,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<ChatStream>> + Send + 'a>,
+        > {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(Box::pin(stream::iter(vec![
+                    Ok(ChatEvent::Delta {
+                        text: "done".to_string(),
+                    }),
+                    Ok(ChatEvent::Done {
+                        full_response: "done".to_string(),
+                    }),
+                ])) as ChatStream)
+            })
+        }
+
+        fn chat_once<'a>(
+            &'a self,
+            _prompt: &'a str,
+            _system: Option<&'a str>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>
+        {
+            Box::pin(async { Ok("done".to_string()) })
+        }
+
+        fn list_models<'a>(
+            &'a self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn chat_stream_with_tools<'a>(
+            &'a self,
+            conversation: &'a runtime_model::Conversation,
+            _tools: &'a [protocol_interface::ToolDef],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResponse> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let stream = self.chat_stream(conversation).await?;
+                Ok((stream, None))
+            })
+        }
+
+        fn continue_with_tool_results<'a>(
+            &'a self,
+            _conversation: &'a runtime_model::Conversation,
+            _tool_results: &'a [(String, String, String)],
+            _assistant_tool_calls: &'a [ToolCall],
+            _tools: &'a [protocol_interface::ToolDef],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResponse> + Send + 'a>>
+        {
+            Box::pin(async {
+                Ok((
+                    Box::pin(stream::iter(vec![Ok(ChatEvent::Done {
+                        full_response: String::new(),
+                    })])) as ChatStream,
+                    None,
+                ))
+            })
+        }
+    }
+
+    fn slow_streaming_runtime(workspace_ref: WorkspaceRef) -> CoreRuntime {
+        let client = runtime_model::LlmClient::new_with_provider_for_test(
+            Box::new(SlowProvider),
+            "mock-model",
+            protocol_interface::ProviderType::Openai,
+        );
+        CoreRuntimeBuilder::new()
+            .workspace_ref(workspace_ref)
+            .settings(Settings::default())
+            .client(client)
+            .build()
+            .unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1364,8 +1450,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_streaming_run_stops_future_events() {
-        let rt = test_runtime();
-        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let workspace_ref = WorkspaceRef::new(workspace.path());
+        let rt = slow_streaming_runtime(workspace_ref.clone());
+        let request = CoreRequest::run_loop("test", RuntimeMode::Chat, LoopPolicy::chat()).unwrap();
         let envelope =
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
 
@@ -1405,9 +1493,7 @@ mod tests {
         for attempt in 0..10 {
             tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
 
-            let sessions = rt
-                .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
-                .unwrap();
+            let sessions = rt.list_sessions(&workspace_ref).unwrap();
             if let Some(session) = sessions.first() {
                 if let Ok(snapshot) = rt.inspect(&session.session_ref) {
                     if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
@@ -1527,8 +1613,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn cancelled_status_is_terminal() {
-        let rt = test_runtime();
-        let request = CoreRequest::run_loop("test", RuntimeMode::Plan, LoopPolicy::plan()).unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let workspace_ref = WorkspaceRef::new(workspace.path());
+        let rt = slow_streaming_runtime(workspace_ref.clone());
+        let request = CoreRequest::run_loop("test", RuntimeMode::Chat, LoopPolicy::chat()).unwrap();
         let envelope =
             ProtocolEnvelope::new(Origin::LocalCli, CapabilityScope::local_cli(), request);
 
@@ -1549,9 +1637,7 @@ mod tests {
         {}
 
         // Verify status is still Cancelled (not overwritten by FinalResult)
-        let sessions = rt
-            .list_sessions(&WorkspaceRef::new("/tmp/test-workspace"))
-            .unwrap();
+        let sessions = rt.list_sessions(&workspace_ref).unwrap();
         if let Some(session) = sessions.first() {
             let snapshot = rt.inspect(&session.session_ref).unwrap();
             if let Some(run) = snapshot.runs.iter().find(|r| r.run_ref == run_ref) {
@@ -1623,7 +1709,7 @@ mod tests {
             .iter()
             .filter(|t| t.source == ToolSource::RustWasm)
             .collect();
-        assert_eq!(native_tools.len(), 5, "should have 5 native tools");
+        assert_eq!(native_tools.len(), 9, "should have 9 native tools");
 
         // Verify MCP tool has Mcp source.
         let mcp_tools: Vec<_> = tool_list

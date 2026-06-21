@@ -40,30 +40,32 @@ pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Load the complete project configuration snapshot.
+///
+/// For each config file:
+/// - If the file doesn't exist, use defaults
+/// - If the file exists but fails to parse, propagate the error
 pub fn load_project_config(cwd: &Path) -> ConfigResult<ProjectConfigSnapshot> {
     let project_root = find_project_root(cwd).ok_or(ConfigError::ProjectRootNotFound)?;
 
     let config_dir = project_root.join(".alius/config");
 
-    // Load each config file, using defaults if missing
-    let config =
-        load_config(&config_dir.join("config.toml")).unwrap_or_else(|_| Default::default());
+    // Load each config file, using defaults only if missing
+    let config = load_config_if_exists(&config_dir.join("config.toml"))?.unwrap_or_default();
 
     let providers =
-        load_providers(&config_dir.join("providers.toml")).unwrap_or_else(|_| Default::default());
+        load_providers_if_exists(&config_dir.join("providers.toml"))?.unwrap_or_default();
 
     let model_assignment =
-        load_or_migrate_model_assignment(&config_dir.join("model.toml"), &providers);
+        load_or_migrate_model_assignment(&config_dir.join("model.toml"), &providers)?;
 
-    let tools = load_tools(&config_dir.join("tools.toml")).unwrap_or_else(|_| Default::default());
+    let tools = load_tools_if_exists(&config_dir.join("tools.toml"))?.unwrap_or_default();
 
-    let permissions = load_permissions(&config_dir.join("permissions.toml"))
-        .unwrap_or_else(|_| Default::default());
+    let permissions =
+        load_permissions_if_exists(&config_dir.join("permissions.toml"))?.unwrap_or_default();
 
-    let protocol =
-        load_protocol(&config_dir.join("protocol.toml")).unwrap_or_else(|_| Default::default());
+    let protocol = load_protocol_if_exists(&config_dir.join("protocol.toml"))?.unwrap_or_default();
 
-    let soul = load_soul(&config_dir.join("soul.toml")).unwrap_or_else(|_| Default::default());
+    let soul = load_soul_if_exists(&config_dir.join("soul.toml"))?.unwrap_or_default();
 
     Ok(ProjectConfigSnapshot {
         project: config.project,
@@ -79,6 +81,55 @@ pub fn load_project_config(cwd: &Path) -> ConfigResult<ProjectConfigSnapshot> {
         protocol,
         soul,
     })
+}
+
+/// Load a config file if it exists, returning None for missing files.
+/// Propagates parse errors for existing files.
+fn load_config_if_exists(path: &Path) -> ConfigResult<Option<crate::loaders::ConfigToml>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_config(path).map(Some)
+}
+
+/// Load providers.toml if it exists.
+fn load_providers_if_exists(path: &Path) -> ConfigResult<Option<ProviderConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_providers(path).map(Some)
+}
+
+/// Load tools.toml if it exists.
+fn load_tools_if_exists(path: &Path) -> ConfigResult<Option<ToolConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_tools(path).map(Some)
+}
+
+/// Load permissions.toml if it exists.
+fn load_permissions_if_exists(path: &Path) -> ConfigResult<Option<PermissionConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_permissions(path).map(Some)
+}
+
+/// Load protocol.toml if it exists.
+fn load_protocol_if_exists(path: &Path) -> ConfigResult<Option<crate::views::ProtocolConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_protocol(path).map(Some)
+}
+
+/// Load soul.toml if it exists.
+fn load_soul_if_exists(path: &Path) -> ConfigResult<Option<SoulConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    load_soul(path).map(Some)
 }
 
 /// Build the runtime configuration view from a snapshot.
@@ -395,13 +446,6 @@ allow_filesystem = false
 allow_shell = false
 allow_network = false
 allowed_tools = []
-
-[embedded_sdk]
-allow_shell = false
-allow_local_tools = false
-allow_lancedb = false
-allow_local_embedding = false
-allow_plugin_runtime = false
 "#;
         std::fs::write(config_dir.join("permissions.toml"), permissions_content).unwrap();
 

@@ -45,11 +45,11 @@ pub fn authorize(
     let inspection = parse_command(request);
     let scope = analyze_scope(request);
 
-    // RemoteA2A and Embedded origins: restrict to low-risk only.
+    // RemoteA2A and WASM plugin origins: restrict to low-risk only.
     if config.restrict_remote_to_readonly
         && matches!(
             request.origin,
-            ShellOrigin::RemoteA2A | ShellOrigin::Embedded
+            ShellOrigin::RemoteA2A | ShellOrigin::WasmPlugin
         )
         && inspection.risk_level > RiskLevel::Low
     {
@@ -223,16 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn test_embedded_restricted() {
-        let req = make_request_with_origin("find . -name '*.rs'", ShellOrigin::Embedded);
+    fn test_wasm_plugin_restricted() {
+        let req = make_request_with_origin("find . -name '*.rs'", ShellOrigin::WasmPlugin);
         let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
         // find is low risk — should be allowed
         assert_eq!(decision, ShellGateDecision::Allow);
     }
 
     #[test]
-    fn test_embedded_write_denied() {
-        let req = make_request_with_origin("rm file.txt", ShellOrigin::Embedded);
+    fn test_wasm_plugin_write_denied() {
+        let req = make_request_with_origin("rm file.txt", ShellOrigin::WasmPlugin);
         let (decision, _risk) = authorize(&req, &ShellGateConfig::default());
         assert!(matches!(decision, ShellGateDecision::Deny { .. }));
     }

@@ -146,6 +146,35 @@ pub(crate) fn missing_runtime_requirements(settings: &Settings) -> Vec<String> {
     missing
 }
 
+pub(crate) fn model_assignment_readiness_issues(
+    workspace_root: &std::path::Path,
+) -> Vec<runtime_config::ModelAssignmentReadinessIssue> {
+    runtime_config::load_project_config(workspace_root)
+        .map(|snapshot| {
+            runtime_config::model_assignment_readiness_issues(
+                &snapshot.model_assignment,
+                &snapshot.providers,
+            )
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn model_assignment_required_message(
+    issues: &[runtime_config::ModelAssignmentReadinessIssue],
+) -> String {
+    let details = issues
+        .iter()
+        .map(|issue| issue.message())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\x1b[33m{}\x1b[0m {}\n\x1b[32m{}\x1b[0m",
+        t!("repl.model_assignment_required"),
+        details,
+        t!("repl.model_assignment_required_hint")
+    )
+}
+
 pub(crate) struct LocalConversation {
     messages: Vec<Message>,
     _system_prompt: Option<String>,
@@ -309,6 +338,11 @@ impl ReplSession {
             println!("{}", init_required_message(&missing));
             return Ok(String::new());
         }
+        let assignment_issues = model_assignment_readiness_issues(&self.workspace_root);
+        if !assignment_issues.is_empty() {
+            println!("{}", model_assignment_required_message(&assignment_issues));
+            return Ok(String::new());
+        }
 
         // Chat, Bypass, and Plan use ProtocolBridge when available.
         if let Some(bridge) = &self.bridge {
@@ -373,8 +407,10 @@ impl ReplSession {
                     if !tools.is_empty() {
                         output.push_str("Built-in Tools:\n");
                         for tool in &tools {
-                            output
-                                .push_str(&format!("  🔧 {} - {}\n", tool.name, tool.description));
+                            output.push_str(&format!(
+                                "  [tool] {} - {}\n",
+                                tool.name, tool.description
+                            ));
                         }
                     }
 

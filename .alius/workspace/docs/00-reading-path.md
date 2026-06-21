@@ -37,6 +37,17 @@ Goal: make a scoped code change without crossing product, protocol, and runtime 
 
 Goal: decide whether a change belongs in product code, protocol interface code, Core Runtime, or an extension subsystem.
 
+## Agent Team Maintainer
+
+1. `../SPEC.md`
+2. `modules/agent-team.md`
+3. `products/tui-workspace.md`
+4. `interfaces/protocol-interface.md`
+5. `interfaces/events-and-tracing.md`
+6. `overview/implementation-gaps.md`
+
+Goal: design or review Agent CLI long-lived connections, Agent presence, work status, task leases, backend authorization, and TUI Agent Team event population.
+
 ## Documentation Maintainer
 
 1. `standards/documentation-maintenance.md`
@@ -44,4 +55,3 @@ Goal: decide whether a change belongs in product code, protocol interface code, 
 3. `../HISTORY.md`
 
 Goal: keep `.alius/workspace/` accurate as code evolves.
-

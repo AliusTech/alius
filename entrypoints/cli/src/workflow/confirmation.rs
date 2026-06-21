@@ -4,6 +4,11 @@
 //! - Non-interactive (CI/scripts): fail-closed, deny all confirmations
 //! - Interactive TUI: prompt the user for approval
 //! - JSON-RPC: forward confirmation request to the remote client
+//!
+//! **Status**: WIP — this module is not yet integrated into the execution path.
+//! Tracked as P0 in the quality gate audit.
+
+#![allow(dead_code)]
 
 use anyhow::Result;
 
@@ -63,7 +68,7 @@ impl ConfirmationChannel for StdinConfirmChannel {
         use std::io::{self, Write};
 
         println!();
-        println!("⚠️  Tool '{}' requires confirmation:", request.tool_name);
+        println!("Tool '{}' requires confirmation:", request.tool_name);
         println!("   Operation: {}", request.operation);
         if !request.details.is_empty() {
             println!("   Details: {}", request.details);
@@ -118,7 +123,10 @@ mod tests {
             operation: "execute command".to_string(),
             details: "rm -rf /tmp/test".to_string(),
         };
-        assert_eq!(channel.confirm(&req).unwrap(), ConfirmationDecision::Rejected);
+        assert_eq!(
+            channel.confirm(&req).unwrap(),
+            ConfirmationDecision::Rejected
+        );
     }
 
     #[test]
@@ -129,14 +137,17 @@ mod tests {
             operation: "execute command".to_string(),
             details: "ls -la".to_string(),
         };
-        assert_eq!(channel.confirm(&req).unwrap(), ConfirmationDecision::Approved);
+        assert_eq!(
+            channel.confirm(&req).unwrap(),
+            ConfirmationDecision::Approved
+        );
     }
 
     #[test]
     fn test_select_channel_interactive() {
         let channel = select_channel(true);
         // Verify it's not FailClosed (which would reject)
-        let req = ConfirmationRequest {
+        let _req = ConfirmationRequest {
             tool_name: "test".to_string(),
             operation: "test".to_string(),
             details: String::new(),
@@ -155,6 +166,9 @@ mod tests {
             operation: "test".to_string(),
             details: String::new(),
         };
-        assert_eq!(channel.confirm(&req).unwrap(), ConfirmationDecision::Rejected);
+        assert_eq!(
+            channel.confirm(&req).unwrap(),
+            ConfirmationDecision::Rejected
+        );
     }
 }

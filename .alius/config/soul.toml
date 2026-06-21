@@ -1,10 +1,3 @@
-# Alius project soul
-#
-# This file is the project-level source of agent identity and capability data.
-# It stores Agent Card-compatible fields in TOML. Fields that are only known
-# after publishing, such as service URLs and public asset URLs, remain empty
-# here and are filled when exporting/serving the A2A agent-card.json.
-
 [agent]
 name = ""
 description = ""
@@ -30,26 +23,5 @@ push_notifications = false
 extended_agent_card = false
 
 [interaction]
-default_input_modes = [
-  "text/plain",
-  "application/json",
-]
-default_output_modes = [
-  "text/plain",
-  "application/json",
-]
-
-[[skills]]
-id = ""
-name = ""
-description = ""
-tags = []
-examples = []
-input_modes = [
-  "text/plain",
-  "application/json",
-]
-output_modes = [
-  "text/plain",
-  "application/json",
-]
+default_input_modes = ["text/plain", "application/json"]
+default_output_modes = ["text/plain", "application/json"]

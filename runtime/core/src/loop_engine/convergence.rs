@@ -18,6 +18,7 @@ pub fn check_convergence(
             ConvergenceDecision::Completed,
             match iteration.mode {
                 RuntimeMode::Chat => "chat mode completed",
+                RuntimeMode::Bypass => "bypass mode completed",
                 RuntimeMode::Plan => "plan completed all steps",
             }
             .to_string(),
@@ -28,6 +29,7 @@ pub fn check_convergence(
             ConvergenceDecision::Completed,
             match iteration.mode {
                 RuntimeMode::Chat => "chat mode completed after one model step",
+                RuntimeMode::Bypass => "bypass mode completed after one model step",
                 RuntimeMode::Plan => "model produced final response without tool calls",
             }
             .to_string(),

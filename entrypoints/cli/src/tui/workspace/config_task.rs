@@ -2,8 +2,9 @@ use runtime_config::{
     load_project_config, ActionPanel as InitActionPanel, CheckItemStatus, InitApiProtocol,
     InitCommand, InitConfigIssue, InitConfigSection, InitContext, InitEvent, InitMessage,
     InitModelInfo, InitSoulRef, InitStage, InitState, InitViewModel, InitWizard,
-    ModelAssignmentConfig, ModelAssignmentRole, ModelLibraryEntry, ProviderConfig, ProviderMode,
-    ProviderSettings, ProviderType, ReasoningNote, Settings, SoulRole, TierConfig,
+    ModelAssignmentConfig, ModelAssignmentReadinessIssue, ModelAssignmentReadinessIssueKind,
+    ModelAssignmentRole, ModelLibraryEntry, ProviderConfig, ProviderMode, ProviderSettings,
+    ProviderType, ReasoningNote, Settings, SoulRole, TierConfig,
 };
 use runtime_model::LlmClient;
 use rust_i18n::t;
@@ -16,8 +17,10 @@ use crate::formula::FormulaDef;
 
 const BIGMODEL_OPENAI_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 const BIGMODEL_ANTHROPIC_BASE_URL: &str = "https://open.bigmodel.cn/api/anthropic";
-const XIAOMI_MIMO_OPENAI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
-const XIAOMI_MIMO_ANTHROPIC_BASE_URL: &str = "https://api.xiaomimimo.com/anthropic";
+const XIAOMI_MIMO_OPENAI_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
+const XIAOMI_MIMO_OPENAI_SGP_BASE_URL: &str = "https://token-plan-sgp.xiaomimimo.com/v1";
+const XIAOMI_MIMO_ANTHROPIC_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/anthropic";
+const XIAOMI_MIMO_ANTHROPIC_SGP_BASE_URL: &str = "https://token-plan-sgp.xiaomimimo.com/anthropic";
 const DEEPSEEK_OPENAI_BASE_URL: &str = "https://api.deepseek.com";
 const DEEPSEEK_ANTHROPIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 
@@ -47,7 +50,14 @@ pub struct InitNavSnapshot {
     pub done: [bool; 4],
 }
 
+/// Outcome of a config-task submission.
+///
+/// Variants inline `Settings` (a moderately large struct). These outcomes are
+/// short-lived values produced and consumed within a single event loop tick,
+/// never stored long-term, so the size is acceptable and boxing would just add
+/// indirection.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ConfigTaskOutcome {
     Next {
         accepted: String,
@@ -118,6 +128,7 @@ enum ModelPoolMode {
     Main,
     ViewSelect,
     ViewDetail,
+    Assignment,
     DeleteSelect,
     DeleteConfirm,
 }
@@ -172,6 +183,18 @@ impl ConfigTask {
 
     pub fn model_switch(settings: Settings) -> Self {
         Self::with_kind(settings, ConfigTaskKind::ModelPool)
+    }
+
+    pub fn model_switch_for_readiness(
+        settings: Settings,
+        issues: &[ModelAssignmentReadinessIssue],
+    ) -> Self {
+        let mut task = Self::model_switch(settings);
+        task.missing_notice = Some(model_assignment_readiness_message(issues));
+        if !task.enabled_models().is_empty() {
+            task.pool_mode = ModelPoolMode::Assignment;
+        }
+        task
     }
 
     fn with_kind(settings: Settings, kind: ConfigTaskKind) -> Self {
@@ -354,7 +377,12 @@ impl ConfigTask {
         }
 
         match self.section {
-            ConfigSection::ModelAssignment => self.submit_model_assignment(raw),
+            ConfigSection::ModelAssignment => {
+                if self.add_model.is_some() {
+                    return self.submit_add_model(raw);
+                }
+                self.submit_model_assignment(raw)
+            }
             ConfigSection::Language => self.submit_language(raw),
             ConfigSection::Soul => self.submit_soul(raw),
         }
@@ -453,7 +481,12 @@ impl ConfigTask {
             return self.model_pool_input();
         }
         match self.section {
-            ConfigSection::ModelAssignment => self.assignment_input(),
+            ConfigSection::ModelAssignment => {
+                if let Some(add) = &self.add_model {
+                    return self.add_model_input(add);
+                }
+                self.assignment_input()
+            }
             ConfigSection::Language => self.language_input(),
             ConfigSection::Soul => self.soul_input(),
         }
@@ -493,8 +526,9 @@ impl ConfigTask {
             };
         }
         if value == "model_pool" {
-            return ConfigTaskOutcome::Invalid {
-                message: t!("workspace.config_task.validation.model_pool_use_model").to_string(),
+            self.start_add_model();
+            return ConfigTaskOutcome::Next {
+                accepted: t!("workspace.config_task.action.add_model").to_string(),
                 prompt: self.prompt(),
             };
         }
@@ -539,6 +573,7 @@ impl ConfigTask {
         };
         self.draft.ui.locale = locale.to_string();
         crate::set_locale(locale);
+        crate::tui::theme::set_theme(&self.draft.ui.theme);
         self.dirty = true;
         self.applied()
     }
@@ -699,6 +734,7 @@ impl ConfigTask {
                         if reset {
                             self.draft = Settings::default();
                             crate::set_locale(&self.draft.ui.locale);
+                            crate::tui::theme::set_theme(&self.draft.ui.theme);
                             self.assignment_role = None;
                             self.add_model = None;
                         }
@@ -726,6 +762,7 @@ impl ConfigTask {
                 if LOCALES.iter().any(|(code, _)| *code == locale) {
                     self.draft.ui.locale = locale.clone();
                     crate::set_locale(&locale);
+                    crate::tui::theme::set_theme(&self.draft.ui.theme);
                     self.dirty = true;
                     if let Ok(wizard) = self.init_wizard_mut() {
                         wizard.context.language = Some(locale);
@@ -1028,6 +1065,7 @@ impl ConfigTask {
                     prompt: self.prompt(),
                 }
             }
+            ModelPoolMode::Assignment => self.submit_model_pool_assignment(raw),
             ModelPoolMode::DeleteSelect => self.submit_model_delete_select(raw),
             ModelPoolMode::DeleteConfirm => self.submit_model_delete_confirm(raw),
         }
@@ -1057,6 +1095,13 @@ impl ConfigTask {
                     prompt: self.prompt(),
                 }
             }
+            "assign_models" => {
+                self.pool_mode = ModelPoolMode::Assignment;
+                ConfigTaskOutcome::Next {
+                    accepted: "Assign Models".to_string(),
+                    prompt: self.prompt(),
+                }
+            }
             "save_config" => self.save_config(),
             "cancel" => ConfigTaskOutcome::Cancelled {
                 message: self.cancelled_message(),
@@ -1066,6 +1111,20 @@ impl ConfigTask {
                 prompt: self.prompt(),
             },
         }
+    }
+
+    fn submit_model_pool_assignment(&mut self, raw: &str) -> ConfigTaskOutcome {
+        if self.assignment_role.is_none() {
+            let value = choice_value(raw, &self.assignment_role_choices());
+            if value == "back" {
+                self.pool_mode = ModelPoolMode::Main;
+                return ConfigTaskOutcome::Next {
+                    accepted: "Back".to_string(),
+                    prompt: self.prompt(),
+                };
+            }
+        }
+        self.submit_model_assignment(raw)
     }
 
     fn submit_model_view_select(&mut self, raw: &str) -> ConfigTaskOutcome {
@@ -1106,17 +1165,6 @@ impl ConfigTask {
                 prompt: self.prompt(),
             };
         };
-        let refs = self.assignment.referenced_by(&entry.id);
-        if let Some(role) = refs.first() {
-            return ConfigTaskOutcome::Invalid {
-                message: format!(
-                    "{} is currently used by {}. Change it in /config before deleting.",
-                    entry.display_name,
-                    role.label()
-                ),
-                prompt: self.prompt(),
-            };
-        }
         self.pending_delete_model = Some(entry.id.clone());
         self.pool_mode = ModelPoolMode::DeleteConfirm;
         ConfigTaskOutcome::Next {
@@ -1519,7 +1567,7 @@ impl ConfigTask {
         match self.kind {
             ConfigTaskKind::Config => self.tabs_title(),
             ConfigTaskKind::Init => format!("Project Initialization\n{}", self.tabs_title()),
-            ConfigTaskKind::ModelPool => "Model Pool".to_string(),
+            ConfigTaskKind::ModelPool => t!("workspace.config_task.model_pool.title").to_string(),
         }
     }
 
@@ -1560,22 +1608,33 @@ impl ConfigTask {
 
     fn model_pool_message(&self) -> String {
         let mut lines = vec![
-            "Model pool stores the models available to this project.".to_string(),
-            "Plan, Execute, and Review assignment is configured in /config.".to_string(),
+            t!("workspace.config_task.model_pool.description").to_string(),
+            t!("workspace.config_task.model_pool.assignment_description").to_string(),
             String::new(),
         ];
+        if let Some(notice) = &self.missing_notice {
+            lines.push(notice.clone());
+            lines.push(String::new());
+        }
         if let Some(add) = &self.add_model {
-            lines.push("Add Model".to_string());
+            lines.push(t!("workspace.config_task.action.add_model").to_string());
             lines.push(add.step.question());
             if add.fetch_failed {
                 lines.push(t!("workspace.config_task.validation.fetch_failed").to_string());
             }
             return lines.join("\n");
         }
-        lines.push("Current model pool:".to_string());
+        if self.pool_mode == ModelPoolMode::Assignment {
+            lines.extend(self.assignment_lines());
+            return lines.join("\n");
+        }
+        lines.push(t!("workspace.config_task.model_pool.current").to_string());
         let models = self.enabled_models();
         if models.is_empty() {
-            lines.push("- empty".to_string());
+            lines.push(format!(
+                "- {}",
+                t!("workspace.config_task.model_pool.empty")
+            ));
         } else {
             for entry in &models {
                 lines.push(format!("- {}", model_entry_label(entry)));
@@ -1588,12 +1647,12 @@ impl ConfigTask {
                 .and_then(|id| self.model_entry(id))
             {
                 lines.push(String::new());
-                lines.push("Model detail:".to_string());
+                lines.push(t!("workspace.config_task.model_pool.detail").to_string());
                 lines.push(format!("ID: {}", entry.id));
                 lines.push(format!("Provider: {}", entry.provider));
                 lines.push(format!("Base URL: {}", entry.base_url));
                 lines.push(format!("Model Name: {}", entry.model_name));
-                lines.push("API Key: configured".to_string());
+                lines.push(t!("workspace.config_task.model_pool.api_key_configured").to_string());
                 lines.push(format!(
                     "Status: {}",
                     if entry.enabled { "enabled" } else { "disabled" }
@@ -1824,7 +1883,7 @@ impl ConfigTask {
             .with_highlighted_value(self.assignment.get(role));
         }
         prompt(
-            "Model Assignment",
+            t!("workspace.config_task.tab.models").to_string(),
             PromptInputKind::SingleSelect,
             self.assignment_role_choices(),
             self.help(),
@@ -1860,35 +1919,48 @@ impl ConfigTask {
         }
         match self.pool_mode {
             ModelPoolMode::Main => prompt(
-                "model-pool",
+                "",
                 PromptInputKind::SingleSelect,
                 self.model_pool_choices(),
                 t!("workspace.config_task.hint.move_options").to_string(),
             )
             .with_scope_title(self.active_scope_title()),
             ModelPoolMode::ViewSelect => prompt(
-                "View Model",
+                model_pool_step_title(
+                    t!("workspace.config_task.action.view_model").as_ref(),
+                    t!("workspace.config_task.add_model_step.models_label").as_ref(),
+                ),
                 PromptInputKind::SingleSelect,
                 with_back(self.enabled_model_choices()),
                 t!("workspace.config_task.hint.view_detail").to_string(),
             )
             .with_scope_title(self.active_scope_title()),
             ModelPoolMode::ViewDetail => prompt(
-                "Model Detail",
+                model_pool_step_title(
+                    t!("workspace.config_task.action.view_model").as_ref(),
+                    t!("workspace.config_task.model_pool.detail").as_ref(),
+                ),
                 PromptInputKind::SingleSelect,
                 vec![choice("Back", "back")],
                 t!("workspace.config_task.hint.back_only").to_string(),
             )
             .with_scope_title(self.active_scope_title()),
+            ModelPoolMode::Assignment => self.assignment_input(),
             ModelPoolMode::DeleteSelect => prompt(
-                "Delete Model",
+                model_pool_step_title(
+                    t!("workspace.config_task.action.delete_model").as_ref(),
+                    t!("workspace.config_task.add_model_step.models_label").as_ref(),
+                ),
                 PromptInputKind::SingleSelect,
                 with_back(self.enabled_model_choices()),
                 t!("workspace.config_task.hint.delete_select").to_string(),
             )
             .with_scope_title(self.active_scope_title()),
             ModelPoolMode::DeleteConfirm => prompt(
-                "Confirm Delete",
+                model_pool_step_title(
+                    t!("workspace.config_task.action.delete_model").as_ref(),
+                    t!("workspace.config_task.action.confirm_delete").as_ref(),
+                ),
                 PromptInputKind::SingleSelect,
                 delete_confirm_choices(),
                 t!("workspace.config_task.hint.delete_confirm").to_string(),
@@ -1938,7 +2010,10 @@ impl ConfigTask {
         };
 
         prompt(
-            add.step.label(),
+            model_pool_step_title(
+                t!("workspace.config_task.action.add_model").as_ref(),
+                add.step.label().as_ref(),
+            ),
             kind,
             choices,
             t!("workspace.config_task.hint.add_step").to_string(),
@@ -1963,15 +2038,8 @@ impl ConfigTask {
         })
     }
 
-    fn model_pool_scope_title(&self) -> &'static str {
-        if self.add_model.is_some() {
-            return "model-pool-add";
-        }
-        match self.pool_mode {
-            ModelPoolMode::Main => "model-pool",
-            ModelPoolMode::ViewSelect | ModelPoolMode::ViewDetail => "model-pool-view",
-            ModelPoolMode::DeleteSelect | ModelPoolMode::DeleteConfirm => "model-pool-delete",
-        }
+    fn model_pool_scope_title(&self) -> String {
+        t!("workspace.config_task.model_pool.title").to_string()
     }
 
     fn help(&self) -> String {
@@ -1994,6 +2062,9 @@ impl ConfigTask {
                 t!("workspace.config_task.action.empty_pool_first"),
                 "model_pool",
             ));
+        }
+        if self.kind == ConfigTaskKind::ModelPool {
+            choices.push(choice(t!("workspace.config_task.action.back"), "back"));
         }
         choices.push(choice(
             t!("workspace.config_task.action.save"),
@@ -2020,6 +2091,10 @@ impl ConfigTask {
     fn model_pool_choices(&self) -> Vec<ConfigChoice> {
         vec![
             choice(t!("workspace.config_task.action.add_model"), "add_model"),
+            choice(
+                t!("workspace.config_task.action.assign_models"),
+                "assign_models",
+            ),
             choice(t!("workspace.config_task.action.view_model"), "view_model"),
             choice(
                 t!("workspace.config_task.action.delete_model"),
@@ -2158,16 +2233,48 @@ fn prompt(
     )
 }
 
+fn model_pool_step_title(action: &str, step: &str) -> String {
+    format!("{action} - {step}")
+}
+
+fn model_assignment_readiness_message(issues: &[ModelAssignmentReadinessIssue]) -> String {
+    let mut lines =
+        vec![t!("workspace.config_task.validation.model_assignment_incomplete").to_string()];
+    lines.extend(
+        issues
+            .iter()
+            .map(localize_model_assignment_readiness_issue)
+            .map(|message| format!("- {message}")),
+    );
+    lines.push(
+        t!("workspace.config_task.validation.model_assignment_fix_in_model_pool").to_string(),
+    );
+    lines.join("\n")
+}
+
+fn localize_model_assignment_readiness_issue(issue: &ModelAssignmentReadinessIssue) -> String {
+    match issue.kind {
+        ModelAssignmentReadinessIssueKind::NotConfigured => t!(
+            "workspace.config_task.validation.role_not_configured",
+            role = issue.role.label()
+        )
+        .to_string(),
+        ModelAssignmentReadinessIssueKind::MissingModel
+        | ModelAssignmentReadinessIssueKind::DisabledModel => t!(
+            "workspace.config_task.validation.role_references_missing",
+            role = issue.role.label(),
+            model = issue.model_id.as_deref().unwrap_or_default()
+        )
+        .to_string(),
+    }
+}
+
 fn init_message_text(message: &InitMessage) -> String {
     match message {
         InitMessage::Info(text) => localize_init_message(text),
         InitMessage::Success(text) => localize_init_message(text),
-        InitMessage::Warning(text) => {
-            format!("{}: {}", t!("workspace.init_task.message.warning"), text)
-        }
-        InitMessage::Error(text) => {
-            format!("{}: {}", t!("workspace.init_task.message.error"), text)
-        }
+        InitMessage::Warning(text) => localize_init_message(text),
+        InitMessage::Error(text) => localize_init_message(text),
         InitMessage::Running(text) => localize_init_message(text),
     }
 }
@@ -2658,16 +2765,13 @@ fn base_url_choices_for_provider(
     api_protocol: ApiProtocol,
     current: &str,
 ) -> Vec<ConfigChoice> {
-    let mut choices = vec![(
-        api_protocol.label(),
-        default_base_url_for_provider_protocol(provider, api_protocol),
-    )]
-    .into_iter()
-    .map(|(label, value)| ConfigChoice {
-        label: format!("{label} - {value}"),
-        value,
-    })
-    .collect::<Vec<_>>();
+    let mut choices = provider_protocol_base_urls(provider, api_protocol)
+        .into_iter()
+        .map(|(label, value)| ConfigChoice {
+            label: format!("{label} - {value}"),
+            value,
+        })
+        .collect::<Vec<_>>();
     choices.push(ConfigChoice {
         label: t!("workspace.config_task.action.custom_base_url").to_string(),
         value: current.to_string(),
@@ -2813,6 +2917,38 @@ fn default_base_url_for_provider_protocol(provider: &str, api_protocol: ApiProto
         ("deepseek", ApiProtocol::Anthropic) => DEEPSEEK_ANTHROPIC_BASE_URL.to_string(),
         (_, ApiProtocol::OpenAi) => BIGMODEL_OPENAI_BASE_URL.to_string(),
         (_, ApiProtocol::Anthropic) => BIGMODEL_ANTHROPIC_BASE_URL.to_string(),
+    }
+}
+
+fn provider_protocol_base_urls(
+    provider: &str,
+    api_protocol: ApiProtocol,
+) -> Vec<(&'static str, String)> {
+    match (provider, api_protocol) {
+        ("xiaomi_mimo", ApiProtocol::OpenAi) => vec![
+            (
+                "OpenAI API (China)",
+                XIAOMI_MIMO_OPENAI_BASE_URL.to_string(),
+            ),
+            (
+                "OpenAI API (Singapore)",
+                XIAOMI_MIMO_OPENAI_SGP_BASE_URL.to_string(),
+            ),
+        ],
+        ("xiaomi_mimo", ApiProtocol::Anthropic) => vec![
+            (
+                "Anthropic API (China)",
+                XIAOMI_MIMO_ANTHROPIC_BASE_URL.to_string(),
+            ),
+            (
+                "Anthropic API (Singapore)",
+                XIAOMI_MIMO_ANTHROPIC_SGP_BASE_URL.to_string(),
+            ),
+        ],
+        _ => vec![(
+            api_protocol.label(),
+            default_base_url_for_provider_protocol(provider, api_protocol),
+        )],
     }
 }
 
@@ -3213,6 +3349,7 @@ mod tests {
 
     #[test]
     fn assignment_updates_compatibility_fields() {
+        let (_dir, _guard) = enter_temp_cwd();
         let mut task = ConfigTask::new(settings_with_model());
         add_second_model(&mut task);
         let primary = task.providers.model_library.models[0].id.clone();
@@ -3232,7 +3369,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_assigned_model_is_blocked() {
+    fn deleting_assigned_model_is_allowed_and_preserves_assignment() {
         let mut task = ConfigTask::model_switch(settings_with_model());
         let id = task.providers.model_library.models[0].id.clone();
         task.assignment.set(ModelAssignmentRole::Plan, id.clone());
@@ -3240,13 +3377,62 @@ mod tests {
 
         let outcome = task.submit_model_delete_select(&id);
 
-        assert!(matches!(outcome, ConfigTaskOutcome::Invalid { .. }));
-        assert!(task
+        assert!(matches!(outcome, ConfigTaskOutcome::Next { .. }));
+        assert_eq!(task.pending_delete_model.as_deref(), Some(id.as_str()));
+
+        let outcome = task.submit_model_delete_confirm("confirm_delete");
+
+        assert!(matches!(outcome, ConfigTaskOutcome::Next { .. }));
+        assert!(!task
             .providers
             .model_library
             .models
             .iter()
             .any(|entry| entry.id == id));
+        assert_eq!(task.assignment.get(ModelAssignmentRole::Plan), id);
+    }
+
+    #[test]
+    fn model_pool_can_open_assignment_flow() {
+        crate::set_locale("en");
+        let mut task = ConfigTask::model_switch(settings_with_model());
+
+        let outcome = task.submit_model_pool_main("assign_models");
+
+        assert!(matches!(outcome, ConfigTaskOutcome::Next { .. }));
+        assert_eq!(task.pool_mode, ModelPoolMode::Assignment);
+        let prompt = task.prompt().input;
+        assert_eq!(prompt.scope_title.as_deref(), Some("Model Pool Management"));
+        assert_eq!(prompt.title, "Model Assignment");
+        assert!(prompt
+            .choices
+            .iter()
+            .any(|choice| choice.label.contains("Plan Model")));
+    }
+
+    #[test]
+    fn model_pool_add_and_delete_titles_are_layered() {
+        crate::set_locale("zh-CN");
+        let mut task = ConfigTask::model_switch(settings_with_model());
+        task.start_add_model();
+
+        let prompt = task.prompt().input;
+
+        assert_eq!(prompt.scope_title.as_deref(), Some("模型池管理"));
+        assert_eq!(prompt.title, "添加模型 - 选择服务商");
+
+        task.add_model.as_mut().unwrap().step = AddModelStep::ApiProtocol;
+        let prompt = task.prompt().input;
+        assert_eq!(prompt.title, "添加模型 - 选择API类型");
+
+        task.add_model = None;
+        task.pool_mode = ModelPoolMode::DeleteSelect;
+        let prompt = task.prompt().input;
+        assert_eq!(prompt.title, "删除模型 - 选择模型");
+
+        task.pool_mode = ModelPoolMode::DeleteConfirm;
+        let prompt = task.prompt().input;
+        assert_eq!(prompt.title, "删除模型 - 确认删除");
     }
 
     #[test]
@@ -3319,6 +3505,35 @@ mod tests {
         let add = task.add_model.as_ref().unwrap();
         assert_eq!(add.step, AddModelStep::BaseUrl);
         assert_eq!(add.base_url, DEEPSEEK_ANTHROPIC_BASE_URL);
+    }
+
+    #[test]
+    fn model_pool_xiaomi_base_url_choices_include_regions() {
+        let openai = base_url_choices_for_provider(
+            "xiaomi_mimo",
+            ApiProtocol::OpenAi,
+            XIAOMI_MIMO_OPENAI_BASE_URL,
+        );
+        assert_eq!(openai.len(), 3);
+        assert!(openai
+            .iter()
+            .any(|choice| choice.value == XIAOMI_MIMO_OPENAI_BASE_URL));
+        assert!(openai
+            .iter()
+            .any(|choice| choice.value == XIAOMI_MIMO_OPENAI_SGP_BASE_URL));
+
+        let anthropic = base_url_choices_for_provider(
+            "xiaomi_mimo",
+            ApiProtocol::Anthropic,
+            XIAOMI_MIMO_ANTHROPIC_BASE_URL,
+        );
+        assert_eq!(anthropic.len(), 3);
+        assert!(anthropic
+            .iter()
+            .any(|choice| choice.value == XIAOMI_MIMO_ANTHROPIC_BASE_URL));
+        assert!(anthropic
+            .iter()
+            .any(|choice| choice.value == XIAOMI_MIMO_ANTHROPIC_SGP_BASE_URL));
     }
 
     #[test]
@@ -3423,5 +3638,74 @@ mod tests {
             .enabled_models()
             .iter()
             .any(|entry| entry.model_name == "deepseek-chat"));
+    }
+
+    #[test]
+    fn config_empty_pool_model_pool_choice_enters_add_model_flow() {
+        crate::set_locale("en");
+        let (_dir, _guard) = enter_temp_cwd();
+        // Empty model pool: a fresh ConfigTask with no seeded library entries.
+        let mut task = ConfigTask::new(Settings::default());
+        task.providers.model_library.models.clear();
+        task.providers.tiers.light.model.clear();
+        task.providers.tiers.medium.model.clear();
+        task.providers.tiers.high.model.clear();
+        assert!(task.enabled_models().is_empty());
+
+        // The role-choices prompt must surface the "empty pool first" entry.
+        let role_choices = task.assignment_role_choices();
+        assert!(role_choices.iter().any(|c| c.value == "model_pool"));
+
+        // Selecting it must launch the add-model sub-flow (previously it only
+        // returned an Invalid hint and left the user stuck).
+        let outcome = task.submit_model_assignment("model_pool");
+
+        assert!(matches!(outcome, ConfigTaskOutcome::Next { .. }));
+        assert!(task.add_model.is_some());
+        assert_eq!(
+            task.add_model.as_ref().unwrap().step,
+            AddModelStep::Provider
+        );
+
+        // The active prompt must now render the add-model provider step, not
+        // the assignment role list.
+        let prompt = task.prompt().input;
+        assert!(prompt.title.contains("Add Model"));
+    }
+
+    #[test]
+    fn config_add_model_completes_and_returns_to_assignment() {
+        crate::set_locale("en");
+        let (_dir, _guard) = enter_temp_cwd();
+        let mut task = ConfigTask::new(Settings::default());
+        task.providers.model_library.models.clear();
+        task.providers.tiers.light.model.clear();
+        task.providers.tiers.medium.model.clear();
+        task.providers.tiers.high.model.clear();
+        assert!(task.enabled_models().is_empty());
+
+        // Drive the add-model flow to its final step by injecting the model
+        // directly (simulating provider/protocol/base-url/api-key already
+        // advanced), then verify completion returns to the assignment section.
+        task.start_add_model();
+        let add = task.add_model.as_mut().unwrap();
+        add.provider = "bigmodel".to_string();
+        add.base_url = BIGMODEL_OPENAI_BASE_URL.to_string();
+        add.api_key = "sk-test".to_string();
+        add.models = vec!["glm-4.5".to_string()];
+        add.step = AddModelStep::SelectModels;
+
+        let outcome = task.submit_add_model("glm-4.5");
+
+        assert!(matches!(outcome, ConfigTaskOutcome::Next { .. }));
+        assert!(task.add_model.is_none());
+        // The model is now in the in-memory pool.
+        assert!(task
+            .enabled_models()
+            .iter()
+            .any(|entry| entry.model_name == "glm-4.5"));
+        // The assignment section no longer offers the empty-pool escape hatch.
+        let role_choices = task.assignment_role_choices();
+        assert!(role_choices.iter().all(|c| c.value != "model_pool"));
     }
 }

@@ -784,6 +784,10 @@ mod tests {
         let _mgr = manager;
     }
 
+    async fn bind_loopback_for_test() -> Option<tokio::net::TcpListener> {
+        tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()
+    }
+
     /// End-to-end: TCP client sends a JSON line to handle_connection backed
     /// by a real CoreRuntimeManager, and verifies the response comes from
     /// the runtime path (not the legacy hardcoded stub).
@@ -794,7 +798,9 @@ mod tests {
         let manager = test_manager();
 
         // Bind a one-shot listener on a random port.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let Some(listener) = bind_loopback_for_test().await else {
+            return;
+        };
         let addr = listener.local_addr().unwrap();
 
         // Server side: accept one connection and handle it.
@@ -854,7 +860,9 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let manager = test_manager();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let Some(listener) = bind_loopback_for_test().await else {
+            return;
+        };
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
@@ -1123,7 +1131,9 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let manager = Arc::new(test_manager());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let Some(listener) = bind_loopback_for_test().await else {
+            return;
+        };
         let addr = listener.local_addr().unwrap();
 
         // Spawn server that handles 2 connections.

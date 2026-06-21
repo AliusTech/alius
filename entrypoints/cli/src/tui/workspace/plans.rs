@@ -3,7 +3,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use rust_i18n::t;
 
 use super::helpers::{count_visual_lines, truncate_chars};
-use super::PanelScroll;
+use super::{PanelScroll, PlainTextLine};
 use crate::tui::state::{AgentTeamState, PlanNode, PlanNodeStatus};
 use crate::tui::theme;
 
@@ -17,6 +17,7 @@ pub fn render(
     scroll: &mut PanelScroll,
     focused: bool,
     hovered: bool,
+    plain_lines: &mut Vec<PlainTextLine>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -47,11 +48,12 @@ pub fn render(
                 .unwrap_or_default();
             let title = truncate_chars(
                 &format!("{}{}", node.title, owner),
-                inner.width.saturating_sub(7) as usize,
+                inner.width.saturating_sub(8) as usize,
             );
             lines.push(Line::from(vec![
-                Span::styled(symbol, Style::default().fg(color).bg(theme::BACKGROUND)),
-                Span::styled(format!(" {}. {}", index + 1, title), theme::text()),
+                Span::raw(" "),
+                Span::styled(symbol, Style::default().fg(color).bg(theme::background())),
+                Span::styled(format!("  {}. {}", index + 1, title), theme::text()),
             ]));
         }
 
@@ -97,9 +99,27 @@ pub fn render(
     let max_off = total_visual.saturating_sub(inner.height as usize) as u16;
     scroll.clamp(max_off);
 
+    // Build plain text lines for selection/copy.
+    plain_lines.clear();
+    for (i, line) in lines.iter().enumerate() {
+        let text = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        plain_lines.push(PlainTextLine {
+            text,
+            row: i as u16,
+        });
+    }
+
     let paragraph = Paragraph::new(Text::from(lines))
+        .style(theme::base())
         .wrap(Wrap { trim: false })
         .scroll((scroll.offset, 0));
+    // Clear stale glyphs before repaint (see conversation.rs for rationale).
+    frame.render_widget(ratatui::widgets::Clear, inner);
     frame.render_widget(paragraph, inner);
 }
 
@@ -124,16 +144,17 @@ impl PlanNode {
 
 impl PlanNodeStatus {
     pub fn symbol_style(self) -> (&'static str, Color) {
+        // Single-cell-width Unicode glyphs (terminal-safe, no emoji).
         match self {
-            Self::Pending => ("○", theme::SECONDARY_TEXT),
-            Self::Running => ("⏺", theme::loading_dot_color()),
-            Self::Completed => ("✓", theme::SUCCESS),
-            Self::Review => ("◎", theme::REVIEW),
-            Self::Approved => ("✔", theme::SUCCESS),
-            Self::Revising => ("↻", theme::WARNING),
-            Self::Failed => ("×", theme::ERROR),
-            Self::Blocked => ("⚠", theme::ERROR),
-            Self::Cancelled => ("⊘", theme::WARNING),
+            Self::Pending => ("○", theme::secondary_text()),
+            Self::Running => ("◐", theme::info()),
+            Self::Completed => ("✓", theme::success()),
+            Self::Review => ("◆", theme::review()),
+            Self::Approved => ("✓", theme::success()),
+            Self::Revising => ("✎", theme::warning()),
+            Self::Failed => ("✗", theme::error()),
+            Self::Blocked => ("▮", theme::error()),
+            Self::Cancelled => ("⊘", theme::warning()),
         }
     }
 }

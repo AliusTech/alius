@@ -22,23 +22,89 @@ use crate::endpoint::normalize_openai_api_base;
 use crate::provider::{ChatStream, LlmProvider};
 use crate::{ChatEvent, Conversation, ToolCall};
 
+/// Parse model IDs from a JSON value like `{"data": [{"id": "..."}]}`.
+///
+/// Only requires `data[].id` — ignores `created`, `object`, `owned_by` etc.
+/// This tolerates providers (e.g. DeepSeek) that omit fields the `async-openai`
+/// `Model` struct requires.
+fn parse_models_value(body: &serde_json::Value) -> Option<Vec<String>> {
+    body.get("data")?.as_array().map(|arr| {
+        arr.iter()
+            .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+            .collect()
+    })
+}
+
+/// BigModel General API builtin model list.
+const BIGMODEL_GENERAL_MODELS: &[&str] = &[
+    "glm-5.1",
+    "glm-5",
+    "glm-5-air",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.6",
+    "glm-4.6v",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4-flash-250414",
+];
+
+/// BigModel Coding Plan builtin model list.
+const BIGMODEL_CODING_MODELS: &[&str] = &[
+    "GLM-5.1",
+    "GLM-5-Turbo",
+    "GLM-4.7",
+    "GLM-4.5-Air",
+    "glm-5.1",
+    "glm-5-turbo",
+    "glm-4.7",
+    "glm-4.5-air",
+];
+
+/// DeepSeek builtin model list.
+const DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
+
 /// OpenAI-compatible LLM provider.
 ///
-/// Wraps the `async-openai` client for use with any OpenAI-compatible API endpoint.
+/// Serves as the base for all OpenAI-compatible providers. Vendor-specific
+/// behavior (default models) is configured via constructor variants.
 pub struct OpenAiProvider {
     inner: Client<OpenAIConfig>,
     model: String,
+    api_key: String,
+    api_base: String,
+    default_models: Vec<String>,
 }
 
 impl OpenAiProvider {
-    /// Create a new OpenAI provider from LLM settings.
+    /// Create a generic OpenAI-compatible provider.
     pub fn new(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, &[])
+    }
+
+    /// Create a BigModel provider (General mode).
+    pub fn new_bigmodel(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, BIGMODEL_GENERAL_MODELS)
+    }
+
+    /// Create a BigModel provider (Coding mode).
+    pub fn new_bigmodel_coding(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, BIGMODEL_CODING_MODELS)
+    }
+
+    /// Create a DeepSeek provider.
+    pub fn new_deepseek(config: &LlmSettings) -> Result<Self> {
+        Self::build(config, DEEPSEEK_MODELS)
+    }
+
+    /// Internal constructor shared by all variants.
+    fn build(config: &LlmSettings, default_models: &[&str]) -> Result<Self> {
         let api_key = config.get_api_key().ok_or_else(|| {
             anyhow::anyhow!("API key not found. Set it in config or environment variable.")
         })?;
 
         let openai_config = OpenAIConfig::new()
-            .with_api_key(api_key)
+            .with_api_key(&api_key)
             .with_api_base(normalize_openai_api_base(&config.get_base_url()));
 
         let http_client = reqwest::Client::builder()
@@ -49,6 +115,9 @@ impl OpenAiProvider {
         Ok(Self {
             inner: client,
             model: config.model.clone(),
+            api_key,
+            api_base: normalize_openai_api_base(&config.get_base_url()),
+            default_models: default_models.iter().map(|s| s.to_string()).collect(),
         })
     }
 
@@ -363,32 +432,59 @@ impl LlmProvider for OpenAiProvider {
         &'a self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
+            let client = reqwest::Client::builder()
+                .user_agent(crate::http::user_agent())
+                .build()?;
+            let url = format!("{}/models", self.api_base);
+
             let mut attempts = 0;
             let max_retries = 3;
             let mut delay = std::time::Duration::from_secs(1);
 
             loop {
-                match self.inner.models().list().await {
-                    Ok(models) => {
-                        let model_ids: Vec<String> =
-                            models.data.into_iter().map(|m| m.id).collect();
-                        return Ok(model_ids);
-                    }
-                    Err(e) => {
-                        attempts += 1;
-                        let err_str = e.to_string();
-
-                        // Check if it's a 429 error
-                        if err_str.contains("429")
-                            || err_str.to_lowercase().contains("too many requests")
-                        {
-                            if attempts >= max_retries {
+                match client.get(&url).bearer_auth(&self.api_key).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(body) if parse_models_value(&body).is_some() => {
+                                let models = parse_models_value(&body).unwrap();
+                                if models.is_empty() && !self.default_models.is_empty() {
+                                    return Ok(self.default_models.clone());
+                                }
+                                return Ok(models);
+                            }
+                            Ok(_) => {
+                                if !self.default_models.is_empty() {
+                                    return Ok(self.default_models.clone());
+                                }
                                 return Err(anyhow::anyhow!(
-                                    "Rate limited (429) after {} retries. Please wait before trying again.",
-                                    max_retries
+                                    "Failed to parse model list from provider"
                                 ));
                             }
+                            Err(e) => {
+                                tracing::warn!("Failed to parse /models response: {}", e);
+                                if !self.default_models.is_empty() {
+                                    return Ok(self.default_models.clone());
+                                }
+                                attempts += 1;
+                                if attempts >= max_retries {
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to parse /models response after {} retries",
+                                        max_retries
+                                    ));
+                                }
+                                tokio::time::sleep(delay).await;
+                                delay = std::cmp::min(
+                                    delay.mul_f32(2.0),
+                                    std::time::Duration::from_secs(60),
+                                );
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        attempts += 1;
 
+                        if status.as_u16() == 429 && attempts < max_retries {
                             tracing::warn!(
                                 "Rate limited (429), retrying after {} seconds (attempt {}/{})",
                                 delay.as_secs(),
@@ -403,11 +499,41 @@ impl LlmProvider for OpenAiProvider {
                             continue;
                         }
 
-                        if attempts >= max_retries {
-                            return Err(anyhow::anyhow!(e));
+                        if !self.default_models.is_empty() {
+                            tracing::warn!(
+                                "GET /models failed ({}), using default model list",
+                                status
+                            );
+                            return Ok(self.default_models.clone());
                         }
-
+                        return Err(anyhow::anyhow!(
+                            "GET /models failed with status {} after {} retries",
+                            status,
+                            max_retries
+                        ));
+                    }
+                    Err(e) => {
                         attempts += 1;
+                        if attempts >= max_retries {
+                            if !self.default_models.is_empty() {
+                                tracing::warn!(
+                                    "GET /models failed: {}, using default model list",
+                                    e
+                                );
+                                return Ok(self.default_models.clone());
+                            }
+                            return Err(anyhow::anyhow!(
+                                "GET /models request failed after {} retries: {}",
+                                max_retries,
+                                e
+                            ));
+                        }
+                        tracing::warn!(
+                            "GET /models request error (attempt {}/{}): {}",
+                            attempts,
+                            max_retries,
+                            e
+                        );
                         tokio::time::sleep(delay).await;
                         delay =
                             std::cmp::min(delay.mul_f32(2.0), std::time::Duration::from_secs(60));

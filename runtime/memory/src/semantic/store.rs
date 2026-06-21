@@ -3,12 +3,15 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::Mutex;
 
 use super::types::MemoryHit;
 
 /// SQLite-backed semantic memory store.
+///
+/// Uses `Mutex<Connection>` to ensure `Send + Sync` for use with `Arc`.
 pub struct SemanticStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl SemanticStore {
@@ -18,7 +21,9 @@ impl SemanticStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
-        let store = Self { conn };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.init_schema()?;
         Ok(store)
     }
@@ -26,13 +31,16 @@ impl SemanticStore {
     /// Open an in-memory store (for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.init_schema()?;
         Ok(store)
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS facts (
                 id TEXT PRIMARY KEY,
                 content TEXT NOT NULL,
@@ -58,9 +66,10 @@ impl SemanticStore {
 
     /// Insert or update a fact.
     pub fn upsert_fact(&self, content: &str, scope: &str) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO facts (id, content, scope, confidence, created_at) VALUES (?1, ?2, ?3, 0.5, ?4)",
             (&id, content, scope, &now),
         )?;
@@ -69,11 +78,12 @@ impl SemanticStore {
 
     /// Index a document by splitting it into chunks.
     pub fn index_document(&self, path: &Path) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
         let content = std::fs::read_to_string(path)?;
         let doc_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO documents (id, path, indexed_at) VALUES (?1, ?2, ?3)",
             (&doc_id, path.to_string_lossy().to_string(), &now),
         )?;
@@ -86,7 +96,7 @@ impl SemanticStore {
         for paragraph in chunks {
             if current_chunk.len() + paragraph.len() > 500 && !current_chunk.is_empty() {
                 let chunk_id = uuid::Uuid::new_v4().to_string();
-                self.conn.execute(
+                conn.execute(
                     "INSERT INTO chunks (id, document_id, content, chunk_idx) VALUES (?1, ?2, ?3, ?4)",
                     (&chunk_id, &doc_id, &current_chunk, chunk_idx),
                 )?;
@@ -102,7 +112,7 @@ impl SemanticStore {
 
         if !current_chunk.is_empty() {
             let chunk_id = uuid::Uuid::new_v4().to_string();
-            self.conn.execute(
+            conn.execute(
                 "INSERT INTO chunks (id, document_id, content, chunk_idx) VALUES (?1, ?2, ?3, ?4)",
                 (&chunk_id, &doc_id, &current_chunk, chunk_idx),
             )?;
@@ -113,13 +123,13 @@ impl SemanticStore {
 
     /// Keyword search across facts and chunks.
     pub fn keyword_search(&self, query: &str, top_k: usize) -> Result<Vec<MemoryHit>> {
+        let conn = self.conn.lock().unwrap();
         let pattern = format!("%{}%", query.to_lowercase());
         let mut hits = Vec::new();
 
         // Search facts.
-        let mut stmt = self
-            .conn
-            .prepare("SELECT content, scope FROM facts WHERE LOWER(content) LIKE ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT content, scope FROM facts WHERE LOWER(content) LIKE ?1")?;
         let fact_rows = stmt.query_map([&pattern], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -134,9 +144,7 @@ impl SemanticStore {
         }
 
         // Search chunks.
-        let mut stmt2 = self
-            .conn
-            .prepare("SELECT content FROM chunks WHERE LOWER(content) LIKE ?1")?;
+        let mut stmt2 = conn.prepare("SELECT content FROM chunks WHERE LOWER(content) LIKE ?1")?;
         let chunk_rows = stmt2.query_map([&pattern], |row| row.get::<_, String>(0))?;
         for row in chunk_rows {
             let content = row?;

@@ -879,6 +879,33 @@ pub fn is_path_in_workspace(path: &Path, workspace_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    struct IsolatedPluginHome {
+        previous_home: Option<OsString>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl IsolatedPluginHome {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let previous_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", dir.path());
+            Self {
+                previous_home,
+                _dir: dir,
+            }
+        }
+    }
+
+    impl Drop for IsolatedPluginHome {
+        fn drop(&mut self) {
+            match &self.previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
 
     #[test]
     fn test_validate_valid_module() {
@@ -1110,6 +1137,7 @@ filesystem = ["read:src"]
 
     #[test]
     fn test_apply_installs_plugin_files() {
+        let _home = IsolatedPluginHome::new();
         let dir = make_plugin_source(
             r#"
 id = "apply-test"
@@ -1135,6 +1163,7 @@ description = "Test apply phase"
 
     #[test]
     fn test_upgrade_detection() {
+        let _home = IsolatedPluginHome::new();
         // Install v1
         let dir1 = make_plugin_source(
             r#"
@@ -1173,6 +1202,7 @@ description = "v2"
 
     #[test]
     fn test_upgrade_permission_change_detected() {
+        let _home = IsolatedPluginHome::new();
         // Install v1 with no permissions
         let dir1 = make_plugin_source(
             r#"
@@ -1208,6 +1238,7 @@ filesystem = ["read:src"]
 
     #[test]
     fn test_denied_upgrade_preserves_old_plugin() {
+        let _home = IsolatedPluginHome::new();
         // Install v1
         let dir1 = make_plugin_source(
             r#"

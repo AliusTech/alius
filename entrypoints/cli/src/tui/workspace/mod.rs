@@ -12,12 +12,14 @@ mod top_bar;
 // Re-export for testing module access
 pub(crate) use events::{ExecutionMode, PlanPermissionMode, WorkspaceAction};
 
+use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use base64::Engine as _;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseEvent,
-    MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -27,7 +29,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use runtime_config::ModelAssignmentRole;
 use rust_i18n::t;
 
-use crate::repl::{completion, init_required_message, missing_runtime_requirements, ReplSession};
+use crate::repl::{
+    completion, init_required_message, missing_runtime_requirements,
+    model_assignment_readiness_issues, model_assignment_required_message, ReplSession,
+};
 use crate::tui::state::{
     AgentHeader, AgentTeamState, ConversationBlock, ConversationBlockType, InteractionMode,
     MainTab, PlanNode, PlanNodeStatus, WorkspaceStatus,
@@ -46,7 +51,7 @@ use interaction::{
 
 const WORKSPACE_POLL_MS: u64 = 100;
 const GIT_REFRESH_SECS: u64 = 2;
-const MAX_COLLAPSED_LINES: usize = 3;
+const COPY_FEEDBACK_SECS: u64 = 2;
 
 pub async fn run_workspace(mut session: ReplSession, initial_missing: Vec<String>) -> Result<()> {
     let mut app = TuiApp::enter()?;
@@ -120,24 +125,243 @@ mod tests {
         assert!(!state.blocks[0].content.contains("Alius is not initialized"));
     }
 
+    /// Write a `.alius/config/` tree under the current dir with the given
+    /// providers/model-library/assignment TOML bodies (empty string = skip).
+    fn write_project_config(providers_toml: &str, model_toml: &str) {
+        let config_dir = std::path::Path::new(".alius/config");
+        std::fs::create_dir_all(config_dir).unwrap();
+        if !providers_toml.is_empty() {
+            std::fs::write(config_dir.join("providers.toml"), providers_toml).unwrap();
+        }
+        if !model_toml.is_empty() {
+            std::fs::write(config_dir.join("model.toml"), model_toml).unwrap();
+        }
+    }
+
     #[test]
-    fn backtab_toggles_plan_to_bypass_mode() {
+    fn assigned_welcome_model_falls_back_to_tier_when_library_misses() {
+        // Execute is set via the tier but NOT present in the model library.
+        // Before the fix this returned None ("Not configured").
+        let (_dir, _guard) = enter_temp_cwd();
+        write_project_config(
+            r#"[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Plan"
+provider = "bigmodel"
+model = ""
+
+[tiers.medium]
+description = "Execute"
+provider = "bigmodel"
+model = "gpt-4o"
+
+[tiers.high]
+description = "Review"
+provider = "bigmodel"
+model = ""
+
+[providers.bigmodel]
+enabled = true
+kind = "openai-compatible"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+api_key_env = "BIGMODEL_API_KEY"
+
+[model_library]
+models = []
+"#,
+            r#"schema_version = "0.1"
+[assignment]
+plan = ""
+execute = ""
+review = ""
+"#,
+        );
+
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = runtime_config::load_project_config(&cwd).unwrap();
+
+        // Library miss + tier set -> fallback returns the tier model.
+        assert_eq!(
+            assigned_welcome_model(&snapshot, ModelAssignmentRole::Execute).as_deref(),
+            Some("BigModel(gpt-4o)")
+        );
+        // Plan/Review tiers empty -> still None (genuinely unconfigured).
+        assert!(assigned_welcome_model(&snapshot, ModelAssignmentRole::Plan).is_none());
+        assert!(assigned_welcome_model(&snapshot, ModelAssignmentRole::Review).is_none());
+    }
+
+    #[test]
+    fn assigned_welcome_model_prefers_library_match_over_tier() {
+        let (_dir, _guard) = enter_temp_cwd();
+        write_project_config(
+            r#"[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Plan"
+provider = "bigmodel"
+model = ""
+
+[tiers.medium]
+description = "Execute"
+provider = "bigmodel"
+model = ""
+
+[tiers.high]
+description = "Review"
+provider = "deepseek"
+model = "stale-name"
+
+[providers.bigmodel]
+enabled = true
+kind = "openai-compatible"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+api_key_env = "BIGMODEL_API_KEY"
+
+[[model_library.models]]
+id = "bigmodel-glm-4.5"
+display_name = "glm-4.5"
+provider = "bigmodel"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+model_name = "glm-4.5"
+reasoning_note = "Standard Reasoning"
+enabled = true
+"#,
+            r#"schema_version = "0.1"
+[assignment]
+plan = ""
+execute = ""
+review = "bigmodel-glm-4.5"
+"#,
+        );
+
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = runtime_config::load_project_config(&cwd).unwrap();
+
+        // Assignment id matches a library entry -> use it (not the tier).
+        assert_eq!(
+            assigned_welcome_model(&snapshot, ModelAssignmentRole::Review).as_deref(),
+            Some("BigModel(glm-4.5)")
+        );
+    }
+
+    #[test]
+    fn assigned_welcome_model_returns_none_when_everything_empty() {
+        let (_dir, _guard) = enter_temp_cwd();
+        write_project_config(
+            r#"[router]
+strategy = "tiered"
+default_tier = "medium"
+fallback_tier = "medium"
+
+[tiers.light]
+description = "Plan"
+provider = "bigmodel"
+model = ""
+
+[tiers.medium]
+description = "Execute"
+provider = "bigmodel"
+model = ""
+
+[tiers.high]
+description = "Review"
+provider = "bigmodel"
+model = ""
+
+[providers.bigmodel]
+enabled = true
+kind = "openai-compatible"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+api_key_env = "BIGMODEL_API_KEY"
+
+[model_library]
+models = []
+"#,
+            r#"schema_version = "0.1"
+[assignment]
+plan = ""
+execute = ""
+review = ""
+"#,
+        );
+
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = runtime_config::load_project_config(&cwd).unwrap();
+
+        for role in ModelAssignmentRole::all() {
+            assert!(assigned_welcome_model(&snapshot, role).is_none());
+        }
+    }
+
+    #[test]
+    fn selection_extracts_conversation_text() {
+        let mut state = WorkspaceState::new(Vec::new());
+        state.layout_rects.conversation = Rect::new(0, 0, 40, 8);
+        state.conv_plain_lines = vec![PlainTextLine {
+            text: "hello world".to_string(),
+            row: 0,
+        }];
+
+        let selected = state.selected_text_for_selection(&TextSelection {
+            panel: PanelType::Conversation,
+            start: Position { x: 1, y: 1 },
+            end: Position { x: 6, y: 1 },
+        });
+
+        assert_eq!(selected.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn selection_extracts_reversed_multiline_text() {
+        let mut state = WorkspaceState::new(Vec::new());
+        state.layout_rects.conversation = Rect::new(0, 0, 40, 8);
+        state.conv_plain_lines = vec![
+            PlainTextLine {
+                text: "alpha".to_string(),
+                row: 0,
+            },
+            PlainTextLine {
+                text: "beta".to_string(),
+                row: 1,
+            },
+        ];
+
+        let selected = state.selected_text_for_selection(&TextSelection {
+            panel: PanelType::Conversation,
+            start: Position { x: 5, y: 2 },
+            end: Position { x: 3, y: 1 },
+        });
+
+        assert_eq!(selected.as_deref(), Some("pha\nbeta"));
+    }
+
+    #[test]
+    fn backtab_toggles_plan_to_chat_mode() {
         let mut state = WorkspaceState::new(Vec::new());
         assert_eq!(state.mode, InteractionMode::Plan);
 
         let action = state.handle_key(key(KeyCode::BackTab), &[]);
         assert!(matches!(action, WorkspaceAction::None));
-        assert_eq!(state.mode, InteractionMode::Bypass);
+        assert_eq!(state.mode, InteractionMode::Chat);
     }
 
     #[test]
-    fn backtab_toggles_bypass_to_plan_mode() {
+    fn backtab_cycles_chat_bypass_plan_modes() {
         let mut state = WorkspaceState::new(Vec::new());
-        // First toggle to Bypass
+
+        state.handle_key(key(KeyCode::BackTab), &[]);
+        assert_eq!(state.mode, InteractionMode::Chat);
+
         state.handle_key(key(KeyCode::BackTab), &[]);
         assert_eq!(state.mode, InteractionMode::Bypass);
 
-        // Toggle back to Plan
         let action = state.handle_key(key(KeyCode::BackTab), &[]);
         assert!(matches!(action, WorkspaceAction::None));
         assert_eq!(state.mode, InteractionMode::Plan);
@@ -151,7 +375,23 @@ mod tests {
 
         state.handle_key(key(KeyCode::BackTab), &[]);
         assert_eq!(state.input.value(), "hello world");
-        assert_eq!(state.mode, InteractionMode::Bypass);
+        assert_eq!(state.mode, InteractionMode::Chat);
+    }
+
+    #[test]
+    fn execution_mode_maps_to_matching_runtime_mode() {
+        assert_eq!(
+            runtime_mode_for_execution(ExecutionMode::Chat),
+            RuntimeMode::Chat
+        );
+        assert_eq!(
+            runtime_mode_for_execution(ExecutionMode::Plan),
+            RuntimeMode::Plan
+        );
+        assert_eq!(
+            runtime_mode_for_execution(ExecutionMode::Bypass),
+            RuntimeMode::Bypass
+        );
     }
 
     #[test]
@@ -197,27 +437,120 @@ mod tests {
         state.conv_scroll.auto_scroll = false;
         state.record_tool_call_started(&started);
         assert!(state.conv_scroll.auto_scroll);
-        assert!(state
-            .blocks
-            .iter()
-            .any(|block| block.content.contains("shell: git clone")));
+        assert!(state.blocks.iter().any(|block| block
+            .title
+            .as_deref()
+            .is_some_and(|t| t.contains("shell: git clone"))));
 
         state.record_tool_call_completed(&completed);
         let block = state.blocks.last().expect("tool completion block");
-        assert!(block.content.contains("Tool completed"));
+        assert!(block
+            .title
+            .as_deref()
+            .is_some_and(|t| t.contains("shell: git clone")));
         assert!(block.content.contains("cloned"));
     }
 
     #[test]
-    fn tab_keeps_focus_for_ambiguous_command_hint() {
+    fn run_local_service_tool_result_summarizes_verified_url() {
+        let mut state = WorkspaceState::new(Vec::new());
+        let completed = serde_json::json!({
+            "id": "call-1",
+            "name": "run_local_service",
+            "args": {
+                "command": "npm run dev"
+            },
+            "success": true,
+            "output": serde_json::json!({
+                "tool": "run_local_service",
+                "ready": true,
+                "url": "http://127.0.0.1:5173",
+                "service_id": null,
+                "pid": 123,
+                "kept_running": false,
+                "stopped": true,
+                "logs_tail": ["stdout: Local: http://127.0.0.1:5173"]
+            }).to_string()
+        });
+
+        state.record_tool_call_completed(&completed);
+        let block = state.blocks.last().expect("tool completion block");
+
+        assert!(block
+            .content
+            .contains("本地服务 URL: http://127.0.0.1:5173"));
+        assert!(block.content.contains("服务状态: 已验证并停止"));
+        assert!(block.content.contains("日志摘要:"));
+        assert!(!block.content.contains("\"tool\":\"run_local_service\""));
+    }
+
+    #[test]
+    fn plan_step_prompt_requires_search_tests_and_local_service_evidence() {
+        let plans = vec![PlanNode {
+            id: "p1".to_string(),
+            title: "Fix local frontend bug".to_string(),
+            status: PlanNodeStatus::Pending,
+            description: None,
+            acceptance_criteria: Vec::new(),
+            evidence: Vec::new(),
+            owner: None,
+        }];
+
+        let prompt = build_plan_step_prompt("fix bug", &plans, 0);
+
+        assert!(prompt.contains("search_code/read_file/list_dir"));
+        assert!(prompt.contains("tests, checks, or build command"));
+        assert!(prompt.contains("run_local_service"));
+        assert!(prompt.contains("verified local service URL"));
+        assert!(prompt.contains("whether that service was stopped"));
+    }
+
+    #[test]
+    fn tab_cycles_ambiguous_root_command_matches() {
         let mut state = WorkspaceState::new(Vec::new());
         type_text(&mut state, "/m");
 
         let action = state.handle_key(key(KeyCode::Tab), &[]);
 
         assert!(matches!(action, WorkspaceAction::None));
-        assert_eq!(state.input.value(), "/m");
+        assert_eq!(state.input.value(), "/mode");
         assert_eq!(state.focus_zone, FocusZone::Input);
+
+        let action = state.handle_key(key(KeyCode::Tab), &[]);
+
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.input.value(), "/model");
+        assert_eq!(state.focus_zone, FocusZone::Input);
+    }
+
+    #[test]
+    fn tab_cycles_ambiguous_subcommand_matches() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, "/session l");
+
+        let action = state.handle_key(key(KeyCode::Tab), &[]);
+
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.input.value(), "/session list");
+        assert_eq!(state.focus_zone, FocusZone::Input);
+
+        let action = state.handle_key(key(KeyCode::Tab), &[]);
+
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.input.value(), "/session load");
+        assert_eq!(state.focus_zone, FocusZone::Input);
+    }
+
+    #[test]
+    fn tab_does_not_complete_command_with_leading_space() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, " /he");
+
+        let action = state.handle_key(key(KeyCode::Tab), &[]);
+
+        assert!(matches!(action, WorkspaceAction::None));
+        assert_eq!(state.input.value(), " /he");
+        assert_eq!(state.focus_zone, FocusZone::Conversation);
     }
 
     #[test]
@@ -265,6 +598,34 @@ mod tests {
         assert_eq!(prompt.title, "Model Assignment");
         assert_eq!(prompt.scope_title.as_deref(), Some("configuration-models"));
         assert_eq!(state.focus_zone, FocusZone::Input);
+    }
+
+    #[test]
+    fn readiness_redirect_opens_model_pool_assignment() {
+        rust_i18n::set_locale("en");
+        let mut settings = runtime_config::Settings::default();
+        settings.llm.model = "gpt-4o".to_string();
+        settings.llm.api_key = Some("sk-test".to_string());
+        settings.soul.role = runtime_config::SoulRole::new("default".to_string());
+        let issues = vec![runtime_config::ModelAssignmentReadinessIssue {
+            role: runtime_config::ModelAssignmentRole::Plan,
+            model_id: None,
+            kind: runtime_config::ModelAssignmentReadinessIssueKind::NotConfigured,
+        }];
+        let mut state = WorkspaceState::new(Vec::new());
+        state.begin_plan_draft("build something");
+
+        state.start_model_task_for_readiness(settings, &issues);
+
+        assert!(state.plan_draft.is_none());
+        assert!(state.config_task.is_some());
+        let prompt = state.prompt_input.as_ref().unwrap();
+        assert_eq!(prompt.scope_title.as_deref(), Some("Model Pool Management"));
+        assert_eq!(prompt.title, "Model Assignment");
+        assert!(prompt
+            .choices
+            .iter()
+            .any(|choice| choice.label.contains("Plan Model")));
     }
 
     #[test]
@@ -720,6 +1081,55 @@ mod tests {
 
         assert!(hint.contains("/help"));
     }
+
+    #[test]
+    fn command_matched_ignores_partial_root_command() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, "/he");
+
+        assert!(state.command_hint(&[]).unwrap().contains("/help"));
+        assert!(!state.command_matched());
+    }
+
+    #[test]
+    fn command_matched_accepts_exact_root_command() {
+        for command in [
+            "/help", "/model", "/mode", "/session", "/review", "/memory", "/trace", "/confirm",
+        ] {
+            let mut state = WorkspaceState::new(Vec::new());
+            type_text(&mut state, command);
+
+            assert!(state.command_matched(), "{command} should be matched");
+        }
+    }
+
+    #[test]
+    fn command_matched_rejects_leading_space() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, " /help");
+
+        assert!(state.command_hint(&[]).is_none());
+        assert!(!state.command_matched());
+    }
+
+    #[test]
+    fn command_matched_requires_exact_subcommand() {
+        let mut state = WorkspaceState::new(Vec::new());
+        type_text(&mut state, "/session l");
+        assert!(!state.command_matched());
+
+        state.input.clear();
+        type_text(&mut state, "/session list");
+        assert!(state.command_matched());
+
+        state.input.clear();
+        type_text(&mut state, "/mode p");
+        assert!(!state.command_matched());
+
+        state.input.clear();
+        type_text(&mut state, "/mode plan");
+        assert!(state.command_matched());
+    }
 }
 
 async fn run_loop(
@@ -986,6 +1396,10 @@ async fn handle_submit(
         return Ok(());
     }
 
+    if !ensure_model_assignment_ready_or_open_model_pool(session, state) {
+        return Ok(());
+    }
+
     if state.plan_draft.is_some() && matches!(state.interaction, InteractionUi::TextInput) {
         state.record_input_request(trimmed);
         state.add_plan_detail(trimmed);
@@ -997,6 +1411,17 @@ async fn handle_submit(
         InteractionMode::Plan => {
             state.begin_plan_draft(trimmed);
             advance_plan_draft(app, session, state).await?;
+        }
+        InteractionMode::Chat => {
+            state.record_input_request(trimmed);
+            execute_goal(
+                app,
+                session,
+                state,
+                trimmed.to_string(),
+                ExecutionMode::Chat,
+            )
+            .await?;
         }
         InteractionMode::Bypass => {
             state.record_input_request(trimmed);
@@ -1012,6 +1437,20 @@ async fn handle_submit(
     }
 
     Ok(())
+}
+
+fn ensure_model_assignment_ready_or_open_model_pool(
+    session: &ReplSession,
+    state: &mut WorkspaceState,
+) -> bool {
+    let issues = model_assignment_readiness_issues(&session.workspace_root);
+    if issues.is_empty() {
+        return true;
+    }
+
+    let current_settings = session.settings.read().unwrap().clone();
+    state.start_model_task_for_readiness(current_settings, &issues);
+    false
 }
 
 fn config_task_start_message(kind: ConfigTaskKind) -> String {
@@ -1103,6 +1542,10 @@ async fn execute_goal(
     prompt: String,
     mode: ExecutionMode,
 ) -> Result<()> {
+    if !ensure_model_assignment_ready_or_open_model_pool(session, state) {
+        return Ok(());
+    }
+
     state.pending_goal = Some(prompt.clone());
     state.start_execution(mode);
 
@@ -1116,10 +1559,7 @@ async fn execute_goal(
     if let Some(bridge) = &session.bridge {
         session.conversation.add_user_message(prompt.clone());
 
-        let rt_mode = match mode {
-            ExecutionMode::Plan => protocol_interface::core::RuntimeMode::Plan,
-            ExecutionMode::Bypass => protocol_interface::core::RuntimeMode::Bypass,
-        };
+        let rt_mode = runtime_mode_for_execution(mode);
 
         match bridge.start_streaming(&prompt, rt_mode) {
             Ok((run_ref, mut event_rx)) => {
@@ -1333,6 +1773,10 @@ async fn advance_plan_draft(
     session: &mut ReplSession,
     state: &mut WorkspaceState,
 ) -> Result<()> {
+    if !ensure_model_assignment_ready_or_open_model_pool(session, state) {
+        return Ok(());
+    }
+
     let Some(draft) = state.plan_draft.as_ref() else {
         return Ok(());
     };
@@ -1495,6 +1939,14 @@ async fn collect_plan_controller_response(
     }
 }
 
+fn runtime_mode_for_execution(mode: ExecutionMode) -> RuntimeMode {
+    match mode {
+        ExecutionMode::Chat => RuntimeMode::Chat,
+        ExecutionMode::Plan => RuntimeMode::Plan,
+        ExecutionMode::Bypass => RuntimeMode::Bypass,
+    }
+}
+
 async fn execute_approved_plan(
     app: &mut TuiApp,
     session: &mut ReplSession,
@@ -1514,6 +1966,10 @@ async fn execute_plan_step(
     state: &mut WorkspaceState,
     index: usize,
 ) -> Result<bool> {
+    if !ensure_model_assignment_ready_or_open_model_pool(session, state) {
+        return Ok(false);
+    }
+
     let Some(prompt) = state.plan_step_prompt(index) else {
         return Ok(false);
     };
@@ -1673,6 +2129,13 @@ async fn collect_protocol_response(
     let missing = missing_runtime_requirements(&session.settings.read().unwrap());
     if !missing.is_empty() {
         return Err(anyhow::anyhow!("{}", init_required_message(&missing)));
+    }
+    let assignment_issues = model_assignment_readiness_issues(&session.workspace_root);
+    if !assignment_issues.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{}",
+            model_assignment_required_message(&assignment_issues)
+        ));
     }
 
     let Some(bridge) = &session.bridge else {
@@ -2147,9 +2610,12 @@ Current step:
 
 Instructions:
 - Execute only the current step.
-- Use available tools when needed.
+- Inspect existing backend/frontend code first with search_code/read_file/list_dir when code context is needed.
+- Use available tools to implement or verify the step; do not guess when local evidence can be gathered.
+- After implementation or bug fixes, run the relevant tests, checks, or build command.
+- If this step changes or fixes a locally runnable app/API, call run_local_service to verify the local service URL.
 - If a required prerequisite is missing, stop and explain the blocker clearly.
-- Return the concrete result of this step and any evidence or files changed.
+- Return the concrete result, commands run, test/build outcome, verified local service URL when applicable, whether that service was stopped, and any files changed.
 "#,
         goal = goal.trim(),
         plan = plan_text,
@@ -2232,8 +2698,11 @@ fn render_config_side_panel(
     scroll.clamp(max_off);
 
     let paragraph = Paragraph::new(Text::from(lines))
+        .style(crate::tui::theme::base())
         .wrap(Wrap { trim: false })
         .scroll((scroll.offset, 0));
+    // Clear stale glyphs before repaint (see conversation.rs for rationale).
+    frame.render_widget(ratatui::widgets::Clear, inner);
     frame.render_widget(paragraph, inner);
 }
 
@@ -2265,6 +2734,71 @@ fn tool_display_name(value: &serde_json::Value) -> String {
         }
     }
     name.to_string()
+}
+
+fn format_tool_completion_output(value: &serde_json::Value, raw_output: &str) -> String {
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tool");
+    if name == "run_local_service" {
+        if let Some(summary) = format_local_service_result(raw_output) {
+            return summary;
+        }
+    }
+    sanitize_for_tui(raw_output)
+}
+
+fn format_local_service_result(raw_output: &str) -> Option<String> {
+    let output: serde_json::Value = serde_json::from_str(raw_output).ok()?;
+    if output.get("tool").and_then(serde_json::Value::as_str) != Some("run_local_service") {
+        return None;
+    }
+    let url = output
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if url.is_empty() {
+        return None;
+    }
+    let kept_running = output
+        .get("kept_running")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let stopped = output
+        .get("stopped")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut lines = vec![format!("本地服务 URL: {url}")];
+    if kept_running {
+        lines.push("服务状态: 仍在运行".to_string());
+        if let Some(service_id) = output.get("service_id").and_then(serde_json::Value::as_str) {
+            lines.push(format!("Service ID: {service_id}"));
+        }
+    } else if stopped {
+        lines.push("服务状态: 已验证并停止".to_string());
+    } else {
+        lines.push("服务状态: 已验证，停止状态未知".to_string());
+    }
+    if let Some(logs) = output
+        .get("logs_tail")
+        .and_then(serde_json::Value::as_array)
+    {
+        let mut visible_logs = logs
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|line| !line.trim().is_empty())
+            .rev()
+            .take(5)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        visible_logs.reverse();
+        if !visible_logs.is_empty() {
+            lines.push("日志摘要:".to_string());
+            lines.extend(visible_logs);
+        }
+    }
+    Some(lines.join("\n"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2328,8 +2862,12 @@ fn startup_welcome_state(
         version: format!("v{version}"),
         ready: initialized,
         soul: initialized.then(|| session.map(ReplSession::soul).unwrap_or_default()),
+        // All three roles derive from the project config snapshot (model.toml
+        // assignment + tiers), NOT from runtime ReplSession settings — so the
+        // welcome page reflects what is persisted to disk, not a value that
+        // may have been overridden at runtime via --model / env vars.
         model_plan: None,
-        model_execute: initialized.then(|| session.map(ReplSession::model).unwrap_or_default()),
+        model_execute: None,
         model_review: None,
     };
 
@@ -2339,8 +2877,8 @@ fn startup_welcome_state(
             .and_then(|cwd| runtime_config::load_project_config(&cwd).ok())
         {
             state.model_plan = assigned_welcome_model(&snapshot, ModelAssignmentRole::Plan);
-            state.model_execute = assigned_welcome_model(&snapshot, ModelAssignmentRole::Execute)
-                .or(state.model_execute);
+            state.model_execute =
+                assigned_welcome_model(&snapshot, ModelAssignmentRole::Execute);
             state.model_review = assigned_welcome_model(&snapshot, ModelAssignmentRole::Review);
         }
     }
@@ -2353,19 +2891,39 @@ fn assigned_welcome_model(
     role: ModelAssignmentRole,
 ) -> Option<String> {
     let model_id = snapshot.model_assignment.get(role).trim();
-    if model_id.is_empty() {
+    // Prefer an exact model-library match (the canonical source).
+    if !model_id.is_empty() {
+        if let Some(entry) = snapshot
+            .providers
+            .model_library
+            .models
+            .iter()
+            .find(|entry| entry.enabled && entry.id == model_id)
+        {
+            return Some(format!(
+                "{}({})",
+                welcome_provider_name(&entry.provider),
+                entry.model_name
+            ));
+        }
+    }
+    // Fallback: derive from the compatibility tier (light=Plan, medium=Execute,
+    // high=Review). Covers legacy configs and models assigned before they were
+    // added to the model library, so the welcome page no longer shows
+    // "Not configured" for roles the user has actually set up.
+    let tier = match role {
+        ModelAssignmentRole::Plan => &snapshot.providers.tiers.light,
+        ModelAssignmentRole::Execute => &snapshot.providers.tiers.medium,
+        ModelAssignmentRole::Review => &snapshot.providers.tiers.high,
+    };
+    let model_name = tier.model.trim();
+    if model_name.is_empty() {
         return None;
     }
-    let entry = snapshot
-        .providers
-        .model_library
-        .models
-        .iter()
-        .find(|entry| entry.enabled && entry.id == model_id)?;
     Some(format!(
         "{}({})",
-        welcome_provider_name(&entry.provider),
-        entry.model_name
+        welcome_provider_name(&tier.provider),
+        model_name
     ))
 }
 
@@ -2475,6 +3033,46 @@ impl PlanPermissionMode {
     }
 }
 
+/// Which panel a text selection targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelType {
+    Conversation,
+    Plans,
+    Interaction,
+}
+
+/// An active mouse text selection.
+#[derive(Debug, Clone)]
+struct TextSelection {
+    panel: PanelType,
+    /// Selection anchor (where mouse was pressed).
+    start: Position,
+    /// Current mouse position (updated on drag).
+    end: Position,
+}
+
+#[derive(Debug, Clone)]
+struct CopyFeedback {
+    message: String,
+    is_error: bool,
+    expires_at: Instant,
+}
+
+/// A plain-text line for selection extraction.
+#[derive(Debug, Clone)]
+struct PlainTextLine {
+    text: String,
+    /// Row index in the panel's inner area (0-based, before scroll).
+    row: u16,
+}
+
+#[derive(Debug, Clone)]
+struct CommandCompletionCycle {
+    start: usize,
+    matches: Vec<String>,
+    selected: usize,
+}
+
 pub(crate) struct WorkspaceState {
     mode: InteractionMode,
     plan_permission_mode: PlanPermissionMode,
@@ -2486,6 +3084,7 @@ pub(crate) struct WorkspaceState {
     input_history: Vec<String>,
     input_history_cursor: Option<usize>,
     input_history_draft: String,
+    command_completion_cycle: Option<CommandCompletionCycle>,
     prompt_input: Option<PromptInputState>,
     pending_tool_confirmation: Option<ToolConfirmationState>,
     config_side_panel: Option<ConfigSidePanel>,
@@ -2509,6 +3108,15 @@ pub(crate) struct WorkspaceState {
     block_row_map: std::collections::HashMap<String, (u16, u16)>,
     /// Current run reference for tool confirmation (Stage B).
     current_run_ref: Option<protocol_interface::core::RunRef>,
+    /// Active text selection (if any).
+    selection: Option<TextSelection>,
+    copy_feedback: Option<CopyFeedback>,
+    /// Plain-text lines for the conversation panel (rebuilt each frame).
+    conv_plain_lines: Vec<PlainTextLine>,
+    /// Plain-text lines for the plans panel (rebuilt each frame).
+    plans_plain_lines: Vec<PlainTextLine>,
+    /// Plain-text lines for the interaction panel (rebuilt each frame).
+    interaction_plain_lines: Vec<PlainTextLine>,
 }
 
 impl WorkspaceState {
@@ -2544,6 +3152,7 @@ impl WorkspaceState {
             input_history: Vec::new(),
             input_history_cursor: None,
             input_history_draft: String::new(),
+            command_completion_cycle: None,
             prompt_input: None,
             pending_tool_confirmation: None,
             config_side_panel: None,
@@ -2566,6 +3175,11 @@ impl WorkspaceState {
             global_expanded: false,
             block_row_map: std::collections::HashMap::new(),
             current_run_ref: None,
+            selection: None,
+            copy_feedback: None,
+            conv_plain_lines: Vec::new(),
+            plans_plain_lines: Vec::new(),
+            interaction_plain_lines: Vec::new(),
         }
     }
 
@@ -2752,6 +3366,7 @@ impl WorkspaceState {
                 prompt_input: self.prompt_input.as_ref(),
                 has_agent_team: self.has_agent_team_tab(),
                 command_hint: self.command_hint(models),
+                command_matched: self.command_matched(),
                 config_section: self
                     .config_task
                     .as_ref()
@@ -2764,7 +3379,19 @@ impl WorkspaceState {
             self.focus_zone == FocusZone::Input,
             self.hover_zone == Some(HoverZone::Interaction),
         );
-        status_bar::render(frame, layout[3], &self.workspace_status);
+        self.render_selection_highlight(frame);
+        let copy_feedback = self.visible_copy_feedback();
+        status_bar::render(
+            frame,
+            layout[3],
+            &self.workspace_status,
+            copy_feedback
+                .as_ref()
+                .map(|(message, is_error)| status_bar::StatusFeedback {
+                    message,
+                    is_error: *is_error,
+                }),
+        );
     }
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect, model: &str) {
@@ -2804,6 +3431,7 @@ impl WorkspaceState {
                     conv_hovered,
                     &self.expanded_blocks,
                     self.global_expanded,
+                    &mut self.conv_plain_lines,
                 )
             }
             MainTab::AgentTeam => {
@@ -2838,6 +3466,7 @@ impl WorkspaceState {
                 &mut self.plans_scroll,
                 self.focus_zone == FocusZone::Plans,
                 self.hover_zone == Some(HoverZone::Plans),
+                &mut self.plans_plain_lines,
             );
         }
     }
@@ -2963,6 +3592,7 @@ impl WorkspaceState {
             }
             InteractionUi::TextInput => {
                 self.reset_input_history_navigation();
+                self.reset_command_completion_cycle();
                 self.input.paste(text);
             }
             InteractionUi::Decision(decision) => {
@@ -3028,17 +3658,278 @@ impl WorkspaceState {
             MouseEventKind::Moved => {
                 self.hover_zone = self.zone_for_position(mouse.column, mouse.row);
             }
-            MouseEventKind::Down(_)
-                // Handle click on conversation blocks to toggle fold/unfold
-                if self.layout_rects.conversation.contains(Position {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let pos = Position {
                     x: mouse.column,
                     y: mouse.row,
-                }) =>
-            {
-                self.handle_conversation_click(mouse.column, mouse.row);
+                };
+                // Start a new selection (or clear previous one).
+                let panel = self.panel_for_position(pos);
+                // For interaction panel, cache the input text as plain lines.
+                if panel == PanelType::Interaction {
+                    self.interaction_plain_lines.clear();
+                    let text = self.input.value();
+                    for (i, line) in text.lines().enumerate() {
+                        self.interaction_plain_lines.push(PlainTextLine {
+                            text: line.to_string(),
+                            row: i as u16,
+                        });
+                    }
+                    if self.interaction_plain_lines.is_empty() {
+                        self.interaction_plain_lines.push(PlainTextLine {
+                            text: String::new(),
+                            row: 0,
+                        });
+                    }
+                }
+                self.selection = Some(TextSelection {
+                    panel,
+                    start: pos,
+                    end: pos,
+                });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(sel) = &mut self.selection {
+                    sel.end = Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    };
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(sel) = self.selection.take() {
+                    if sel.start != sel.end {
+                        self.copy_selection_to_clipboard(&sel);
+                    }
+                }
             }
             _ => {}
         }
+    }
+
+    /// Determine which panel a position belongs to.
+    fn panel_for_position(&self, pos: Position) -> PanelType {
+        if self.layout_rects.conversation.contains(pos) {
+            PanelType::Conversation
+        } else if self.layout_rects.plans.contains(pos) {
+            PanelType::Plans
+        } else {
+            PanelType::Interaction
+        }
+    }
+
+    fn selected_text_for_selection(&self, sel: &TextSelection) -> Option<String> {
+        let (panel_rect, plain_lines, scroll_offset) = match sel.panel {
+            PanelType::Conversation => (
+                self.layout_rects.conversation,
+                &self.conv_plain_lines,
+                self.conv_scroll.offset,
+            ),
+            PanelType::Plans => (
+                self.layout_rects.plans,
+                &self.plans_plain_lines,
+                self.plans_scroll.offset,
+            ),
+            PanelType::Interaction => (
+                self.layout_rects.interaction,
+                &self.interaction_plain_lines,
+                0u16,
+            ),
+        };
+
+        // Convert terminal coordinates to panel-local row indices.
+        let inner = Rect::new(
+            panel_rect.x + 1, // skip border
+            panel_rect.y + 1,
+            panel_rect.width.saturating_sub(2),
+            panel_rect.height.saturating_sub(2),
+        );
+
+        let start_row = sel.start.y.saturating_sub(inner.y) + scroll_offset;
+        let end_row = sel.end.y.saturating_sub(inner.y) + scroll_offset;
+        let (lo_row, lo_col, hi_row, hi_col) =
+            if start_row < end_row || (start_row == end_row && sel.start.x <= sel.end.x) {
+                (
+                    start_row,
+                    sel.start.x.saturating_sub(inner.x),
+                    end_row,
+                    sel.end.x.saturating_sub(inner.x),
+                )
+            } else {
+                (
+                    end_row,
+                    sel.end.x.saturating_sub(inner.x),
+                    start_row,
+                    sel.start.x.saturating_sub(inner.x),
+                )
+            };
+
+        let mut selected = String::new();
+        for pl in plain_lines {
+            if pl.row < lo_row || pl.row > hi_row {
+                continue;
+            }
+            let line_text = &pl.text;
+            let (start_byte, end_byte) = if lo_row == hi_row {
+                // Single line: extract between columns.
+                let s = helpers::col_to_byte_offset(line_text, lo_col);
+                let e = helpers::col_to_byte_offset(line_text, hi_col);
+                (s, e)
+            } else if pl.row == lo_row {
+                // First line: from lo_col to end.
+                (
+                    helpers::col_to_byte_offset(line_text, lo_col),
+                    line_text.len(),
+                )
+            } else if pl.row == hi_row {
+                // Last line: from start to hi_col.
+                (0, helpers::col_to_byte_offset(line_text, hi_col))
+            } else {
+                // Middle line: entire line.
+                (0, line_text.len())
+            };
+            if start_byte < end_byte {
+                if !selected.is_empty() {
+                    selected.push('\n');
+                }
+                selected.push_str(&line_text[start_byte..end_byte]);
+            }
+        }
+
+        if selected.is_empty() {
+            None
+        } else {
+            Some(selected)
+        }
+    }
+
+    fn render_selection_highlight(&self, frame: &mut Frame) {
+        let Some(sel) = &self.selection else {
+            return;
+        };
+        let (panel_rect, plain_lines, scroll_offset) = match sel.panel {
+            PanelType::Conversation => (
+                self.layout_rects.conversation,
+                &self.conv_plain_lines,
+                self.conv_scroll.offset,
+            ),
+            PanelType::Plans => (
+                self.layout_rects.plans,
+                &self.plans_plain_lines,
+                self.plans_scroll.offset,
+            ),
+            PanelType::Interaction => (
+                self.layout_rects.interaction,
+                &self.interaction_plain_lines,
+                0u16,
+            ),
+        };
+        if panel_rect.width <= 2 || panel_rect.height <= 2 {
+            return;
+        }
+
+        let inner = Rect::new(
+            panel_rect.x + 1,
+            panel_rect.y + 1,
+            panel_rect.width.saturating_sub(2),
+            panel_rect.height.saturating_sub(2),
+        );
+        let start_row = sel.start.y.saturating_sub(inner.y) + scroll_offset;
+        let end_row = sel.end.y.saturating_sub(inner.y) + scroll_offset;
+        let (lo_row, lo_col, hi_row, hi_col) =
+            if start_row < end_row || (start_row == end_row && sel.start.x <= sel.end.x) {
+                (
+                    start_row,
+                    sel.start.x.saturating_sub(inner.x),
+                    end_row,
+                    sel.end.x.saturating_sub(inner.x),
+                )
+            } else {
+                (
+                    end_row,
+                    sel.end.x.saturating_sub(inner.x),
+                    start_row,
+                    sel.start.x.saturating_sub(inner.x),
+                )
+            };
+
+        for line in plain_lines {
+            if line.row < lo_row || line.row > hi_row {
+                continue;
+            }
+            if line.row < scroll_offset {
+                continue;
+            }
+            let visible_row = line.row - scroll_offset;
+            if visible_row >= inner.height {
+                continue;
+            }
+
+            let start_col = if line.row == lo_row { lo_col } else { 0 }.min(inner.width);
+            let end_col = if line.row == hi_row {
+                hi_col
+            } else {
+                inner.width
+            }
+            .min(inner.width);
+            if end_col <= start_col {
+                continue;
+            }
+
+            let start_byte = helpers::col_to_byte_offset(&line.text, start_col);
+            let end_byte = helpers::col_to_byte_offset(&line.text, end_col);
+            let mut selected = if start_byte < end_byte {
+                line.text[start_byte..end_byte].to_string()
+            } else {
+                String::new()
+            };
+            let selection_width = end_col - start_col;
+            let selected_width = helpers::char_len(&selected) as u16;
+            if selected_width < selection_width {
+                selected.push_str(&" ".repeat((selection_width - selected_width) as usize));
+            }
+
+            frame.render_widget(
+                Paragraph::new(selected).style(crate::tui::theme::selected()),
+                Rect::new(inner.x + start_col, inner.y + visible_row, selection_width, 1),
+            );
+        }
+    }
+
+    /// Extract selected text and copy it to the system clipboard.
+    fn copy_selection_to_clipboard(&mut self, sel: &TextSelection) {
+        let Some(selected) = self.selected_text_for_selection(sel) else {
+            return;
+        };
+
+        match copy_text_to_clipboard(&selected) {
+            Ok(()) => self.show_copy_feedback(t!("workspace.copy.copied").to_string(), false),
+            Err(error) => self.show_copy_feedback(
+                t!("workspace.copy.failed", error = error).to_string(),
+                true,
+            ),
+        }
+    }
+
+    fn show_copy_feedback(&mut self, message: String, is_error: bool) {
+        self.copy_feedback = Some(CopyFeedback {
+            message,
+            is_error,
+            expires_at: Instant::now() + Duration::from_secs(COPY_FEEDBACK_SECS),
+        });
+    }
+
+    fn visible_copy_feedback(&mut self) -> Option<(String, bool)> {
+        let expired = self
+            .copy_feedback
+            .as_ref()
+            .is_some_and(|feedback| Instant::now() >= feedback.expires_at);
+        if expired {
+            self.copy_feedback = None;
+        }
+        self.copy_feedback
+            .as_ref()
+            .map(|feedback| (feedback.message.clone(), feedback.is_error))
     }
 
     fn scroll_for_position(&mut self, col: u16, row: u16) -> &mut PanelScroll {
@@ -3082,6 +3973,7 @@ impl WorkspaceState {
                 if key.modifiers.contains(KeyModifiers::CONTROL) || !self.input.is_empty() {
                     let input = self.input.take();
                     self.record_input_history(&input);
+                    self.reset_command_completion_cycle();
                     WorkspaceAction::Submit(input)
                 } else {
                     WorkspaceAction::None
@@ -3090,6 +3982,7 @@ impl WorkspaceState {
             KeyCode::Esc => {
                 self.input.clear();
                 self.reset_input_history_navigation();
+                self.reset_command_completion_cycle();
                 WorkspaceAction::None
             }
             KeyCode::Up => {
@@ -3103,6 +3996,7 @@ impl WorkspaceState {
             _ => {
                 if Self::key_edits_input(key) {
                     self.reset_input_history_navigation();
+                    self.reset_command_completion_cycle();
                 }
                 self.input.handle_key(key);
                 WorkspaceAction::None
@@ -3133,6 +4027,7 @@ impl WorkspaceState {
 
         self.input_history_cursor = Some(index);
         self.input.set_value(self.input_history[index].clone());
+        self.reset_command_completion_cycle();
     }
 
     fn recall_next_input(&mut self) {
@@ -3149,11 +4044,16 @@ impl WorkspaceState {
             self.input
                 .set_value(std::mem::take(&mut self.input_history_draft));
         }
+        self.reset_command_completion_cycle();
     }
 
     fn reset_input_history_navigation(&mut self) {
         self.input_history_cursor = None;
         self.input_history_draft.clear();
+    }
+
+    fn reset_command_completion_cycle(&mut self) {
+        self.command_completion_cycle = None;
     }
 
     fn key_edits_input(key: KeyEvent) -> bool {
@@ -3190,34 +4090,87 @@ impl WorkspaceState {
     }
 
     fn complete_command(&mut self, models: &[String]) -> bool {
+        if !self.input.value().starts_with('/') {
+            self.reset_command_completion_cycle();
+            return false;
+        }
+
+        if self.cycle_command_completion() {
+            self.reset_input_history_navigation();
+            return true;
+        }
+
         let Some(result) = completion::complete(self.input.value(), self.input.cursor(), models)
         else {
+            self.reset_command_completion_cycle();
             return false;
         };
+
+        if result.matches.len() == 1 {
+            self.input
+                .replace_range(result.start, result.end, &result.matches[0].replacement);
+            self.reset_command_completion_cycle();
+        } else {
+            let replacements = result
+                .matches
+                .iter()
+                .map(|item| item.replacement.clone())
+                .collect::<Vec<_>>();
+            let selected = 0;
+            self.input
+                .replace_range(result.start, result.end, &replacements[selected]);
+            self.command_completion_cycle = Some(CommandCompletionCycle {
+                start: result.start,
+                matches: replacements,
+                selected,
+            });
+        }
+
+        self.reset_input_history_navigation();
+        true
+    }
+
+    fn cycle_command_completion(&mut self) -> bool {
+        let Some(cycle) = self.command_completion_cycle.clone() else {
+            return false;
+        };
+
+        let cursor = self.input.cursor();
+        if cursor < cycle.start || cycle.matches.is_empty() {
+            self.reset_command_completion_cycle();
+            return false;
+        }
 
         let current = self
             .input
             .value()
             .chars()
-            .skip(result.start)
-            .take(result.end.saturating_sub(result.start))
+            .skip(cycle.start)
+            .take(cursor.saturating_sub(cycle.start))
             .collect::<String>();
+        if cycle.matches.get(cycle.selected) != Some(&current) {
+            self.reset_command_completion_cycle();
+            return false;
+        }
 
-        let replacement = if result.matches.len() == 1 {
-            result.matches[0].replacement.clone()
-        } else if let Some(prefix) = completion::common_prefix(&result.matches) {
-            if prefix.chars().count() <= current.chars().count() {
-                return true;
-            }
-            prefix
-        } else {
-            return true;
-        };
-
-        self.input
-            .replace_range(result.start, result.end, &replacement);
-        self.reset_input_history_navigation();
+        let selected = (cycle.selected + 1) % cycle.matches.len();
+        let replacement = cycle.matches[selected].clone();
+        self.input.replace_range(cycle.start, cursor, &replacement);
+        self.command_completion_cycle = Some(CommandCompletionCycle { selected, ..cycle });
         true
+    }
+
+    /// Whether the current input is a matched slash command.
+    fn command_matched(&self) -> bool {
+        if self.prompt_input.is_some() {
+            return false;
+        }
+        if !matches!(self.interaction, InteractionUi::TextInput)
+            || !self.input.value().starts_with('/')
+        {
+            return false;
+        }
+        completion::exact_command_match(self.input.value(), self.input.cursor())
     }
 
     fn command_hint(&self, models: &[String]) -> Option<String> {
@@ -3226,7 +4179,7 @@ impl WorkspaceState {
         }
 
         if !matches!(self.interaction, InteractionUi::TextInput)
-            || !self.input.value().trim_start().starts_with('/')
+            || !self.input.value().starts_with('/')
         {
             return None;
         }
@@ -3259,7 +4212,8 @@ impl WorkspaceState {
 
     fn toggle_mode(&mut self) {
         self.mode = match self.mode {
-            InteractionMode::Plan => InteractionMode::Bypass,
+            InteractionMode::Plan => InteractionMode::Chat,
+            InteractionMode::Chat => InteractionMode::Bypass,
             InteractionMode::Bypass => InteractionMode::Plan,
         };
         // 不再清空输入框 — 模式切换时保留用户输入内容
@@ -3307,6 +4261,14 @@ impl WorkspaceState {
 
     fn start_model_task(&mut self, settings: runtime_config::Settings) {
         self.start_config_like_task(ConfigTask::model_switch(settings));
+    }
+
+    fn start_model_task_for_readiness(
+        &mut self,
+        settings: runtime_config::Settings,
+        issues: &[runtime_config::ModelAssignmentReadinessIssue],
+    ) {
+        self.start_config_like_task(ConfigTask::model_switch_for_readiness(settings, issues));
     }
 
     fn start_config_like_task(&mut self, task: ConfigTask) {
@@ -3361,6 +4323,7 @@ impl WorkspaceState {
                 drop(message);
                 if let Ok(settings) = session.settings.read() {
                     crate::set_locale(&settings.ui.locale);
+                    crate::tui::theme::set_theme(&settings.ui.theme);
                 }
                 self.config_task = None;
                 self.config_side_panel = None;
@@ -3434,8 +4397,10 @@ impl WorkspaceState {
             ConfigSaveTarget::Project => settings.save_to_project_config()?,
         }
         let locale = settings.ui.locale.clone();
+        let theme = settings.ui.theme.clone();
         *session.settings.write().unwrap() = settings.clone();
         crate::set_locale(&locale);
+        crate::tui::theme::set_theme(&theme);
         session.rebuild_runtime_bridge();
         self.workspace_status = WorkspaceStatus::load();
         self.last_workspace_refresh = Instant::now();
@@ -3530,7 +4495,7 @@ impl WorkspaceState {
     fn format_tool_details(tool_name: &str, tool_call_id: &str, details: &str) -> String {
         let args_display = Self::format_tool_args(details);
         format!(
-            "⚠ Tool confirmation required\n  Tool: {}\n  Call ID: {}\n  Args: {}",
+            "Tool confirmation required\n  Tool: {}\n  Call ID: {}\n  Args: {}",
             tool_name, tool_call_id, args_display
         )
     }
@@ -4047,17 +5012,27 @@ impl WorkspaceState {
 
     fn record_tool_call_started(&mut self, value: &serde_json::Value) {
         let tool = truncate_chars(&tool_display_name(value), 160);
-        let content = t!("workspace.tool.started", tool = tool).to_string();
+        let title = t!("workspace.tool.started", tool = tool);
+        // Raw tool name (e.g. "shell", "read_file") drives the per-tool icon.
+        let raw_name = value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.to_string());
 
         if let Some(block) = self.blocks.last_mut() {
             if block.is_execution() && block.content.trim().is_empty() {
-                *block = ConversationBlock::status(content);
+                block.title = Some(title.to_string());
+                block.block_type = ConversationBlockType::Execution;
+                block.tool_name = raw_name;
                 self.stick_conversation_to_latest();
                 return;
             }
         }
 
-        self.push_block(ConversationBlock::status(content));
+        let mut block = ConversationBlock::execution("");
+        block.title = Some(title.to_string());
+        block.tool_name = raw_name;
+        self.push_block(block);
     }
 
     fn record_tool_call_completed(&mut self, value: &serde_json::Value) {
@@ -4069,24 +5044,32 @@ impl WorkspaceState {
         let output = value
             .get("output")
             .and_then(serde_json::Value::as_str)
-            .map(sanitize_for_tui)
+            .map(|text| format_tool_completion_output(value, text))
             .filter(|text| !text.is_empty())
             .map(|text| truncate_chars(&text, 1200));
+        let raw_name = value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.to_string());
 
-        let mut content = if success {
-            t!("workspace.tool.completed", tool = tool).to_string()
+        let title = if success {
+            t!("workspace.tool.completed", tool = tool)
         } else {
-            t!("workspace.tool.failed", tool = tool).to_string()
+            t!("workspace.tool.failed", tool = tool)
         };
-        if let Some(output) = output {
-            content.push('\n');
-            content.push_str(&output);
-        }
+
+        let content = output.unwrap_or_default();
 
         if success {
-            self.push_block(ConversationBlock::status(content));
+            let mut block = ConversationBlock::result(&content);
+            block.title = Some(title.to_string());
+            block.tool_name = raw_name;
+            self.push_block(block);
         } else {
-            self.push_block(ConversationBlock::error(content));
+            let mut block = ConversationBlock::error(&content);
+            block.title = Some(title.to_string());
+            block.tool_name = raw_name;
+            self.push_block(block);
         }
     }
 
@@ -4114,53 +5097,38 @@ impl WorkspaceState {
 
     fn toggle_global_expand(&mut self) {
         if self.global_expanded {
-            // Collapse all: clear expanded blocks and set global_expanded to false
             self.expanded_blocks.clear();
             self.global_expanded = false;
         } else {
-            // Expand all: set global_expanded to true
             self.global_expanded = true;
         }
     }
+}
 
-    fn handle_conversation_click(&mut self, _col: u16, row: u16) {
-        // Map the click row to a block ID
-        // Note: row is relative to the terminal, we need to adjust for the conversation area offset
-        let inner_row = row.saturating_sub(self.layout_rects.conversation.y + 1); // +1 for border
-        let adjusted_row = inner_row.saturating_add(self.conv_scroll.offset);
+fn copy_text_to_clipboard(text: &str) -> std::result::Result<(), String> {
+    let system_result = arboard::Clipboard::new()
+        .map_err(|error| error.to_string())
+        .and_then(|mut clipboard| {
+            clipboard
+                .set_text(text.to_string())
+                .map_err(|error| error.to_string())
+        });
 
-        // Find which block this row belongs to
-        for (block_id, (start, end)) in &self.block_row_map {
-            if adjusted_row >= *start && adjusted_row < *end {
-                // Check if this block can be folded
-                if let Some(block) = self.blocks.iter().find(|b| &b.id == block_id) {
-                    let is_empty_execution = block.block_type == ConversationBlockType::Execution
-                        && block.content.trim().is_empty();
-                    let is_welcome = block.block_type == ConversationBlockType::Welcome;
-                    let is_config = block.block_type == ConversationBlockType::ConfigOverview;
-
-                    // Don't fold welcome, config overview, or empty execution blocks
-                    if !is_empty_execution && !is_welcome && !is_config {
-                        let content_lines: Vec<&str> = block.content.lines().collect();
-                        let total_lines = 1 + content_lines.len();
-
-                        if total_lines > MAX_COLLAPSED_LINES {
-                            self.toggle_block_expanded(block_id.clone());
-                        }
-                    }
-                }
-                break;
-            }
-        }
+    match system_result {
+        Ok(()) => Ok(()),
+        Err(system_error) => copy_text_to_terminal_clipboard(text).map_err(|terminal_error| {
+            format!(
+                "system clipboard unavailable ({system_error}); terminal clipboard failed ({terminal_error})"
+            )
+        }),
     }
+}
 
-    fn toggle_block_expanded(&mut self, block_id: String) {
-        if self.expanded_blocks.contains(&block_id) {
-            self.expanded_blocks.remove(&block_id);
-        } else {
-            self.expanded_blocks.insert(block_id);
-        }
-    }
+fn copy_text_to_terminal_clipboard(text: &str) -> io::Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let mut stdout = io::stdout();
+    write!(stdout, "\x1b]52;c;{encoded}\x07")?;
+    stdout.flush()
 }
 
 #[cfg(test)]

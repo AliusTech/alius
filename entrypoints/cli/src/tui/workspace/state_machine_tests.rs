@@ -2,7 +2,7 @@
 //
 // Covers the required scenarios from validation.md:
 // - welcome block presence
-// - Plan/Bypass mode toggle
+// - Chat/Bypass/Plan mode toggle
 // - config-task Shift+Tab guard
 // - Esc interrupt
 // - tool confirmation inject/clear
@@ -46,7 +46,7 @@ fn welcome_block_contains_ready_field() {
     );
 }
 
-// ── Plan / Bypass mode toggle ──────────────────────────────────────────
+// ── Chat / Bypass / Plan mode toggle ───────────────────────────────────
 
 #[test]
 fn starts_in_plan_mode() {
@@ -55,17 +55,20 @@ fn starts_in_plan_mode() {
 }
 
 #[test]
-fn shift_tab_toggles_plan_to_bypass() {
+fn shift_tab_toggles_plan_to_chat() {
     let mut harness = TuiTestHarness::new();
     let action = harness.press_key_with(KeyCode::BackTab, KeyModifiers::SHIFT);
 
     assert!(matches!(action, WorkspaceAction::None));
-    assert_eq!(harness.mode(), InteractionMode::Bypass);
+    assert_eq!(harness.mode(), InteractionMode::Chat);
 }
 
 #[test]
-fn shift_tab_toggles_bypass_back_to_plan() {
+fn shift_tab_cycles_chat_bypass_plan() {
     let mut harness = TuiTestHarness::new();
+
+    harness.press_key_with(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(harness.mode(), InteractionMode::Chat);
 
     harness.press_key_with(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(harness.mode(), InteractionMode::Bypass);
@@ -83,7 +86,7 @@ fn mode_toggle_preserves_input_text() {
 
     harness.press_key_with(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(harness.input_value(), "hello world");
-    assert_eq!(harness.mode(), InteractionMode::Bypass);
+    assert_eq!(harness.mode(), InteractionMode::Chat);
 }
 
 #[test]
@@ -155,7 +158,7 @@ fn shift_tab_in_config_task_does_not_toggle_mode() {
     harness.start_config_task();
     assert!(harness.has_config_task(), "config task should be active");
 
-    // Shift+Tab should step the config wizard, not toggle Plan/Bypass
+    // Shift+Tab should step the config wizard, not toggle Chat/Bypass/Plan.
     harness.press_key_with(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(
         harness.mode(),
@@ -219,7 +222,7 @@ fn ctrl_c_shows_quit_confirmation() {
         "Ctrl+C should return None (showing decision), got {action:?}"
     );
 
-    // Default selection is "Continue working" → Enter cancels
+    // Default selection is "Cancel" → Enter cancels
     let action = harness.press_key(KeyCode::Enter);
     assert!(
         matches!(action, WorkspaceAction::CancelDecision),
@@ -234,8 +237,8 @@ fn ctrl_c_confirm_quit() {
     // Ctrl+C shows confirmation
     harness.press_key_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-    // Select "Quit" (option 0)
-    harness.press_key(KeyCode::Up);
+    // Select "Confirm" (option 1)
+    harness.press_key(KeyCode::Down);
     let action = harness.press_key(KeyCode::Enter);
     assert!(
         matches!(action, WorkspaceAction::Quit),
@@ -736,6 +739,21 @@ fn tab_completes_slash_command() {
     harness.press_key(KeyCode::Tab);
 
     assert_eq!(harness.input_value(), "/help");
+    assert_eq!(harness.focus_zone(), FocusZone::Input);
+}
+
+#[test]
+fn tab_cycles_ambiguous_slash_command_matches() {
+    rust_i18n::set_locale("en");
+    let mut harness = TuiTestHarness::new();
+
+    harness.type_text("/m");
+    harness.press_key(KeyCode::Tab);
+    assert_eq!(harness.input_value(), "/mode");
+    assert_eq!(harness.focus_zone(), FocusZone::Input);
+
+    harness.press_key(KeyCode::Tab);
+    assert_eq!(harness.input_value(), "/model");
     assert_eq!(harness.focus_zone(), FocusZone::Input);
 }
 

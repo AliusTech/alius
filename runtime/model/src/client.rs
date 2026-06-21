@@ -24,32 +24,6 @@ fn parse_models_json(body: Option<serde_json::Value>) -> Option<Vec<String>> {
     })
 }
 
-/// BigModel General API builtin model list (fallback when /models fails).
-const BIGMODEL_GENERAL_MODELS: &[&str] = &[
-    "glm-5.1",
-    "glm-5",
-    "glm-5-air",
-    "glm-4.7",
-    "glm-4.7-flash",
-    "glm-4.6",
-    "glm-4.6v",
-    "glm-4.5",
-    "glm-4.5-air",
-    "glm-4-flash-250414",
-];
-
-/// BigModel Coding Plan builtin model list (fallback when /models fails).
-const BIGMODEL_CODING_MODELS: &[&str] = &[
-    "GLM-5.1",
-    "GLM-5-Turbo",
-    "GLM-4.7",
-    "GLM-4.5-Air",
-    "glm-5.1",
-    "glm-5-turbo",
-    "glm-4.7",
-    "glm-4.5-air",
-];
-
 /// Cache entry with expiration time.
 struct ModelCacheEntry {
     models: Vec<String>,
@@ -108,32 +82,52 @@ impl LlmClient {
     ///
     /// Selects the provider implementation based on `settings.provider`.
     pub fn new(settings: LlmSettings) -> Result<Self> {
-        let provider: Box<dyn LlmProvider> = match settings.provider {
+        let provider: Box<dyn LlmProvider> = match &settings.provider {
             ProviderType::Openai | ProviderType::Custom => {
                 Box::new(crate::openai_provider::OpenAiProvider::new(&settings)?)
             }
-            ProviderType::BigModel | ProviderType::XiaomiMimo | ProviderType::DeepSeek => {
+            ProviderType::Anthropic => Box::new(crate::anthropic_provider::AnthropicProvider::new(
+                &settings,
+            )?),
+            ProviderType::XiaomiMimo => {
+                if uses_anthropic_protocol(&settings.provider, &settings.provider_mode) {
+                    Box::new(
+                        crate::anthropic_provider::AnthropicProvider::new_token_plan(&settings)?,
+                    )
+                } else {
+                    Box::new(crate::openai_provider::OpenAiProvider::new(&settings)?)
+                }
+            }
+            ProviderType::BigModel => {
                 if uses_anthropic_protocol(&settings.provider, &settings.provider_mode) {
                     Box::new(crate::anthropic_provider::AnthropicProvider::new(
                         &settings,
                     )?)
                 } else {
-                    Box::new(crate::openai_provider::OpenAiProvider::new(&settings)?)
+                    Box::new(crate::openai_provider::OpenAiProvider::new_bigmodel(
+                        &settings,
+                    )?)
                 }
             }
-            ProviderType::Anthropic => Box::new(crate::anthropic_provider::AnthropicProvider::new(
-                &settings,
-            )?),
+            ProviderType::DeepSeek => {
+                if uses_anthropic_protocol(&settings.provider, &settings.provider_mode) {
+                    Box::new(crate::anthropic_provider::AnthropicProvider::new(
+                        &settings,
+                    )?)
+                } else {
+                    Box::new(crate::openai_provider::OpenAiProvider::new_deepseek(
+                        &settings,
+                    )?)
+                }
+            }
             ProviderType::Google => {
                 let api_key = settings.get_api_key().ok_or_else(|| {
                     anyhow::anyhow!(
                         "Google API key not found. Set GOOGLE_API_KEY or api_key in config."
                     )
                 })?;
-                let mut provider = crate::google_provider::GoogleProvider::new(
-                    &api_key,
-                    &settings.model,
-                )?;
+                let mut provider =
+                    crate::google_provider::GoogleProvider::new(&api_key, &settings.model)?;
                 if let Some(ref base_url) = settings.base_url {
                     provider = provider.with_base_url(base_url);
                 }
@@ -260,11 +254,7 @@ impl LlmClient {
             }
         }
 
-        if self.provider_type == ProviderType::BigModel {
-            Ok(self.builtin_bigmodel_models())
-        } else {
-            Err(anyhow::anyhow!("Failed to fetch model list from provider"))
-        }
+        Err(anyhow::anyhow!("Failed to fetch model list from provider"))
     }
 
     /// List available models using a synchronous HTTP client.
@@ -335,7 +325,6 @@ impl LlmClient {
                 *cache = Some(ModelCacheEntry::new(m.clone(), self.cache_ttl));
                 m
             }
-            _ if self.provider_type == ProviderType::BigModel => self.builtin_bigmodel_models(),
             _ => {
                 // Return stale cache if available
                 let cache = self.model_cache.read().unwrap();
@@ -346,22 +335,6 @@ impl LlmClient {
                     Vec::new()
                 }
             }
-        }
-    }
-
-    /// Return builtin model list based on BigModel provider mode.
-    fn builtin_bigmodel_models(&self) -> Vec<String> {
-        match self.provider_mode {
-            Some(ProviderMode::Coding) | Some(ProviderMode::OpenAICompatible) => {
-                BIGMODEL_CODING_MODELS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            }
-            _ => BIGMODEL_GENERAL_MODELS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
         }
     }
 
@@ -408,4 +381,96 @@ fn uses_anthropic_protocol(
                 Some(ProviderMode::Native)
             )
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver};
+    use std::time::Duration;
+
+    fn settings(provider_mode: ProviderMode, base_url: String) -> LlmSettings {
+        LlmSettings {
+            provider: ProviderType::XiaomiMimo,
+            provider_mode: Some(provider_mode),
+            model: String::new(),
+            api_key: Some("test-key".to_string()),
+            api_key_env: None,
+            base_url: Some(base_url),
+            review_model: None,
+        }
+    }
+
+    fn spawn_model_server() -> Option<(String, Receiver<String>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(_) => return None,
+        };
+        let origin = format!("http://{}", listener.local_addr().expect("local addr"));
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).expect("read request");
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            tx.send(request).expect("send captured request");
+
+            let body = r#"{"data":[{"id":"mimo-test"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+
+        Some((origin, rx))
+    }
+
+    #[test]
+    fn xiaomi_sgp_openai_model_fetch_uses_bearer_auth() {
+        let Some((origin, rx)) = spawn_model_server() else {
+            return;
+        };
+        let base_url = format!("{origin}/v1");
+        let client = LlmClient::new(settings(ProviderMode::OpenAICompatible, base_url.clone()))
+            .expect("client");
+
+        let models = client.list_models_blocking(&base_url, "test-key");
+
+        assert_eq!(models, vec!["mimo-test"]);
+        let request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured request");
+        let lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("GET /v1/models "));
+        assert!(lower.contains("authorization: bearer test-key"));
+    }
+
+    #[test]
+    fn xiaomi_sgp_anthropic_model_fetch_uses_x_api_key_auth() {
+        let Some((origin, rx)) = spawn_model_server() else {
+            return;
+        };
+        let base_url = format!("{origin}/anthropic");
+        let client =
+            LlmClient::new(settings(ProviderMode::Native, base_url.clone())).expect("client");
+
+        let models = client.list_models_blocking(&base_url, "test-key");
+
+        assert_eq!(models, vec!["mimo-test"]);
+        let request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured request");
+        let lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("GET /anthropic/v1/models "));
+        assert!(lower.contains("x-api-key: test-key"));
+        assert!(lower.contains("anthropic-version: 2023-06-01"));
+        assert!(!lower.contains("authorization:"));
+    }
 }

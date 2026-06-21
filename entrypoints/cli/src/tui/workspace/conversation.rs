@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::helpers::{char_len, count_visual_lines, truncate_chars};
-use super::PanelScroll;
+use super::{PanelScroll, PlainTextLine};
 use crate::tui::state::{ConversationBlock, ConversationBlockType, MainTab};
 use crate::tui::theme;
 
@@ -32,6 +32,16 @@ const ALIUS_LOGO_TINY: &[&str] = &["ALIUS"];
 const SLOGAN: &str = "慎始如终";
 const WELCOME_FRAME_MARGIN: usize = 2;
 const MAX_COLLAPSED_LINES: usize = 3;
+
+#[cfg(target_os = "macos")]
+fn fold_shortcut_label() -> &'static str {
+    "Control+O"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fold_shortcut_label() -> &'static str {
+    "Ctrl+O"
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WelcomeLayout {
@@ -98,8 +108,8 @@ impl ConfigOverviewState {
 
 fn render_config_overview_lines(state: &ConfigOverviewState) -> Vec<Line<'static>> {
     let header_style = Style::default()
-        .fg(theme::ACCENT)
-        .bg(theme::BACKGROUND)
+        .fg(theme::accent())
+        .bg(theme::background())
         .add_modifier(Modifier::BOLD);
     let mut lines = vec![Line::from(vec![
         Span::styled("◆", header_style),
@@ -109,9 +119,9 @@ fn render_config_overview_lines(state: &ConfigOverviewState) -> Vec<Line<'static
     for row in &state.rows {
         let icon = if row.done { "✓" } else { "○" };
         let icon_style = if row.done {
-            Style::default().fg(theme::SUCCESS)
+            Style::default().fg(theme::success())
         } else {
-            Style::default().fg(theme::SECONDARY_TEXT)
+            Style::default().fg(theme::secondary_text())
         };
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -123,6 +133,15 @@ fn render_config_overview_lines(state: &ConfigOverviewState) -> Vec<Line<'static
         ]));
     }
     lines
+}
+
+/// Extract plain text from a ratatui `Line`.
+fn line_to_plain(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -137,6 +156,7 @@ pub fn render(
     hovered: bool,
     expanded_blocks: &std::collections::HashSet<String>,
     global_expanded: bool,
+    plain_lines: &mut Vec<PlainTextLine>,
 ) -> HashMap<String, (u16, u16)> {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -196,28 +216,36 @@ pub fn render(
         let is_expanded = global_expanded || expanded_blocks.contains(&block.id);
         let header_style = Style::default()
             .fg(block.block_type.color())
-            .bg(theme::BACKGROUND)
+            .bg(theme::background())
             .add_modifier(Modifier::BOLD);
+        // Tool blocks show a per-tool icon instead of the generic block-type
+        // symbol, so a shell call shows ▸, a file read shows ▤, etc.
+        let icon = block
+            .tool_name
+            .as_deref()
+            .map(tool_icon)
+            .unwrap_or_else(|| block.block_type.symbol());
 
         if block.block_type == ConversationBlockType::Request {
             let mut content_lines = block.content.lines();
             if let Some(first_line) = content_lines.next() {
                 lines.push(Line::from(vec![
-                    Span::styled(block.block_type.symbol(), header_style),
                     Span::raw(" "),
+                    Span::styled(icon, header_style),
+                    Span::raw("  "),
                     Span::raw(first_line.to_string()),
                 ]));
                 for line in content_lines {
                     lines.push(Line::from(vec![
-                        Span::raw("  "),
+                        Span::raw("    "),
                         Span::raw(line.to_string()),
                     ]));
                 }
             } else {
-                lines.push(Line::from(Span::styled(
-                    block.block_type.symbol(),
-                    header_style,
-                )));
+                lines.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(icon, header_style),
+                ]));
             }
             lines.push(Line::default());
 
@@ -226,10 +254,7 @@ pub fn render(
             continue;
         }
 
-        let title = block
-            .title
-            .clone()
-            .unwrap_or_else(|| block.block_type.title());
+        let title = render_title(block);
 
         // Check if block should be folded
         let is_empty_execution =
@@ -237,13 +262,10 @@ pub fn render(
 
         if is_empty_execution {
             // Empty execution blocks are not folded
+            lines.push(header_line(icon, title.as_deref(), header_style));
             lines.push(Line::from(vec![
-                Span::styled(block.block_type.symbol(), header_style),
-                Span::raw(" "),
-                Span::styled(title, header_style),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("⏺", theme::loading_dot()),
+                Span::raw("    "),
+                Span::styled("..", theme::loading_dot()),
                 Span::styled(format!(" {}", t!("workspace.loading")), theme::secondary()),
             ]));
             lines.push(Line::default());
@@ -267,13 +289,12 @@ pub fn render(
                 first_content = content_lines[1].to_string();
             }
 
-            lines.push(Line::from(vec![
-                Span::styled(block.block_type.symbol(), header_style),
-                Span::raw(" "),
-                Span::styled(title.clone(), header_style),
-                Span::raw(" "),
-                Span::raw(first_content),
-            ]));
+            let mut header = header_spans(icon, title.as_deref(), header_style);
+            if !first_content.is_empty() {
+                header.push(Span::raw("  "));
+                header.push(Span::raw(first_content));
+            }
+            lines.push(Line::from(header));
 
             let remaining_to_show =
                 (MAX_COLLAPSED_LINES - 1).min(content_lines.len().saturating_sub(1));
@@ -282,28 +303,34 @@ pub fn render(
                     let line_text = content_lines[i];
                     if i == remaining_to_show && i < content_lines.len() - 1 {
                         // Last visible line with fold hint
-                        let hint = " … 点击展开 / Ctrl+O 全部展开".to_string();
-                        let available_width =
-                            inner.width.saturating_sub(hint.len() as u16) as usize;
+                        let hint = format!(" … {} 全部展开", fold_shortcut_label());
+                        let available_width = inner
+                            .width
+                            .saturating_sub(hint.len() as u16)
+                            .saturating_sub(4)
+                            as usize;
                         let truncated = truncate_chars(line_text, available_width);
                         lines.push(Line::from(vec![
+                            Span::raw("    "),
                             Span::raw(truncated),
                             Span::styled(hint, theme::secondary()),
                         ]));
                     } else {
-                        lines.push(Line::from(line_text.to_string()));
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::raw(line_text.to_string()),
+                        ]));
                     }
                 }
             }
         } else {
             // Expanded or short block: show everything
-            lines.push(Line::from(vec![
-                Span::styled(block.block_type.symbol(), header_style),
-                Span::raw(" "),
-                Span::styled(title, header_style),
-            ]));
+            lines.push(header_line(icon, title.as_deref(), header_style));
             for line in content_lines {
-                lines.push(Line::from(line.to_string()));
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::raw(line.to_string()),
+                ]));
             }
         }
 
@@ -318,12 +345,76 @@ pub fn render(
     scroll.snap_to_bottom(max_off);
     scroll.clamp(max_off);
 
+    // Build plain text lines for selection/copy.
+    plain_lines.clear();
+    for (i, line) in lines.iter().enumerate() {
+        plain_lines.push(PlainTextLine {
+            text: line_to_plain(line),
+            row: i as u16,
+        });
+    }
+
     let paragraph = Paragraph::new(Text::from(lines))
+        .style(theme::base())
         .wrap(Wrap { trim: false })
         .scroll((scroll.offset, 0));
+    // Clear first: ratatui's set_style only sets colors, it does NOT erase
+    // previous glyphs. Without this, rows below the content (after scroll or
+    // when content shrinks via folding) retain stale characters from the prior
+    // frame.
+    frame.render_widget(ratatui::widgets::Clear, inner);
     frame.render_widget(paragraph, inner);
 
     block_row_map
+}
+
+fn render_title(block: &ConversationBlock) -> Option<String> {
+    match block.title.as_deref() {
+        Some(title) if is_default_prompt_title(block.block_type, title) => None,
+        Some(title) => Some(title.to_string()),
+        None if suppresses_default_title(block.block_type) => None,
+        None => Some(block.block_type.title()),
+    }
+}
+
+fn suppresses_default_title(block_type: ConversationBlockType) -> bool {
+    matches!(
+        block_type,
+        ConversationBlockType::Decision
+            | ConversationBlockType::Result
+            | ConversationBlockType::Error
+    )
+}
+
+fn is_default_prompt_title(block_type: ConversationBlockType, title: &str) -> bool {
+    if !matches!(
+        block_type,
+        ConversationBlockType::Decision
+            | ConversationBlockType::Result
+            | ConversationBlockType::Error
+    ) {
+        return false;
+    }
+    title == t!("workspace.block.decision").as_ref()
+        || title == t!("workspace.block.status").as_ref()
+        || title == t!("workspace.block.result").as_ref()
+        || title == t!("workspace.block.error").as_ref()
+}
+
+fn header_line(icon: &str, title: Option<&str>, style: Style) -> Line<'static> {
+    Line::from(header_spans(icon, title, style))
+}
+
+fn header_spans(icon: &str, title: Option<&str>, style: Style) -> Vec<Span<'static>> {
+    // Pseudo-column layout: a leading space + glyph + two spaces, so all block
+    // glyphs line up vertically as a left "column". Continuation lines use the
+    // matching 4-space indent (see render()).
+    let mut spans = vec![Span::raw(" "), Span::styled(icon.to_string(), style)];
+    if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(title.to_string(), style));
+    }
+    spans
 }
 
 pub fn tab_title(active_tab: MainTab, has_agent_team: bool) -> String {
@@ -401,6 +492,7 @@ impl ConversationBlock {
             block_type: ConversationBlockType::Decision,
             title: Some(t!("workspace.block.status").to_string()),
             content: content.into(),
+            tool_name: None,
         }
     }
 
@@ -410,6 +502,7 @@ impl ConversationBlock {
             block_type: ConversationBlockType::ConfigOverview,
             title: None,
             content: state.encode(),
+            tool_name: None,
         }
     }
 
@@ -427,6 +520,7 @@ impl ConversationBlock {
             block_type,
             title: None,
             content: content.into(),
+            tool_name: None,
         }
     }
 
@@ -713,11 +807,19 @@ fn pad_visual(value: &str, width: usize) -> String {
 
 impl ConversationBlockType {
     pub fn symbol(self) -> &'static str {
+        // Single-cell-width Unicode glyphs (terminal-safe, no emoji). They
+        // form a left "column" via the header/continuation layout in render().
         match self {
-            Self::Welcome => "",
-            Self::Request => "→",
-            Self::Error => "×",
-            _ => "○",
+            Self::Welcome => "◆",
+            Self::Request => "▶",
+            Self::Understanding => "◈",
+            Self::PlanProposal => "☰",
+            Self::Execution => "●",
+            Self::Streaming => "◐",
+            Self::Decision => "◆",
+            Self::Result => "✓",
+            Self::Error => "✗",
+            Self::ConfigOverview => "▤",
         }
     }
 
@@ -738,33 +840,118 @@ impl ConversationBlockType {
 
     pub fn color(self) -> Color {
         match self {
-            Self::Welcome => theme::ACCENT,
-            Self::Request => theme::ACCENT,
-            Self::Understanding => theme::INFO,
-            Self::PlanProposal => theme::REVIEW,
-            Self::Execution => theme::WARNING,
-            Self::Streaming => theme::INFO,
-            Self::Decision => theme::WARNING,
-            Self::Result => theme::SUCCESS,
-            Self::Error => theme::ERROR,
-            Self::ConfigOverview => theme::ACCENT,
+            Self::Welcome => theme::accent(),
+            Self::Request => theme::accent(),
+            Self::Understanding => theme::info(),
+            Self::PlanProposal => theme::review(),
+            Self::Execution => theme::warning(),
+            Self::Streaming => theme::info(),
+            Self::Decision => theme::warning(),
+            Self::Result => theme::success(),
+            Self::Error => theme::error(),
+            Self::ConfigOverview => theme::accent(),
         }
+    }
+}
+
+/// Icon for a tool call, keyed by the tool's registered name. Returns a
+/// terminal-safe single-cell Unicode glyph; unknown/MCP tools get a generic
+/// glyph. Used in place of the block-type symbol when a block carries a
+/// `tool_name`, so each tool family has a distinct icon.
+pub fn tool_icon(tool_name: &str) -> &'static str {
+    match tool_name {
+        "shell" => "▸",
+        "read_file" => "▤",
+        "write_file" | "edit_file" => "✎",
+        "list_dir" => "▣",
+        "search_code" => "⚲",
+        "run_local_service" | "local_service_status" => "◉",
+        _ => "◈",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::collections::HashSet;
 
-    #[test]
-    fn request_blocks_use_arrow_symbol() {
-        assert_eq!(ConversationBlockType::Request.symbol(), "→");
+    fn render_blocks_for_test(blocks: Vec<ConversationBlock>) -> String {
+        render_blocks_for_test_with_global_expand(blocks, true)
+    }
+
+    fn render_blocks_for_test_with_global_expand(
+        blocks: Vec<ConversationBlock>,
+        global_expanded: bool,
+    ) -> String {
+        let backend = TestBackend::new(90, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        let mut scroll = PanelScroll::new();
+        let expanded = HashSet::new();
+        let mut plain_lines = Vec::new();
+
+        terminal
+            .draw(|frame| {
+                let _ = render(
+                    frame,
+                    frame.area(),
+                    &blocks,
+                    "test-model",
+                    "Conversation",
+                    &mut scroll,
+                    false,
+                    false,
+                    &expanded,
+                    global_expanded,
+                    &mut plain_lines,
+                );
+            })
+            .expect("draw conversation");
+
+        format!("{:?}", terminal.backend().buffer())
     }
 
     #[test]
-    fn runtime_blocks_use_circle_symbol() {
-        assert_eq!(ConversationBlockType::Result.symbol(), "○");
-        assert_eq!(ConversationBlockType::Streaming.symbol(), "○");
+    fn request_blocks_use_arrow_symbol() {
+        assert_eq!(ConversationBlockType::Request.symbol(), "▶");
+    }
+
+    #[test]
+    fn runtime_blocks_use_semantic_symbols() {
+        assert_eq!(ConversationBlockType::Understanding.symbol(), "◈");
+        assert_eq!(ConversationBlockType::PlanProposal.symbol(), "☰");
+        assert_eq!(ConversationBlockType::Execution.symbol(), "●");
+        assert_eq!(ConversationBlockType::Streaming.symbol(), "◐");
+        assert_eq!(ConversationBlockType::Decision.symbol(), "◆");
+        assert_eq!(ConversationBlockType::Result.symbol(), "✓");
+        assert_eq!(ConversationBlockType::Error.symbol(), "✗");
+    }
+
+    #[test]
+    fn tool_icon_maps_known_tool_names() {
+        assert_eq!(tool_icon("shell"), "▸");
+        assert_eq!(tool_icon("read_file"), "▤");
+        assert_eq!(tool_icon("write_file"), "✎");
+        assert_eq!(tool_icon("edit_file"), "✎");
+        assert_eq!(tool_icon("list_dir"), "▣");
+        assert_eq!(tool_icon("search_code"), "⚲");
+        assert_eq!(tool_icon("run_local_service"), "◉");
+        // Unknown / MCP tool names fall back to the generic glyph.
+        assert_eq!(tool_icon("mcp_search"), "◈");
+        assert_eq!(tool_icon("custom_plugin"), "◈");
+    }
+
+    #[test]
+    fn folded_blocks_only_hint_global_expand_shortcut() {
+        rust_i18n::set_locale("en");
+        let rendered = render_blocks_for_test_with_global_expand(
+            vec![ConversationBlock::result("one\ntwo\nthree\nfour\nfive")],
+            false,
+        );
+
+        assert!(!rendered.contains("点击展开"));
+        assert!(rendered.contains(fold_shortcut_label()));
     }
 
     #[test]
@@ -773,6 +960,39 @@ mod tests {
 
         assert_eq!(ConversationBlockType::Decision.title(), "Prompt");
         assert_eq!(ConversationBlockType::Result.title(), "Output");
+    }
+
+    #[test]
+    fn default_prompt_titles_are_not_rendered() {
+        rust_i18n::set_locale("en");
+        let rendered = render_blocks_for_test(vec![
+            ConversationBlock::decision("choose one"),
+            ConversationBlock::status("waiting"),
+            ConversationBlock::result("done"),
+            ConversationBlock::error("disk failed"),
+        ]);
+
+        assert!(rendered.contains("choose one"));
+        assert!(rendered.contains("waiting"));
+        assert!(rendered.contains("done"));
+        assert!(rendered.contains("disk failed"));
+        assert!(!rendered.contains("Prompt"));
+        assert!(!rendered.contains("Status"));
+        assert!(!rendered.contains("Output"));
+        assert!(!rendered.contains("Error"));
+    }
+
+    #[test]
+    fn custom_prompt_title_is_preserved() {
+        rust_i18n::set_locale("en");
+        let mut block = ConversationBlock::error("exit=1");
+        block.title = Some("Tool(shell) failed".to_string());
+
+        let rendered = render_blocks_for_test(vec![block]);
+
+        assert!(rendered.contains("Tool(shell) failed"));
+        assert!(rendered.contains("exit=1"));
+        assert!(!rendered.contains("Error"));
     }
 
     #[test]

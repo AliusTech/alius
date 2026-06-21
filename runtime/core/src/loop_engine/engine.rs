@@ -1664,4 +1664,258 @@ mod tests {
             "Plan default BypassPermissions must not emit ToolConfirmationRequired"
         );
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plan_can_search_code_and_verify_local_service_without_confirmation_by_default() {
+        use futures::stream;
+        use runtime_model::{ChatEvent, ChatStream, LlmProvider, ToolCall, ToolResponse};
+
+        struct SearchAndServiceProvider {
+            url: String,
+        }
+
+        impl LlmProvider for SearchAndServiceProvider {
+            fn chat_stream<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow::Result<ChatStream>> + Send + 'a>,
+            > {
+                Box::pin(async {
+                    Ok(Box::pin(stream::iter(vec![Ok(ChatEvent::Done {
+                        full_response: String::new(),
+                    })])) as ChatStream)
+                })
+            }
+
+            fn chat_once<'a>(
+                &'a self,
+                _prompt: &'a str,
+                _system: Option<&'a str>,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>,
+            > {
+                Box::pin(async { Ok(String::new()) })
+            }
+
+            fn list_models<'a>(
+                &'a self,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>,
+            > {
+                Box::pin(async { Ok(Vec::new()) })
+            }
+
+            fn chat_stream_with_tools<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let stream: ChatStream = Box::pin(stream::iter(vec![Ok(ChatEvent::Done {
+                        full_response: "calling local tools".to_string(),
+                    })]));
+                    Ok((
+                        stream,
+                        Some(vec![
+                            ToolCall::new(
+                                "tc-search".to_string(),
+                                "search_code".to_string(),
+                                json!({"query": "needle", "path": "."}),
+                            ),
+                            ToolCall::new(
+                                "tc-service".to_string(),
+                                "run_local_service".to_string(),
+                                json!({
+                                    "command": "sleep 30",
+                                    "expected_url": self.url,
+                                    "timeout_secs": 3
+                                }),
+                            ),
+                        ]),
+                    ))
+                })
+            }
+
+            fn continue_with_tool_results<'a>(
+                &'a self,
+                _conversation: &'a runtime_model::Conversation,
+                tool_results: &'a [(String, String, String)],
+                _assistant_tool_calls: &'a [ToolCall],
+                _tools: &'a [protocol_interface::ToolDef],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResponse> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let summary = tool_results
+                        .iter()
+                        .map(|(_, name, output)| format!("{name}: {output}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let stream: ChatStream = Box::pin(stream::iter(vec![
+                        Ok(ChatEvent::Delta {
+                            text: summary.clone(),
+                        }),
+                        Ok(ChatEvent::Done {
+                            full_response: summary,
+                        }),
+                    ]));
+                    Ok((stream, None))
+                })
+            }
+        }
+
+        async fn start_test_http_server() -> Option<(tokio::task::JoinHandle<()>, String)> {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+                Ok(listener) => listener,
+                Err(_) => return None,
+            };
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let handle = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 1024];
+                        let _ = socket.read(&mut buf).await;
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                            .await;
+                    });
+                }
+            });
+            Some((handle, url))
+        }
+
+        let Some((_server, url)) = start_test_http_server().await else {
+            return;
+        };
+        let registry = std::sync::Arc::new({
+            let reg = runtime_tools::ToolRegistry::new();
+            runtime_tools::native::register_native_tools(&reg);
+            reg
+        });
+        let session_manager = std::sync::Arc::new(crate::SessionManager::new(
+            protocol_interface::core::WorkspaceRef::new("/tmp"),
+        ));
+        let session = session_manager.create_session();
+        let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
+        let client = std::sync::Arc::new(runtime_model::LlmClient::new_with_provider_for_test(
+            Box::new(SearchAndServiceProvider { url }),
+            "mock-model",
+            protocol_interface::ProviderType::Openai,
+        ));
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("main.rs"),
+            "const NEEDLE: &str = \"needle\";\n",
+        )
+        .unwrap();
+        let ctx = LoopContext {
+            client,
+            conversation: runtime_model::Conversation::new(None),
+            settings: runtime_config::LlmSettings::default(),
+            workspace: tmp.path().to_path_buf(),
+            tool_registry: Some(registry),
+            session: Some(session_manager),
+            max_context_tokens: 4096,
+            cancel_token: None,
+            log_writer: None,
+        };
+
+        let input = RunLoopInput {
+            content: "fix and verify".to_string(),
+            mode: RuntimeMode::Plan,
+            policy: LoopPolicy::plan(),
+        };
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+
+        let result = LoopEngine::run(&run_ref, &trace_id, &input, &ctx, &mut |event| {
+            events_clone.lock().unwrap().push(event)
+        })
+        .await;
+
+        assert!(result.final_content.contains("search_code"));
+        assert!(result.final_content.contains("run_local_service"));
+        assert!(result.final_content.contains("\"ready\":true"));
+        let evts = events.lock().unwrap();
+        assert!(
+            !evts
+                .iter()
+                .any(|event| event.kind == CoreEventKind::ToolConfirmationRequired),
+            "default Plan policy must bypass run_local_service confirmation"
+        );
+        assert!(evts.iter().any(|event| {
+            event.kind == CoreEventKind::ToolCallCompleted
+                && matches!(
+                    &event.payload,
+                    CoreEventPayload::Json { value }
+                        if value.get("name").and_then(serde_json::Value::as_str)
+                            == Some("run_local_service")
+                )
+        }));
+    }
+
+    #[tokio::test]
+    async fn run_local_service_accept_edits_requests_confirmation_for_high_risk_command() {
+        let registry = runtime_tools::ToolRegistry::new();
+        runtime_tools::native::register_native_tools(&registry);
+        let session_manager = std::sync::Arc::new(crate::SessionManager::new(
+            protocol_interface::core::WorkspaceRef::new("/tmp/test-workspace"),
+        ));
+        let session = session_manager.create_session();
+        let (_, run_ref, trace_id) = session_manager.create_turn(&session.session_ref).unwrap();
+        let tool_calls = vec![runtime_model::ToolCall::new(
+            "tc-run-local-service".to_string(),
+            "run_local_service".to_string(),
+            json!({
+                "command": "rm -rf build",
+                "expected_url": "http://127.0.0.1:1",
+                "timeout_secs": 1
+            }),
+        )];
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CoreEvent>::new()));
+        let events_clone = events.clone();
+        let sm_for_task = session_manager.clone();
+        let rr = run_ref.clone();
+        let deny_handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = sm_for_task.deliver_confirmation(&rr, "tc-run-local-service", false);
+        });
+        let tmp = tempfile::TempDir::new().unwrap();
+        let batch = super::super::tool_step::execute_tools(
+            &tool_calls,
+            &registry,
+            tmp.path(),
+            "test-session",
+            RuntimeMode::Plan,
+            PermissionStrategy::AcceptEdits,
+            Some(session_manager.as_ref()),
+            &mut |event| events_clone.lock().unwrap().push(event),
+            &run_ref,
+            &trace_id,
+            &mut 0,
+            None,
+        )
+        .await
+        .unwrap();
+        deny_handle.await.unwrap();
+
+        assert!(batch.batch_denied);
+        let evts = events.lock().unwrap();
+        assert!(evts
+            .iter()
+            .any(|event| event.kind == CoreEventKind::ToolConfirmationRequired));
+        assert!(evts.iter().any(|event| {
+            event.kind == CoreEventKind::ToolCallCompleted
+                && matches!(
+                    &event.payload,
+                    CoreEventPayload::Json { value }
+                        if value.get("denied").and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                )
+        }));
+    }
 }

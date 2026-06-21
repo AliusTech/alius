@@ -5,6 +5,8 @@
 //! shared security primitives (Shell Gate, workspace boundary).
 
 mod fs;
+mod local_service;
+mod search_code;
 pub mod shell;
 
 use crate::registry::ToolRegistry;
@@ -28,4 +30,16 @@ pub fn register_native_tools(registry: &ToolRegistry) {
     registry
         .register(fs::EditFile)
         .expect("native edit_file tool must not conflict");
+    registry
+        .register(search_code::SearchCode)
+        .expect("native search_code tool must not conflict");
+    registry
+        .register(local_service::RunLocalService)
+        .expect("native run_local_service tool must not conflict");
+    registry
+        .register(local_service::LocalServiceStatus)
+        .expect("native local_service_status tool must not conflict");
+    registry
+        .register(local_service::StopLocalService)
+        .expect("native stop_local_service tool must not conflict");
 }

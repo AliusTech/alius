@@ -1505,18 +1505,32 @@ fn model_provider_choices() -> &'static [ModelProviderChoice] {
             base_url: "https://open.bigmodel.cn/api/anthropic",
         },
         ModelProviderChoice {
-            label: "Xiaomi MiMo (Token Plan) - OpenAI API",
-            value: "xiaomi-mimo-openai",
+            label: "Xiaomi MiMo (Token Plan) - OpenAI API (China)",
+            value: "xiaomi-mimo-openai-cn",
             provider: "xiaomi_mimo",
             api_protocol: ApiProtocol::OpenAi,
-            base_url: "https://api.xiaomimimo.com/v1",
+            base_url: "https://token-plan-cn.xiaomimimo.com/v1",
         },
         ModelProviderChoice {
-            label: "Xiaomi MiMo (Token Plan) - Anthropic API",
-            value: "xiaomi-mimo-anthropic",
+            label: "Xiaomi MiMo (Token Plan) - OpenAI API (Singapore)",
+            value: "xiaomi-mimo-openai-sgp",
+            provider: "xiaomi_mimo",
+            api_protocol: ApiProtocol::OpenAi,
+            base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
+        },
+        ModelProviderChoice {
+            label: "Xiaomi MiMo (Token Plan) - Anthropic API (China)",
+            value: "xiaomi-mimo-anthropic-cn",
             provider: "xiaomi_mimo",
             api_protocol: ApiProtocol::Anthropic,
-            base_url: "https://api.xiaomimimo.com/anthropic",
+            base_url: "https://token-plan-cn.xiaomimimo.com/anthropic",
+        },
+        ModelProviderChoice {
+            label: "Xiaomi MiMo (Token Plan) - Anthropic API (Singapore)",
+            value: "xiaomi-mimo-anthropic-sgp",
+            provider: "xiaomi_mimo",
+            api_protocol: ApiProtocol::Anthropic,
+            base_url: "https://token-plan-sgp.xiaomimimo.com/anthropic",
         },
         ModelProviderChoice {
             label: "DeepSeek - OpenAI API",
@@ -1714,6 +1728,28 @@ mod tests {
                 .map(|error| error.source_state),
             Some(InitState::ModelInputApiKey)
         );
+    }
+
+    #[test]
+    fn xiaomi_model_provider_choices_include_regions() {
+        let choices = model_provider_choices()
+            .iter()
+            .filter(|choice| choice.provider == "xiaomi_mimo")
+            .collect::<Vec<_>>();
+
+        assert_eq!(choices.len(), 4);
+        assert!(choices
+            .iter()
+            .any(|choice| choice.base_url == "https://token-plan-cn.xiaomimimo.com/v1"));
+        assert!(choices
+            .iter()
+            .any(|choice| choice.base_url == "https://token-plan-sgp.xiaomimimo.com/v1"));
+        assert!(choices
+            .iter()
+            .any(|choice| choice.base_url == "https://token-plan-cn.xiaomimimo.com/anthropic"));
+        assert!(choices
+            .iter()
+            .any(|choice| choice.base_url == "https://token-plan-sgp.xiaomimimo.com/anthropic"));
     }
 
     #[test]

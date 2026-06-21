@@ -136,27 +136,49 @@ pub fn root_matches(prefix: &str) -> Vec<&'static SlashCommand> {
         .collect()
 }
 
-pub fn common_prefix(matches: &[CompletionMatch]) -> Option<String> {
-    let mut iter = matches.iter();
-    let mut prefix = iter.next()?.replacement.clone();
-    for item in iter {
-        prefix = common_prefix_two(&prefix, &item.replacement);
-        if prefix.is_empty() {
-            break;
-        }
+pub fn exact_command_match(line: &str, cursor: usize) -> bool {
+    let line_to_cursor = line.chars().take(cursor).collect::<String>();
+    let trimmed = line_to_cursor.trim_end();
+    if !trimmed.starts_with('/') {
+        return false;
     }
-    Some(prefix)
+
+    let mut parts = trimmed.split_whitespace();
+    let Some(command) = parts.next() else {
+        return false;
+    };
+    if !SLASH_COMMANDS
+        .iter()
+        .any(|candidate| candidate.command == command)
+    {
+        return false;
+    }
+
+    let Some(subcommand) = parts.next() else {
+        return true;
+    };
+    match subcommands_for(command) {
+        Some(subcommands) => subcommands.contains(&subcommand),
+        None => false,
+    }
 }
 
 fn completion_choices<'a>(line_to_cursor: &'a str, _models: &'a [String]) -> Vec<&'a str> {
-    match command_context(line_to_cursor) {
-        Some("/mode") => MODE_SUBCOMMANDS.to_vec(),
-        Some("/session") => SESSION_SUBCOMMANDS.to_vec(),
-        Some("/review") => REVIEW_SUBCOMMANDS.to_vec(),
-        Some("/memory") => MEMORY_SUBCOMMANDS.to_vec(),
-        Some("/confirm") => CONFIRM_SUBCOMMANDS.to_vec(),
-        Some("/trace") => TRACE_SUBCOMMANDS.to_vec(),
+    match command_context(line_to_cursor).and_then(subcommands_for) {
+        Some(subcommands) => subcommands.to_vec(),
         _ => command_names().collect(),
+    }
+}
+
+fn subcommands_for(command: &str) -> Option<&'static [&'static str]> {
+    match command {
+        "/mode" => Some(MODE_SUBCOMMANDS),
+        "/session" => Some(SESSION_SUBCOMMANDS),
+        "/review" => Some(REVIEW_SUBCOMMANDS),
+        "/memory" => Some(MEMORY_SUBCOMMANDS),
+        "/confirm" => Some(CONFIRM_SUBCOMMANDS),
+        "/trace" => Some(TRACE_SUBCOMMANDS),
+        _ => None,
     }
 }
 
@@ -180,14 +202,6 @@ fn extract_word(line: &str) -> (usize, &str) {
         .unwrap_or(0);
     let start_chars = trimmed[..start].chars().count();
     (start_chars, &trimmed[start..])
-}
-
-fn common_prefix_two(left: &str, right: &str) -> String {
-    left.chars()
-        .zip(right.chars())
-        .take_while(|(left, right)| left == right)
-        .map(|(left, _)| left)
-        .collect()
 }
 
 #[cfg(test)]
@@ -217,9 +231,22 @@ mod tests {
     }
 
     #[test]
-    fn returns_common_prefix() {
-        let result = complete("/session l", 10, &[]).unwrap();
+    fn exact_command_match_requires_full_root_command() {
+        assert!(!exact_command_match("/he", 3));
+        assert!(exact_command_match("/help", 5));
+        assert!(exact_command_match("/mode", 5));
+        assert!(exact_command_match("/session", 8));
+        assert!(exact_command_match("/review", 7));
+        assert!(exact_command_match("/memory", 7));
+        assert!(exact_command_match("/trace", 6));
+        assert!(exact_command_match("/confirm", 8));
+    }
 
-        assert_eq!(common_prefix(&result.matches).as_deref(), Some("l"));
+    #[test]
+    fn exact_command_match_requires_full_subcommand() {
+        assert!(!exact_command_match("/session l", 10));
+        assert!(exact_command_match("/session list", 13));
+        assert!(!exact_command_match("/mode p", 7));
+        assert!(exact_command_match("/mode plan", 10));
     }
 }

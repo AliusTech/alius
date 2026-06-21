@@ -359,21 +359,6 @@ fn validate_origin_capability_ceiling(
                 ],
             )
         }
-        Origin::EmbeddedSdk => {
-            deny_external_paths(origin, scope)?;
-            deny_capabilities(
-                origin,
-                scope,
-                &[
-                    Capability::WriteWorkspace,
-                    Capability::UseTools,
-                    Capability::UseShell,
-                    Capability::UseMcp,
-                    Capability::WriteConfig,
-                    Capability::RemoteA2A,
-                ],
-            )
-        }
         _ => Ok(()),
     }
 }

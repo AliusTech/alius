@@ -11,6 +11,7 @@ role = ""
 
 [ui]
 locale = "en"
+theme = "dark"
 
 [update]
 auto_check = true

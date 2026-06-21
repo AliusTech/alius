@@ -1131,8 +1131,12 @@ mod tests {
     /// Returns the URL to connect to (http://127.0.0.1:{port}).
     /// The returned JoinHandle must be kept alive to prevent the server from
     /// being dropped before the test completes.
-    async fn start_test_server(response: String) -> (tokio::task::JoinHandle<()>, String) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    async fn start_test_server(response: String) -> Option<(tokio::task::JoinHandle<()>, String)> {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(err) => panic!("failed to bind test server: {err}"),
+        };
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{}", port);
 
@@ -1146,7 +1150,7 @@ mod tests {
 
         // Give the spawned task a moment to start accepting.
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        (handle, url)
+        Some((handle, url))
     }
 
     #[tokio::test]
@@ -1157,7 +1161,9 @@ mod tests {
             body.len(),
             body
         );
-        let (_handle, url) = start_test_server(response).await;
+        let Some((_handle, url)) = start_test_server(response).await else {
+            return;
+        };
 
         let result = execute_fetch(&url).await;
         assert!(result.is_ok(), "Expected success — got: {:?}", result.err());
@@ -1174,7 +1180,9 @@ mod tests {
             body.len(),
             body
         );
-        let (_handle, url) = start_test_server(response).await;
+        let Some((_handle, url)) = start_test_server(response).await else {
+            return;
+        };
 
         let result = execute_fetch(&url).await;
         // execute_fetch returns Ok with the status code, not an Err
@@ -1190,7 +1198,9 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             FETCH_MAX_BYTES + 1
         );
-        let (_handle, url) = start_test_server(response).await;
+        let Some((_handle, url)) = start_test_server(response).await else {
+            return;
+        };
 
         let result = execute_fetch(&url).await;
         assert!(result.is_err(), "Should reject oversized response");
@@ -1207,7 +1217,11 @@ mod tests {
     #[tokio::test]
     async fn test_execute_fetch_timeout() {
         // Start a server that accepts but never responds (triggers timeout)
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("failed to bind test server: {err}"),
+        };
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{}", port);
 
@@ -1233,7 +1247,11 @@ mod tests {
     #[tokio::test]
     async fn test_execute_fetch_oversized_body() {
         // Start a server that returns a body exceeding 1MB
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("failed to bind test server: {err}"),
+        };
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{}", port);
 

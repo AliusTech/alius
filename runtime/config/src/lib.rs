@@ -27,7 +27,10 @@ pub use init_wizard::{
     ModelInfo as InitModelInfo, MultiChoiceOption, RecoverAction, RenderedCheckItem,
     RenderedMessage, SoulRef as InitSoulRef, WorkspaceCheckResult,
 };
-pub use loaders::{save_model_assignment, validate_model_assignment};
+pub use loaders::{
+    model_assignment_readiness_issues, save_model_assignment, validate_model_assignment,
+    ModelAssignmentReadinessIssue, ModelAssignmentReadinessIssueKind,
+};
 pub use merger::{
     load_env_overrides, merge_model, merge_provider, merge_runtime_mode, CliOverrides,
     ConfigSource, EmbeddedDefaults, EnvOverrides, MergeResult, UserConfig,
